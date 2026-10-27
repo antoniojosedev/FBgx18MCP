@@ -5606,7 +5606,7 @@
             "type": "string"
           },
           "variable": {
-            "description": "add_grid_variable: dryRun only; writes…",
+            "description": "add_grid_variable: variable (column)…",
             "type": "string"
           },
           "variableReference": {

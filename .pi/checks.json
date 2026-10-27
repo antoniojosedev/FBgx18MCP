@@ -21,9 +21,9 @@
       "argv": ["node", "--test", "scripts/lint.test.js"],
       "timeoutMs": 120000
     },
-    "wwp-grid-refusal": {
-      "description": "Preview-only grid variable refusal and remaining native writer ownership contracts",
-      "argv": ["dotnet", "test", "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj", "--no-restore", "--nologo", "-v:minimal", "-m:1", "--filter", "FullyQualifiedName~WwpStaleObjectEnvelopeTests|FullyQualifiedName~WwpGridVariableProjectionRefusalTests"],
+    "wwp-grid-variable": {
+      "description": "add_grid_variable projected-column confirmation and native writer ownership contracts",
+      "argv": ["dotnet", "test", "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj", "--no-restore", "--nologo", "-v:minimal", "-m:1", "--filter", "FullyQualifiedName~WwpStaleObjectEnvelopeTests|FullyQualifiedName~WwpGridVariableProjectionTests"],
       "timeoutMs": 120000
     },
     "integration-preflight": {
