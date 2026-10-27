@@ -769,7 +769,7 @@ The installer writes a `config.json` for you. To customize networking, timeouts,
     "HttpPort": 5000,
     "BindAddress": "127.0.0.1",
     "SessionIdleTimeoutMinutes": 10,
-    "WorkerIdleTimeoutMinutes": 60,
+    "WorkerIdleTimeoutMinutes": 30,
     "MaxOpenKbs": 3,
     "ArtifactOutputDirectory": "C:\\GenexusMCP\\Artifacts"
   },

@@ -101,12 +101,13 @@ namespace GxMcp.Gateway
         internal static KbResolver? GetKbResolver() => _kbResolver;
         internal static void StartWorkerForTest(Configuration config) => StartWorker(config);
 
-        internal static Task<string> AddPendingRequestForTest(string id, string workerAlias)
+        internal static Task<string> AddPendingRequestForTest(string id, string workerAlias, WorkerProcess? worker = null)
         {
             var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingRequests[id] = new PendingWorkerRequest
             {
                 WorkerAlias = workerAlias,
+                Worker = worker,
                 ToolName = "test",
                 CorrelationId = id,
                 CompletionSource = completion
@@ -197,6 +198,8 @@ namespace GxMcp.Gateway
             public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
             /// <summary>Worker (KB) the command was routed to; used to abort pending on per-worker crash.</summary>
             public string? WorkerAlias { get; init; }
+            /// <summary>Worker instance the command was offered to; tells an exit whether the command was delivered.</summary>
+            public WorkerProcess? Worker { get; init; }
             /// <summary>MCP client request id (tools/call `id`) that spawned this worker request, when known.
             /// notifications/cancelled carries THIS id, not the gateway-generated key of _pendingRequests,
             /// so the cancel handler needs the bridge to find what to abort.</summary>

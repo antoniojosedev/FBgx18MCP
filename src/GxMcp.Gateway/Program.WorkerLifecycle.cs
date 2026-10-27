@@ -43,13 +43,15 @@ namespace GxMcp.Gateway
                             aborted++;
                             continue;
                         }
-                        _operationTracker.MarkFailedByRequest(id, $"Worker for KB '{kb.Alias}' crashed/exited.");
-                        var errorJson = JsonConvert.SerializeObject(new
+                        var exitError = BuildWorkerExitError(kb.Alias, stopReason,
+                            delivered: pending.Worker == null || !pending.Worker.IsCommandUndelivered(id));
+                        _operationTracker.MarkFailedByRequest(id, exitError["message"]!.ToString());
+                        var errorJson = new JObject
                         {
-                            jsonrpc = "2.0",
-                            id = id,
-                            error = new { code = -32603, message = $"Worker for KB '{kb.Alias}' crashed/exited." }
-                        });
+                            ["jsonrpc"] = "2.0",
+                            ["id"] = id,
+                            ["error"] = exitError
+                        }.ToString(Formatting.None);
                         pending.CompletionSource.TrySetResult(errorJson);
                         aborted++;
                     }
@@ -563,6 +565,21 @@ namespace GxMcp.Gateway
         // ToolLatencyStats.Record, so nothing ever checked which phase was mapped to
         // which field. Reaching this method is how a test can assert that a Worker's
         // reported queue delay surfaces as queue delay - see QueuePhaseMappingTests.
+        /// <summary>
+        /// Issue #692: a Worker tool failure arrives as a JSON-RPC <c>result</c> whose
+        /// envelope has <c>status=error</c>, not as a JSON-RPC <c>error</c>; it was
+        /// counted and logged as <c>result=success</c>.
+        /// </summary>
+        internal static string ClassifyToolLatencyResult(JObject? response)
+        {
+            if (response?["error"] != null) return "error";
+            if (response?["result"] is JObject result
+                && (string.Equals(result["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)
+                    || (result["isError"]?.Type == JTokenType.Boolean && result["isError"]!.Value<bool>())))
+                return "error";
+            return "success";
+        }
+
         internal static void RecordToolLatency(
             string toolName,
             DateTime createdAtUtc,
@@ -598,7 +615,7 @@ namespace GxMcp.Gateway
                 if (resultClassOverride != null)
                     resultClass = resultClassOverride;
                 else
-                    resultClass = response?["error"] != null ? "error" : "success";
+                    resultClass = ClassifyToolLatencyResult(response);
                 ToolLatencyStats.Record(
                     toolName,
                     ms,
@@ -701,6 +718,54 @@ namespace GxMcp.Gateway
                 && IsWorkerCrashEnvelope(workerResponse);
         }
 
+        // Issue #692: an undelivered command is re-sent at most this many times, whatever
+        // the tool; each re-send acquires the current pool entry, so a stopped Worker is
+        // replaced by a fresh one rather than asked again.
+        internal const int MaxUndeliveredRedispatches = 2;
+
+        /// <summary>
+        /// Issue #692: the exit error for a pending request. <paramref name="delivered"/> is
+        /// false only when no byte of the command reached the Worker, which makes the
+        /// command safe to dispatch again. A delivered but unanswered command may have
+        /// executed, so it carries <c>reconcileRequired</c> and is never re-sent.
+        /// </summary>
+        internal static JObject BuildWorkerExitError(string kbAlias, WorkerStopReason stopReason, bool delivered)
+        {
+            if (!delivered)
+            {
+                return new JObject
+                {
+                    ["code"] = -32603,
+                    ["message"] = $"Worker for KB '{kbAlias}' crashed/exited ({stopReason}) before the command was delivered; it was not executed.",
+                    ["data"] = new JObject
+                    {
+                        ["dispatchState"] = WorkerDispatchState.NotDelivered,
+                        ["stopReason"] = stopReason.ToString()
+                    }
+                };
+            }
+            return new JObject
+            {
+                ["code"] = -32603,
+                ["message"] = $"Worker for KB '{kbAlias}' crashed/exited ({stopReason}) after the command was delivered and before it answered; it may have executed. Read the target back before retrying.",
+                ["data"] = new JObject
+                {
+                    ["dispatchState"] = WorkerDispatchState.DeliveredUnanswered,
+                    ["reconcileRequired"] = true,
+                    ["stopReason"] = stopReason.ToString()
+                }
+            };
+        }
+
+        internal static bool ShouldRedispatchUndeliveredCommand(JObject workerResponse, int redispatches)
+        {
+            return redispatches < MaxUndeliveredRedispatches
+                && workerResponse?["error"] is JObject error
+                && error["data"] is JObject data
+                && string.Equals(data["dispatchState"]?.ToString(),
+                    WorkerDispatchState.NotDelivered, StringComparison.Ordinal);
+        }
+
         private static async Task<JObject?> SendWorkerCommandAsync(
             JObject workerCommand,
             int timeoutMs,
@@ -759,6 +824,7 @@ namespace GxMcp.Gateway
             // once to the replacement instead of surfacing the transient error (which
             // forced the user to manually /mcp reconnect and re-issue).
             int workerAttempt = 0;
+            int undeliveredRedispatches = 0;
             DateTime requestStartedAtUtc = DateTime.UtcNow;
             long startupWaitMs = 0;
             PendingWorkerRequest? lastPending = null;
@@ -804,6 +870,7 @@ namespace GxMcp.Gateway
                     OperationId = operationId,
                     CreatedAtUtc = DateTime.UtcNow,
                     WorkerAlias = worker.Kb?.NormalizedAlias,
+                    Worker = worker,
                     McpRequestId = mcpRequestId,
                     McpRequestIdToken = mcpRequestIdToken?.DeepClone(),
                     McpSessionId = mcpSessionId ?? "stdio",
@@ -824,12 +891,38 @@ namespace GxMcp.Gateway
 
                 // PERF: pass the JObject so WorkerProcess doesn't re-parse the
                 // serialized command on the write path (it serializes exactly once).
-                await worker.SendCommandAsync(workerRequest);
+                try
+                {
+                    await worker.SendCommandAsync(workerRequest);
+                }
+                catch (WorkerCommandNotDeliveredException notDelivered)
+                {
+                    // Issue #692: the Worker was already stopping (idle reap) when this
+                    // command was offered. Nothing reached it, so wait for its exit to
+                    // detach the pool entry and send the command to the replacement.
+                    _pendingRequests.TryRemove(attemptRequestId, out _);
+                    if (undeliveredRedispatches >= MaxUndeliveredRedispatches)
+                    {
+                        if (trackOperation && operationId != null)
+                            _operationTracker.MarkFailedByRequest(attemptRequestId, notDelivered.Message);
+                        throw;
+                    }
+                    undeliveredRedispatches++;
+                    Log($"[Redispatch] {toolName} offered to a stopping Worker for KB '{worker.Kb?.Alias}'; not delivered, re-sending to the replacement ({undeliveredRedispatches}/{MaxUndeliveredRedispatches}).");
+                    await worker.ExitNotifiedTask.WaitAsync(TimeSpan.FromSeconds(10)).ContinueWith(_ => { }).ConfigureAwait(false);
+                    continue;
+                }
 
                 if (timeoutMs <= 0)
                 {
                     var workerResponse = pending.ParsedResponse
                         ?? JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
+                    if (ShouldRedispatchUndeliveredCommand(workerResponse, undeliveredRedispatches))
+                    {
+                        undeliveredRedispatches++;
+                        Log($"[Redispatch] {toolName} was not delivered before the Worker exited; re-sending to the replacement ({undeliveredRedispatches}/{MaxUndeliveredRedispatches}).");
+                        continue;
+                    }
                     if (ShouldRetryWorkerCrash(workerResponse, toolName, toolArgs, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
@@ -892,6 +985,12 @@ namespace GxMcp.Gateway
                 {
                     var workerResponse = pending.ParsedResponse
                         ?? JObject.Parse(await pending.CompletionSource.Task);
+                    if (ShouldRedispatchUndeliveredCommand(workerResponse, undeliveredRedispatches))
+                    {
+                        undeliveredRedispatches++;
+                        Log($"[Redispatch] {toolName} was not delivered before the Worker exited; re-sending to the replacement ({undeliveredRedispatches}/{MaxUndeliveredRedispatches}).");
+                        continue;
+                    }
                     if (ShouldRetryWorkerCrash(workerResponse, toolName, toolArgs, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");

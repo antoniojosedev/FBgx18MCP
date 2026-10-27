@@ -47,6 +47,31 @@ namespace GxMcp.Gateway
         }
     }
 
+    /// <summary>
+    /// Issue #692. The Worker was already stopping (for example an idle-timeout reap) when
+    /// the command was offered, so it was refused before being enqueued. No byte reached
+    /// the Worker, so the command was not executed and may be dispatched to a replacement.
+    /// </summary>
+    /// <summary>Values of <c>error.data.dispatchState</c> on a Gateway-generated Worker failure.</summary>
+    public static class WorkerDispatchState
+    {
+        public const string NotDelivered = "not-delivered";
+        public const string DeliveredUnanswered = "delivered-unanswered";
+    }
+
+    public sealed class WorkerCommandNotDeliveredException : Exception
+    {
+        public string? KbAlias { get; }
+        public string? CommandId { get; }
+
+        public WorkerCommandNotDeliveredException(string? kbAlias, string? commandId)
+            : base($"Worker for KB '{kbAlias}' was stopping; command {commandId ?? "(no id)"} was NOT sent to the Worker.")
+        {
+            KbAlias = kbAlias;
+            CommandId = commandId;
+        }
+    }
+
     /// <summary>Immutable snapshot of a worker startup failure. Classification lives in <see cref="SdkDiagnosticClassifier"/>.</summary>
     public sealed record WorkerStartupFailure(
         WorkerStopReason Reason,

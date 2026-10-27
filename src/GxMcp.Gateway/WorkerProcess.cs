@@ -99,6 +99,17 @@ namespace GxMcp.Gateway
         // event — so idle-shutdown teardown must signal the exit itself, or the pool never
         // drops the entry and the next command hits a dead worker (WorkerCrashed).
         private int _exitNotified;
+        private readonly TaskCompletionSource<bool> _exitNotifiedSignal =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Issue #692: set when any stop path begins, before the writer loop is cancelled.
+        // A command offered after this point is refused as not delivered instead of being
+        // parked in a channel nobody drains.
+        private int _stopping;
+        // Issue #692: ids accepted by SendCommandAsync whose bytes have not started to be
+        // written to the Worker. An exit that finds an id here knows the command was never
+        // executed; any other unanswered command is uncertain and must be reconciled.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _undeliveredCommandIds =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         private int _exitConfirmed;
         private bool? _processAliveForTest;
         private bool? _exitConfirmedForTest;
@@ -622,11 +633,13 @@ namespace GxMcp.Gateway
                                     catch { }
                                 }
                                 Program.Log($"[Gateway] Worker not running; failing command {failId} with WorkerCrashed error.");
+                                var failError = new JObject { ["code"] = -32000, ["message"] = $"Worker for KB '{Kb.Alias}' crashed/exited. Reconnect or try again." };
+                                AnnotateUndeliveredFailure(failId, failError);
                                 var errResponse = new JObject
                                 {
                                     ["jsonrpc"] = "2.0",
                                     ["id"] = failId == "unknown" ? (JToken)JValue.CreateNull() : new JValue(failId),
-                                    ["error"] = new JObject { ["code"] = -32000, ["message"] = $"Worker for KB '{Kb.Alias}' crashed/exited. Reconnect or try again." }
+                                    ["error"] = failError
                                 };
                                 RaiseRpcResponse(errResponse.ToString(Formatting.None), errResponse);
                                 continue;
@@ -675,11 +688,13 @@ namespace GxMcp.Gateway
                                 if (_sharedConnection != null)
                                 {
                                     JObject sharedRpc = cmd.Rpc ?? JObject.Parse(cmd.Json ?? string.Empty);
+                                    MarkDeliveryStarted(id);
                                     await _sharedConnection.SendAsync(sharedRpc, _cts.Token).ConfigureAwait(false);
                                     Program.Log($"[Gateway] Shared Worker command written to attachment: {id}");
                                 }
                                 else if (writer != null)
                                 {
+                                    MarkDeliveryStarted(id);
                                     if (cmd.Rpc != null)
                                     {
                                         using (var jsonWriter = new JsonTextWriter(writer) { CloseOutput = false })
@@ -784,11 +799,13 @@ namespace GxMcp.Gateway
         // request hangs until its overall timeout fires. Mirrors the WorkerCrashed envelope.
         internal void EmitSendFailure(string id, string message)
         {
+            var error = new JObject { ["code"] = -32000, ["message"] = message };
+            AnnotateUndeliveredFailure(id, error);
             var errResponse = new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = id == "unknown" ? (JToken)JValue.CreateNull() : new JValue(id),
-                ["error"] = new JObject { ["code"] = -32000, ["message"] = message }
+                ["error"] = error
             };
             RaiseRpcResponse(errResponse.ToString(Formatting.None), errResponse);
         }
@@ -1412,8 +1429,47 @@ namespace GxMcp.Gateway
         {
             string? id = rpc["id"]?.ToString();
             string? method = rpc["method"]?.ToString();
+            // Track before the stopping check: either this call observes the stop and
+            // refuses, or the exit notification observes the id and reports it undelivered.
+            if (id != null) _undeliveredCommandIds[id] = 0;
             Interlocked.Increment(ref _queuedCommands);
-            await EnqueueCommandAsync(new QueuedCommand(null, rpc, id, method), id, method);
+            if (Volatile.Read(ref _stopping) != 0)
+            {
+                Interlocked.Decrement(ref _queuedCommands);
+                if (id != null) _undeliveredCommandIds.TryRemove(id, out _);
+                throw new WorkerCommandNotDeliveredException(Kb.Alias, id);
+            }
+            try
+            {
+                await EnqueueCommandAsync(new QueuedCommand(null, rpc, id, method), id, method);
+            }
+            catch (WorkerCommandQueueFullException)
+            {
+                if (id != null) _undeliveredCommandIds.TryRemove(id, out _);
+                throw;
+            }
+        }
+
+        /// <summary>True when the stop of this Worker has begun; it accepts no more commands.</summary>
+        public bool IsStopping => Volatile.Read(ref _stopping) != 0;
+
+        /// <summary>
+        /// Issue #692: true when <paramref name="id"/> was accepted but no byte of it was
+        /// written to the Worker, so the Worker cannot have executed it.
+        /// </summary>
+        internal bool IsCommandUndelivered(string id) => _undeliveredCommandIds.ContainsKey(id);
+
+        /// <summary>Completes once this Worker's exit has been reported to subscribers.</summary>
+        internal Task ExitNotifiedTask => _exitNotifiedSignal.Task;
+
+        private void MarkDeliveryStarted(string id) => _undeliveredCommandIds.TryRemove(id, out _);
+
+        // A Gateway-generated failure for a command that never started to be written is
+        // marked not-delivered, so the dispatcher may send it to a replacement Worker.
+        private void AnnotateUndeliveredFailure(string id, JObject error)
+        {
+            if (!_undeliveredCommandIds.TryRemove(id, out _)) return;
+            error["data"] = new JObject { ["dispatchState"] = WorkerDispatchState.NotDelivered };
         }
 
         // Compatibility shim (no production caller after the JObject overload was
@@ -1534,6 +1590,7 @@ namespace GxMcp.Gateway
         private void FireWorkerExitedOnce(WorkerStopReason reason)
         {
             if (Interlocked.Exchange(ref _exitNotified, 1) != 0) return;
+            Volatile.Write(ref _stopping, 1);
             _ownershipLease?.Dispose();
             _ownershipLease = null;
             try
@@ -1558,10 +1615,12 @@ namespace GxMcp.Gateway
             catch (Exception ex) { Program.Log($"[Gateway] CrashLedger.Record threw: {ex.Message}"); }
             try { OnWorkerExited?.Invoke(reason); }
             catch (Exception ex) { Program.Log($"[Gateway] OnWorkerExited handler threw: {ex.Message}"); }
+            _exitNotifiedSignal.TrySetResult(true);
         }
 
         private void StopProcess(WorkerStopReason reason)
         {
+            Volatile.Write(ref _stopping, 1);
             if (IsSharedHostMode && _sharedConnection != null)
             {
                 StopSharedConnection(reason);

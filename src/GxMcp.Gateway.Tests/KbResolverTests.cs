@@ -261,6 +261,45 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("KB_AMBIGUOUS", ex.Code);
         }
 
+        // Issue #692: an idle-timeout exit removed the Worker from the open set while the
+        // KB stayed opened (known). The next call without `kb` failed in 1-2 ms with
+        // "No Knowledge Base is open" and never respawned the Worker.
+        [Fact]
+        public void Strict_ZeroOpen_ResolvesSoleKnownKb_AfterIdleExit()
+        {
+            var cfg = new Configuration { Environment = new EnvironmentConfig { ResolutionPolicy = "strict" } };
+            var resolver = new KbResolver(cfg);
+            var known = new List<KbHandle> { new KbHandle("kbteste", "C:/KBs/KBTeste") };
+
+            var handle = resolver.Resolve(null, Array.Empty<KbHandle>(), known, null, out string source);
+
+            Assert.Equal("kbteste", handle.Alias);
+            Assert.Equal("single-open", source);
+        }
+
+        [Fact]
+        public void Strict_ZeroOpen_SeveralKnownKbs_AreAmbiguous()
+        {
+            var cfg = new Configuration { Environment = new EnvironmentConfig { ResolutionPolicy = "strict" } };
+            var resolver = new KbResolver(cfg);
+            var known = new List<KbHandle> { new KbHandle("a", "C:/KB/A"), new KbHandle("b", "C:/KB/B") };
+
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, Array.Empty<KbHandle>(), known));
+            Assert.Equal("KB_AMBIGUOUS", ex.Code);
+        }
+
+        [Fact]
+        public void Strict_ZeroOpen_SoleKnownKb_StillHonoursConfiguredDefaultConflict()
+        {
+            var cfg = new Configuration { Environment = new EnvironmentConfig { ResolutionPolicy = "strict", DefaultKb = "other" } };
+            var resolver = new KbResolver(cfg);
+            var known = new List<KbHandle> { new KbHandle("kbteste", "C:/KBs/KBTeste") };
+
+            var ex = Assert.Throws<KbResolutionException>(() => resolver.Resolve(null, Array.Empty<KbHandle>(), known));
+            Assert.Equal("KB_CONTEXT_REQUIRED", ex.Code);
+            Assert.Contains("DefaultConflict", ex.Message);
+        }
+
         [Fact]
         public void Throws_not_found_when_default_kb_is_missing_from_declared_list()
         {
