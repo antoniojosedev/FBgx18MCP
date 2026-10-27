@@ -1653,8 +1653,12 @@ namespace GxMcp.Worker.Services
 
         private static bool ExecuteBuildAll(object kbHandle, IBuildEngine engine, Action<string, bool> lineSink)
         {
+            var events = Artech.Architecture.Common.Events.EventsService.Events;
+            bool originallySuspended = events.EventsSuspended;
             try
             {
+                if (SdkEventSuppressionScope.IsActive)
+                    throw new InvalidOperationException("Build All cannot start during SDK write-event isolation.");
                 object task = Activator.CreateInstance(_typeBuildAll);
                 SetProp(task, "KB", kbHandle);
                 SetProp(task, "ForceRebuild", false);
@@ -1663,25 +1667,34 @@ namespace GxMcp.Worker.Services
                 SetProp(task, "DoNotExecuteReorg", true);
                 SetProp(task, "DetailedNavigation", false);
                 SetProp(task, "Output", "IDE");
-                SetProp(task, "EventsSuspended", true);
+                // BuildEventsService consumes BeforeBuild/AfterCompile/AfterBuild from
+                // this broker. Suspending it also skips configured shell events (#696).
+                events.EventsSuspended = false;
                 SetProp(task, "BuildEngine", engine);
 
                 var execute = _typeBuildAll.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
                 if (execute == null)
                 {
-                    Logger.Error("[BUILD-INPROCESS] BuildAll.Execute method not found");
+                    lineSink("[GXMCP-BUILD-ALL] error: BuildAll.Execute method not found; no build was executed.", true);
                     return false;
                 }
                 object result = execute.Invoke(task, null);
                 bool ok = result is bool b && b;
-                if (!ok) Logger.Warn("[BUILD-INPROCESS] BuildAll.Execute returned false");
+                if (!ok)
+                    lineSink("[GXMCP-BUILD-ALL] error: BuildAll task did not report success (Execute returned "
+                        + (result is bool ? "false" : "a non-boolean result")
+                        + "). Inspect the preceding SDK output; do not automatically repeat configured build commands.", true);
                 return ok;
             }
             catch (Exception ex)
             {
                 LogExceptionChain("BuildAll", ex);
-                lineSink("[GXMCP-BUILD-ALL] BuildAll task failed: " + ex.Message, true);
+                lineSink("[GXMCP-BUILD-ALL] error: BuildAll task failed: " + ExceptionRoot.Unwrap(ex).Message, true);
                 return false;
+            }
+            finally
+            {
+                events.EventsSuspended = originallySuspended;
             }
         }
 
