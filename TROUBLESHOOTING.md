@@ -194,12 +194,12 @@ It reports the .NET runtimes detected.
 
 ### "Worker idle timeout" — first request slow
 
-Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 60) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
+Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 30) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
 
 To keep it warm longer, edit `config.json`:
 
 ```json
-{ "Server": { "WorkerIdleTimeoutMinutes": 30 } }
+{ "Server": { "WorkerIdleTimeoutMinutes": 120 } }
 ```
 
 ### Build artifacts locked / "file in use" when building in GeneXus IDE

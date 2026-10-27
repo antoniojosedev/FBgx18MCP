@@ -149,9 +149,10 @@ namespace GxMcp.Gateway
             Program.Log("[Gateway] shared_worker_host_started pid=" + host.Id + " identity=" + identity.Key);
         }
 
-        private static int ResolveIdleTimeoutMs(Configuration config)
+        // An absent Server section uses the same default as an isolated Worker (issue #692).
+        internal static int ResolveIdleTimeoutMs(Configuration config)
         {
-            int minutes = config.Server?.WorkerIdleTimeoutMinutes ?? 60;
+            int minutes = config.Server?.WorkerIdleTimeoutMinutes ?? new ServerConfig().WorkerIdleTimeoutMinutes;
             if (minutes <= 0) return 60 * 60 * 1000;
             return Math.Min(minutes * 60 * 1000, 24 * 60 * 60 * 1000);
         }
