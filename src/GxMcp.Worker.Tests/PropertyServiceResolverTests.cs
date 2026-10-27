@@ -438,6 +438,57 @@ namespace GxMcp.Worker.Tests
             };
         }
 
+        // issue #701: File objects expose NetExtractFolder/NetCoreExtractFolder as the SDK
+        // DirectoryType, a class with a string TypeConverter. Values the IDE stores and
+        // `get` returns must pass validation and coerce to a DirectoryType.
+        [Theory]
+        [InlineData("NetExtractFolder", "bin")]
+        [InlineData("NetCoreExtractFolder", "bin")]
+        [InlineData("NetExtractFolder", ".")]
+        [InlineData("NetCoreExtractFolder", ".\\")]
+        [InlineData("NetExtractFolder", "")]
+        public void DirectoryTypeValuesAreAcceptedAndCoerced(string propertyName, string value)
+        {
+            var type = typeof(Artech.Genexus.Common.CustomTypes.DirectoryType);
+            dynamic container = Container(
+                Property(propertyName, new Artech.Genexus.Common.CustomTypes.DirectoryType("bin"), type, readOnly: false));
+
+            Assert.Null(PropertyService.ValidatePropertyWrite(container, propertyName, value));
+
+            Assert.True(PropertyService.TryConvertToType(value, type, out object converted));
+            var directory = Assert.IsType<Artech.Genexus.Common.CustomTypes.DirectoryType>(converted);
+            Assert.Equal(value, directory.Location);
+        }
+
+        // issue #701, live: on a File whose folder was never set the SDK Property has no
+        // Definition and a null Value, so the raw string was stored into the DirectoryType
+        // property, never persisted, and the single-property set still reported success.
+        // Uses the real SDK property bag so the entry shape matches the KB.
+        [Fact]
+        public void UnsetDirectoryTypePropertyCoercesFromTheSdkDescriptor()
+        {
+            var bag = new Artech.Common.Properties.PropertiesObject();
+            bag.AddDefinition(new Artech.Common.Properties.PropDefinition("NetExtractFolder", typeof(Artech.Genexus.Common.CustomTypes.DirectoryType)));
+            Assert.Null(bag.GetPropertyValue("NetExtractFolder"));
+            dynamic container = Container();
+            ((IDictionary<string, object>)container)["Properties"] = bag.Properties;
+
+            Assert.Equal(typeof(Artech.Genexus.Common.CustomTypes.DirectoryType), PropertyService.GetPropertyTargetType(container, "NetExtractFolder"));
+            Assert.Equal(typeof(Artech.Genexus.Common.CustomTypes.DirectoryType), PropertyService.ResolvePropertyEntryType(bag.Properties.Single()));
+            Assert.True(PropertyService.TryConvertToType(".\\", PropertyService.GetPropertyTargetType(container, "NetExtractFolder"), out object coerced));
+            Assert.Equal(".\\", Assert.IsType<Artech.Genexus.Common.CustomTypes.DirectoryType>(coerced).Location);
+            Assert.Null(PropertyService.ValidatePropertyWrite(container, "NetExtractFolder", "bin"));
+        }
+
+        [Fact]
+        public void ClassWithoutStringConverterIsStillRejected()
+        {
+            dynamic container = Container(
+                Property("Opaque", new object(), typeof(System.IO.MemoryStream), readOnly: false));
+
+            Assert.StartsWith("InvalidPropertyValue", PropertyService.ValidatePropertyWrite(container, "Opaque", "bin"), StringComparison.Ordinal);
+        }
+
         private static ExpandoObject Container(params ExpandoObject[] properties)
         {
             dynamic result = new ExpandoObject();
