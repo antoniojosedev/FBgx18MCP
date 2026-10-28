@@ -1619,7 +1619,7 @@
             "type": "boolean"
           },
           "verifyMode": {
-            "description": "Omitted: semantic for Structure,…",
+            "description": "Omitted: semantic for Structure and…",
             "enum": [
               "semantic",
               "normalized",
