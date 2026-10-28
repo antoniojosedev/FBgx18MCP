@@ -42,7 +42,10 @@ namespace GxMcp.Gateway.Tests
                 ToolProfileFilter.Filter(tools, "authoring");
             }
 
-            int iterations = 10000;
+            // Each uncached Filter costs ~1ms, so 10,000 iterations made this report-only
+            // benchmark the second-slowest Gateway test (24s per CI run). 500 still gives a
+            // stable us/op figure; raise it locally when comparing an optimization.
+            int iterations = 500;
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
@@ -96,8 +99,8 @@ namespace GxMcp.Gateway.Tests
             string report = $@"
 === TOOL_PROFILE_FILTER_BENCHMARK ===
 ANTES (Uncached):
-  Filter 'core' (11 tools): {coreUsPerOp:F2} us/op, Gen0 Collections (10k ops): {gen0Core}
-  Filter 'authoring' (29 tools): {authUsPerOp:F2} us/op, Gen0 Collections (10k ops): {gen0Auth}
+  Filter 'core' (11 tools): {coreUsPerOp:F2} us/op, Gen0 Collections ({iterations} ops): {gen0Core}
+  Filter 'authoring' (29 tools): {authUsPerOp:F2} us/op, Gen0 Collections ({iterations} ops): {gen0Auth}
 DEPOIS (Cached GetOrCreateFiltered):
   GetOrCreateFiltered 'core': {cachedCoreNsPerOp:F1} ns/op, Gen0 Collections (100k ops): {gen0CachedCore}
   GetOrCreateFiltered 'authoring': {cachedAuthNsPerOp:F1} ns/op, Gen0 Collections (100k ops): {gen0CachedAuth}
