@@ -45,10 +45,22 @@ namespace GxMcp.Worker.Helpers
             try { Logger.Info("[SdkProbe] " + line); } catch { }
         }
 
+        /// <summary>
+        /// The dump reflects over the whole SDK assembly and appends ~1,100 lines one file write at a
+        /// time. It runs on the STA lane, so it held every queued command for ~3 s on the first layout
+        /// read of each Worker (for example a post-open delta refresh). Off unless explicitly enabled.
+        /// </summary>
+        internal static Func<string> EnabledSetting { get; set; } =
+            () => Environment.GetEnvironmentVariable("GXMCP_WEBFORM_SDK_PROBE");
+
+        internal static bool IsEnabled() => string.Equals(EnabledSetting(), "1", StringComparison.Ordinal);
+
+        internal static bool HasDumped => Volatile.Read(ref s_dumped) != 0;
+
         public static void DumpOnce(object part)
         {
-            try { Logger.Info("[SdkProbe] DumpOnce entered, part is " + (part == null ? "null" : part.GetType().FullName)); } catch { }
-            if (part == null) return;
+            if (part == null || !IsEnabled()) return;
+            try { Logger.Info("[SdkProbe] DumpOnce entered, part is " + part.GetType().FullName); } catch { }
             if (Interlocked.Exchange(ref s_dumped, 1) != 0)
             {
                 try { Logger.Info("[SdkProbe] already dumped, skipping"); } catch { }

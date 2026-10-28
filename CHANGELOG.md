@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- **A Worker's first WebForm/Layout read no longer stalls every queued command for about three seconds.** That read always wrote a reflection dump of the SDK part types (`webform-sdk-probe.log`, about 1,100 lines, one file append per line) on the Worker's single STA lane. Behind a post-open index refresh of a changed object this delayed unrelated requests, for example an `apply_pattern` refusal that took 62 ms of SDK work waited 3.2 s. The dump is now off unless `GXMCP_WEBFORM_SDK_PROBE=1`.
 - Standalone native reads now obtain content and token metadata through one private serializable SQL read transaction with fresh caches; a failed or missing session cannot fall back to a new connection. The reader bounds its own lock waits, but writer blocking and active-session handoff remain unverified. MCP reads stay SDK-backed.
 - Native root-module lookup converts SQL GUIDs before applying an empty-string fallback and refuses duplicate or malformed root candidates instead of choosing by row order.
 - Standalone native page reads resolve the SDK `Source` alias for a non-generated Procedure with only a stored `Rules` text part. The page keeps the requested `Source` label and the Rules content/token; multiple candidate text parts, duplicate Rules, other object kinds and explicit missing parts remain refused. MCP read routing is unchanged.
