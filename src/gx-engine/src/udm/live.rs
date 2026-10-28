@@ -97,7 +97,20 @@ fn read_batch(sql: &str, marker: &str) -> Result<String, String> {
     Ok(format!("{sql}\nGO\nPRINT '{marker}';\nGO\n"))
 }
 
+// No database settings are changed. Range locks keep source, identity and timestamps
+// coherent even when snapshot isolation is unavailable; lock waits are bounded.
+const CONSISTENT_READ_START: &str = "SET NOCOUNT ON; SET XACT_ABORT ON; SET LOCK_TIMEOUT 10000; SET DEADLOCK_PRIORITY LOW; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; BEGIN TRANSACTION; SELECT @@TRANCOUNT;";
+
 impl ReadSession {
+    pub fn start_consistent(info: &KbConnectionInfo) -> Result<Self, String> {
+        let mut session = Self::start(info)?;
+        let state = session.exchange(CONSISTENT_READ_START)?;
+        if state.trim() != "1" {
+            return Err("sqlcmd did not establish the consistent read transaction".into());
+        }
+        Ok(session)
+    }
+
     pub fn start(info: &KbConnectionInfo) -> Result<Self, String> {
         use std::io::Read;
         use std::process::Stdio;
@@ -127,6 +140,12 @@ impl ReadSession {
     }
 
     pub fn query(&mut self, sql: &str) -> Result<String, String> {
+        // Validate before sending; only the private startup path accepts transaction control.
+        read_batch(sql, "validate")?;
+        self.exchange(sql)
+    }
+
+    fn exchange(&mut self, sql: &str) -> Result<String, String> {
         use std::io::{BufRead, Write};
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -139,7 +158,7 @@ impl ReadSession {
                 .map_err(|error| error.to_string())?
                 .as_nanos(),
         );
-        let batch = read_batch(sql, &marker)?;
+        let batch = format!("{sql}\nGO\nPRINT '{marker}';\nGO\n");
         self.input
             .write_all(batch.as_bytes())
             .and_then(|_| self.input.flush())
