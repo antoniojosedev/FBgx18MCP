@@ -45,6 +45,16 @@
       "description": "Gateway .NET tests excluding ProcessSmoke (help budgets, goldens, tool help); no SDK, KB or Cloud",
       "argv": ["dotnet", "test", "src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj", "-c", "Release", "--filter", "Category!=ProcessSmoke", "--logger", "console;verbosity=minimal"],
       "timeoutMs": 600000
+    },
+    "rust-clippy": {
+      "description": "gx-engine clippy over all targets with warnings denied (CODING_STANDARDS.md validation lanes)",
+      "argv": ["cargo", "clippy", "--manifest-path", "src/gx-engine/Cargo.toml", "--all-targets", "--", "-D", "warnings"],
+      "timeoutMs": 600000
+    },
+    "rust-test": {
+      "description": "gx-engine cargo test suite (offline unit tests)",
+      "argv": ["cargo", "test", "--manifest-path", "src/gx-engine/Cargo.toml"],
+      "timeoutMs": 600000
     }
   }
 }

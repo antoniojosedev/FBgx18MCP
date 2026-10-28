@@ -66,6 +66,11 @@ pub struct LoadedObject {
     pub object: KbObject,
     /// Every served stored part name of the object, in composition order.
     pub stored_parts: Vec<String>,
+    /// The exact active-model row this object was loaded from. The version id
+    /// selects the `ObjectSaved` output that carries the SDK's last update.
+    pub entity_type_id: i32,
+    pub entity_id: i32,
+    pub entity_version_id: i32,
 }
 
 /// Universal Data Model reader hydrating objects directly into the `gx-engine` catalog.
@@ -399,6 +404,9 @@ impl UdmReader {
         Ok(Some(LoadedObject {
             object,
             stored_parts,
+            entity_type_id: record.entity_type_id,
+            entity_id: record.entity_id,
+            entity_version_id: record.entity_version_id,
         }))
     }
 

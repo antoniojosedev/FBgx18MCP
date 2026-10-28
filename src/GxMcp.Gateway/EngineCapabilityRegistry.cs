@@ -529,6 +529,42 @@ namespace GxMcp.Gateway
                 notes: "Storage reader/decoder/hydration measured by a bounded live LocalDB read; the writer mutates its in-process store only and persists nothing to a live Knowledge Base. Not a full-parity claim: MCP read parity (SDK identity, readFreshness, timestamp/parent identity, part-text normalization and the versionToken that genexus_edit compares) and persistent writes are not established. It declares no consumer and serves nothing. It is the capability id that genexus_read and genexus_edit report when they are deferred: that deferral is the explicit routing policy EngineRoutedOperations.DeferredOperationCapabilityIds (SDK under Fallback=sdk, EngineOperationOutsideAdmittedSpace under Fallback=error), not an evidence claim. The only operation served on this storage is the narrower udm_type_query record."),
 
             new EngineCapability(
+                id: "udm_current_environment",
+                title: "Current environment of an active Design model with exactly one stored environment",
+                engineSurface: "kb-environment over a fresh serializable UDM model read",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/udm/client/environment.rs; src/GxMcp.Gateway.Tests/NativeReadOnlyRoutingLiveTests.cs; docs/engine_backend.md (Current environment). Bounded read-only SDK-vs-native comparison on the independently isolated KBTesteTimestamp clone: active trunk model 1/version 0, single .NET environment; native CLI and SDK get_environment agreed, SDK version inventory unchanged, Gateway/Worker cleanup passed with zero logged errors. Local evidence: C:/tmp/gxe-goal-10pct/native-env-1. This is one fixture, not full SDK/environment parity.",
+                consumers: new[] { "genexus_kb.get_environment" },
+                notes: "Only action=get_environment, with a ready matching Worker active-version snapshot before/after the read and exactly one environment under that Design model. Native scope selection and name lookup share one serializable read-only transaction. Multiple/missing environments, unknown/changed scope and unsupported arguments fall back or fail closed; no native selection, mutation, list_environments or build semantics. auto/sdk retain the SDK."),
+
+            new EngineCapability(
+                id: "udm_procedure_list",
+                title: "Bounded nonempty Procedure pages for genexus_list_objects",
+                engineSurface: "kb-list-procedures over a fresh serializable active-model UDM read",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/udm/client/listing.rs; src/GxMcp.Gateway/EngineProcedureListContract.cs; src/GxMcp.Gateway.Tests/NativeReadOnlyRoutingLiveTests.cs; docs/engine_backend.md (Procedure listing). On the isolated KBTesteTimestamp clone, retained SDK pages offset 0 and 3 (limit 3) matched native names, order, total 201 and lastUpdate aggregate bounds; offset Int32.MaxValue matched total and empty result. Local evidence: C:/tmp/gxe-goal-10pct/native-list-1. This is one fixture, not full list_objects parity.",
+                consumers: new[] { "genexus_list_objects" },
+                notes: "Only typeFilter=Procedure, explicit limit 1..100, optional Int32 offset and explicit fields limited to name/type. Names must be nonempty unique ASCII so SDK OrdinalIgnoreCase order is reproduced; non-ASCII, case collisions, empty pages, other filters, sorts, cursors, verbose rows and changed/unknown Worker scope fall back or fail closed. auto/sdk retain the SDK."),
+
+            new EngineCapability(
+                id: "udm_procedure_inspect",
+                title: "Minimal inspection of one Procedure for genexus_inspect",
+                engineSurface: "kb-inspect over a fresh serializable active-model UDM read",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/udm/client/inspect.rs; src/GxMcp.Gateway/EngineProcedureInspectContract.cs; src/GxMcp.Gateway.Tests/NativeReadOnlyRoutingLiveTests.cs; docs/engine_backend.md (Procedure inspection). On the isolated KBTesteTimestamp clone, six retained SDK minimal inspections (two GeneXus library Procedures with three stored parts, four user Procedures with seven) matched native name, GUID, entity key, module path, description, lastUpdate, lastModifiedBy and availableParts. Local evidence: C:/tmp/gxe-goal-10pct/native-inspect-1 and sdk-inspect-oracle-1. This is one fixture, not full inspect parity.",
+                consumers: new[] { "genexus_inspect" },
+                notes: "Only an exact-case ASCII name with explicit type=Procedure and projection=minimal, a ready matching Worker active-version snapshot before/after the read, and no per-KB genexus_memory store. Same-named entities of any other type, folders in the module chain, unknown part types, disagreeing model/entity user or description, missing GUID/timestamp/user and changed/unknown scope fall back or fail closed. Standard/verbose projections, include, guid/entityKey/path selectors and every other type stay on the SDK. auto/sdk retain the SDK."),
+
+            new EngineCapability(
+                id: "udm_kb_version_list",
+                title: "KB version tree for genexus_kb_version action=list",
+                engineSurface: "kb-versions over a fresh serializable read of stored KnowledgeBaseVersions, User and KnowledgeBase entities",
+                status: EngineCapabilityStatus.Parity,
+                evidence: "src/gx-engine/src/udm/client/versions.rs; src/GxMcp.Gateway/EngineKbVersionListContract.cs; src/GxMcp.Gateway.Tests/NativeReadOnlyRoutingLiveTests.cs; docs/engine_backend.md (KB version list). On the isolated KBTesteTimestamp clone (trunk KBTeste, frozen TimestampAuthorityFreeze, branch TimestampAuthorityBranch), native names, descriptions, frozen/branch flags, parents, users, lastUpdate and activeVersion matched the retained SDK list. Local evidence: C:/tmp/gxe-goal-10pct/native-versions-1. This is one fixture, not full version-tree parity.",
+                consumers: new[] { "genexus_kb_version.list" },
+                notes: "Only explicit action=list with a ready matching Worker active-version snapshot before/after the read. Every stored version must be visible, own exactly the Design model its data names, and resolve its parent and user; hidden, dangling or ambiguous versions, an absent action, changed/unknown scope and every other action (changed_objects, freeze, branch, set_active, revert) stay on the SDK or fail closed. Version order is stored-id order, matched on one fixture only. Provenance labels (source, lastUpdateSource, createdAtSource/Note) name the stored entity instead of the SDK property. auto/sdk retain the SDK."),
+
+            new EngineCapability(
                 id: "udm_type_query",
                 title: "Field-limited, type-only genexus_query served through kb-query",
                 engineSurface: "gateway EngineQueryContract admission + gx-engine kb-query over the UDM reader",

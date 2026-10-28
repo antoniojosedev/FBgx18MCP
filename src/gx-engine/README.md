@@ -154,6 +154,17 @@ native directory/connection-file inputs and bind the sole Design model's actual
 id. They cannot name an active version, so multi-model KBs are refused through
 their existing input-error contract. Portable JSON catalogs are unaffected.
 
+Standalone `kb-read` reads (including `--page --client mcp`) now load their source and
+token metadata through a private serializable SQL read transaction, without reusing
+catalog caches. Lock waits are capped at ten seconds; a failed session is discarded
+without recreation or query replay. The read transaction is released when the private
+session closes, including on errors. This does not change database isolation settings.
+In-memory tests use a detached storage copy. Resolving names currently scans the
+active model, so its range locks can briefly block IDE/SDK writers; the writer's own
+wait time is not bounded by the reader's lock timeout. This boundary does not yet establish
+active-session scope handoff or concurrent edit/read-to-write workflow parity;
+`genexus_read` stays SDK-backed.
+
 Standalone `kb-read` projects the evidenced design-class `StyleClass:<type-guid>Name`
 wrapper to `StyleClass:Name` in tokenized source responses, preserving literals
 and comments. Raw reader/codegen inputs are unchanged. This displayed source is
