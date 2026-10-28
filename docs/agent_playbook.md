@@ -399,17 +399,27 @@ GeneXus 18 grammar. Expose multiple verbs with per-Procedure REST instead.
 
 - Move an existing object with
   `genexus_properties action=move name=<obj> destination=<Folder-or-Module>`.
-  Use `targetModule` or `destKind=Folder|Module` only when needed.
-- Use `dryRun=true` to preview the destination. For writes, pass the prior
-  `versionToken` as `baseVersion`; the service snapshots parts and authored
-  properties, verifies the committed parent/content, and rolls back on failure
-  by default.
+  `destination` is a name, a path (`Root Module/<Module>/<Folder>`, prefix
+  optional) or a container GUID. A name shared by several containers returns
+  `DestinationAmbiguous` with each candidate's path and GUID; use the path, the
+  GUID, `destKind=Folder|Module` or `targetModule` to choose.
+- Use `dryRun=true` to preview the move: it resolves the destination and runs the
+  same preflight as the write (name already used in the destination module,
+  destination inside the object, imported module, SDK persist path), so it
+  refuses with the same code the write would, and it returns the `versionToken`.
+  A real move needs that token as `baseVersion`; the service snapshots parts and
+  authored properties, verifies the committed parent/content with a fresh read,
+  and rolls back on failure by default (`rollback.verified` says whether a fresh
+  read confirmed the restore).
 - Move performs no Specify, Generate, Build, Rebuild, reorganization,
   execution, or tests.
-- Create directly in a container with `folder=<name>` or `module=<name>`;
-  placement is reported in the response.
-- Placement properties passed to `action=set` are routed to the move service.
-- After a move, `list`/`inspect` invalidate hierarchy caches immediately.
+- Create directly in a container with `folder=<name>`, `module=<name>` or
+  `parentPath=<path>`. `genexus_create action=object_atomic` resolves the
+  destination before creating anything, proves the position with a fresh read
+  (`identity.path`, `placement.verified`) and deletes the object again, with the
+  absence confirmed, if it cannot be placed (`AtomicCreatePlacementFailed`).
+  Plain `action=object` creates in the Root Module and moves afterwards,
+  reporting the move under `placement`.
 
 The containers themselves are created with `genexus_create type=Folder|Module`.
 The facade's empty `KBObject.Parent`/`Module` setters are misleading; runtime
