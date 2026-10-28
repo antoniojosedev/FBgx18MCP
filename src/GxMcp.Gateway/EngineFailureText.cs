@@ -13,16 +13,35 @@ namespace GxMcp.Gateway
     {
         internal const string RedactedMarker = "[redacted]";
 
-        // `Password=...`, `pwd: ...`, `Senha=...`, `SQLCMDPASSWORD=...`, quoted or bare values.
-        // After the separator only spaces/tabs are skipped, so a prompt such as "Password:" that ends
-        // its line does not swallow the next line.
+        // One quoted value shape for `Password=...`, `pwd: ...`, `SQLCMDPASSWORD=...` and
+        // sqlcmd's `-P <password>`. A JSON diagnostic escapes an inner quote as `\"`; the
+        // leading and trailing backslash are therefore optional. The lookahead recognises a
+        // closing quote only when it is followed by a delimiter rather than the rest of the
+        // secret, so a password containing an escaped quote stays inside one match. The greedy
+        // alternatives are a bounded fallback for malformed text: masking too much is safer
+        // than leaking. After the separator only spaces/tabs are skipped, so a prompt such as
+        // "Password:" that ends its line does not swallow the next line.
+        private const string QuotedCredentialValuePattern =
+            @"\\?""(?:\\.|[^""\\\r\n])*?\\?""(?=[\s\p{P}\p{S}]|$)"
+            + @"|'(?:\\.|[^'\\\r\n])*?'(?=[\s\p{P}\p{S}]|$)"
+            + @"|\\?""(?:\\.|[^""\\\r\n])*\\?"""
+            + @"|'(?:\\.|[^'\\\r\n])*'";
+
+        private const string CredentialValuePattern =
+            QuotedCredentialValuePattern + @"|(?:\\.|[^\s;,&""'])+";
+
+        // sqlcmd's -P value is either quoted or a single non-whitespace token. Keep the broad
+        // unquoted fallback after the quoted alternatives so an embedded quote is still masked.
+        private const string SqlcmdValuePattern = QuotedCredentialValuePattern + @"|\S+";
+
         private static readonly Regex SecretAssignment = new Regex(
-            @"(?<name>\b\w*(?:password|passwd|pwd|senha|secret|token)\b[ \t]*[=:][ \t]*)(?<value>""[^""\r\n]*""|'[^'\r\n]*'|[^\s;,&""']+)",
+            @"(?<name>\b\w*(?:password|passwd|pwd|senha|secret|token)\b[ \t]*[=:][ \t]*)(?<value>"
+            + CredentialValuePattern + @")",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         // sqlcmd's `-P <password>` switch.
         private static readonly Regex SqlcmdPasswordSwitch = new Regex(
-            @"(?<name>(?:^|\s)-P[ \t]*)(?<value>""[^""\r\n]*""|'[^'\r\n]*'|\S+)",
+            @"(?<name>(?:^|\s)-P[ \t]*)(?<value>" + SqlcmdValuePattern + @")",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
         internal static string Redact(string? text)
