@@ -12,6 +12,48 @@ namespace GxMcp.Worker.Tests
 {
     public sealed class EventsSaveIsolationTests
     {
+        private static Dictionary<string, string> NewWwpBundle() => new Dictionary<string, string>
+        {
+            ["Artech.Architecture.Common"] = "978fab2afad4daaa28aecffd5cd327367b1bb9c0a8f027cfda74911a294eac12",
+            ["Artech.Genexus.Common"] = "cb7676857b75b817f5717edb37c4e19fbc06b2bb07feed10e64d74cb9bb159da",
+            ["Artech.Udm.Framework"] = "9ba54b1a27a320c10cefab53a204b9e9ed9b027f6f025b7e0122224b5a71e86c",
+            ["Artech.Common.Properties"] = "89cf957262dd5eee40d76b281abc5bb978881bb99959578d11a912fc7c069ae6",
+            ["Artech.Packages.Patterns"] = "1f5baabe79d15279f0e1759053b512cc880cf695553459dd860a01120896aba8",
+            ["DVelop.Patterns.WorkWithPlus"] = "3c2ccea639862d7773ed10210aa9283d3c55949dbdb930aeb557c4c3c8441f38",
+            ["DVelop.Extensions.WWPPackagesCommon"] = "cb343ab63adf5a41289bbb24d243616582cf7a8b7b89c4df24e04d231c7a4794",
+            ["DVelop.Extensions.UserControls"] = "3bafe1786151c1389173281b4bc68013216f11aa8d31f3b85d3f238bf3836bc2",
+            ["DVelop.Extensions.WWPPackages"] = "c61c891602067adfd5e1d8cf9f93d279fce6be2bc75ed580b8c099d323f5400f"
+        };
+
+        [Fact]
+        public void NewWwpBundle_RequiresEveryExactAssembly_RejectsMixtures()
+        {
+            var bundle = NewWwpBundle();
+            Assert.Equal("18.0.16.189595+wwp16.2.0.8386", EventsSaveIsolation.MatchAuditedBuild(bundle));
+            foreach (var name in new List<string>(bundle.Keys))
+            {
+                var missing = NewWwpBundle(); missing.Remove(name);
+                Assert.Null(EventsSaveIsolation.MatchAuditedBuild(missing));
+                var changed = NewWwpBundle(); changed[name] = "changed";
+                Assert.Null(EventsSaveIsolation.MatchAuditedBuild(changed));
+            }
+            bundle["DVelop.Patterns.WorkWithPlus"] = "16e15bcb8eaef779abd5b8ef9d33c724f58406979496612a253473688b52fb02";
+            Assert.Null(EventsSaveIsolation.MatchAuditedBuild(bundle));
+        }
+
+        [Fact]
+        public void CompleteBundle_PendingProofCannotAuthorizeBusinessObjectsOrUnknownStatus()
+        {
+            var pending = JObject.Parse("{status:'pending',syntheticObject:'SyntheticAuditOnly'}");
+            Assert.True(EventsU16BundleAudit.MaySaveTarget(pending, "SyntheticAuditOnly"));
+            Assert.False(EventsU16BundleAudit.MaySaveTarget(pending, "BusinessObject"));
+            Assert.False(EventsU16BundleAudit.MaySaveTarget(pending, ""));
+            Assert.False(EventsU16BundleAudit.MaySaveTarget(null, "SyntheticAuditOnly"));
+            Assert.False(EventsU16BundleAudit.MaySaveTarget(JObject.Parse("{status:'unknown'}"), "BusinessObject"));
+            Assert.True(EventsU16BundleAudit.MaySaveTarget(JObject.Parse("{status:'verified'}"), "BusinessObject"));
+            Assert.Throws<InvalidOperationException>(() => EventsU16BundleAudit.RequireExactHash("audited", "changed", "SDK"));
+        }
+
         [Theory]
         [InlineData("AuditedAssemblies", "18.0.16.189550")]
         [InlineData("UpdatedU16Assemblies", "18.0.16.189595")]

@@ -58,8 +58,10 @@ also read [`AGENTS.md`](../AGENTS.md).
 - [Capability release states](capability-release-states.md).
 - [Tool identity registry](tool-identity-registry.md) and the generated
   [operation contract inventory](operation-contract-inventory.json).
-- [Required Events save isolation](events-object-save-isolation.md) and the
-  [restricted U16 Events save candidate](events-save-u16-candidate.md).
+- [Required Events save isolation](events-object-save-isolation.md) (audited SDK
+  bundles, their manifests and the
+  [sanitized U11 native-proof result](evidence/events-u11-wwp16.1-native-proof.json))
+  and the [restricted U16 Events save candidate](events-save-u16-candidate.md).
 - [Snapshot canônico de Events](events-canonical-snapshot.md) — captura de Rules, verificação de Save e rollback.
 
 ## Architecture and debugging

@@ -138,13 +138,14 @@ namespace GxMcp.Worker.Tests
             Assert.NotNull(finding);
             Assert.Equal("SdkBundleNotAudited", finding.Code);
             Assert.Equal(EventsIsolationFindings.BundleLayer, finding.Layer);
-            Assert.Equal("Unverified SDK implementation bundle; isolated Events save requires a complete audited U16 build.", finding.Message);
+            Assert.Equal("Unverified SDK implementation bundle; isolated Events save requires a complete audited SDK bundle (evidence.auditedBundles lists them).", finding.Message);
             Assert.Equal(12, finding.Evidence.SelectToken("loadedBundle['Artech.Genexus.Common'].sha256Prefix").ToString().Length);
             Assert.Equal("18.0.11.54344", finding.Evidence.SelectToken("loadedBundle['Artech.Genexus.Common'].fileVersion").ToString());
             var audited = finding.Evidence["auditedBundles"].Values<string>().ToArray();
             Assert.Contains("18.0.16.189550", audited);
             Assert.Contains("18.0.16.189595", audited);
-            Assert.Equal(2, audited.Length);
+            Assert.Contains(EventsU16BundleAudit.BundleId, audited);
+            Assert.Contains(EventsBundleAudits.U11.BundleId, audited);
             Assert.Contains("do not make an SDK/WorkWithPlus bundle safe", finding.Remediation);
             Assert.Contains("no allowlist by version number", finding.Remediation);
             Assert.DoesNotContain(new string('0', 52), finding.ToJson().ToString());
@@ -182,15 +183,16 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void TheU11SdkBundleOfAnotherMajorMatchesNoAuditedBundle()
+        public void TheU11SdkBundleIsNotAnyOfTheU16Bundles()
         {
             // First 16 hex digits of the SHA-256 of four Artech assemblies of the GeneXus 18 U11 (18.0.11) installation, as
             // the Worker logs them at startup. Matching is by full content hash, so a prefix can only ever be a negative proof.
+            // The U11 bundle has its own manifest (EventsBundleAuditTests); it is not a U16 build.
             string[] u11Prefixes = { "b3f467e31d207ca4", "3c041fe183cc5b58", "5a5f45793e0293c2", "777b9dba655a5336" };
             var auditedHashes = new[] { "AuditedAssemblies", "UpdatedU16Assemblies" }
                 .SelectMany(field => ((Dictionary<string, string>)typeof(EventsSaveIsolation)
                     .GetField(field, System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic).GetValue(null)).Values)
-                .ToArray();
+                .Concat(EventsU16BundleAudit.CriticalHashes.Values).ToArray();
 
             foreach (string prefix in u11Prefixes)
                 Assert.DoesNotContain(auditedHashes, hash => hash.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
