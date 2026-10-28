@@ -235,6 +235,35 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void TickleIde_CoalescesRepeatedWritesToSameObjectWithinWindow()
+        {
+            var posts = 0;
+            var now = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+            IdeConcurrencyDetector.UtcNow = () => now;
+            IdeConcurrencyDetector.ProcessProvider = () => new List<IdeProcessInfo>
+            {
+                new IdeProcessInfo { Id = 1, MainWindowTitle = "GeneXus - SalesKB", MainWindowHandle = new IntPtr(0x1234) }
+            };
+            IdeConcurrencyDetector.PostMessageAction = _ => posts++;
+
+            for (int i = 0; i < 9; i++)
+            {
+                IdeConcurrencyDetector.Check("C:\\KBs\\SalesKB", "SalesKB", "Customer").TickleIde();
+                now = now.AddSeconds(1);
+            }
+            Assert.Equal(1, posts);
+
+            // A different object is independent.
+            IdeConcurrencyDetector.Check("C:\\KBs\\SalesKB", "SalesKB", "Invoice").TickleIde();
+            Assert.Equal(2, posts);
+
+            // After the window elapses the same object may be nudged again.
+            now = now.Add(IdeConcurrencyDetector.TickleCoalesceWindow);
+            IdeConcurrencyDetector.Check("C:\\KBs\\SalesKB", "SalesKB", "Customer").TickleIde();
+            Assert.Equal(3, posts);
+        }
+
+        [Fact]
         public void AttachWarning_AddsWarningToEmptyOrExistingWarningsArray()
         {
             var warningObj = new JObject

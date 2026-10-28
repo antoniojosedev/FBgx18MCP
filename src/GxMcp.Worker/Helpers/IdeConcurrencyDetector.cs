@@ -37,9 +37,17 @@ namespace GxMcp.Worker.Helpers
 
         public bool HasWarning => !string.IsNullOrEmpty(WarningCode);
 
+        /// <summary>
+        /// Identity (KB + object) used to coalesce nudges. When null the nudge is never coalesced.
+        /// </summary>
+        public string TickleKey { get; set; }
+
         public void TickleIde()
         {
             if (TickleAction == null || IdeWindowHandles == null) return;
+            // Issue #715: every nudge makes the IDE surface its "modified, reload?" Confirm
+            // immediately. One nudge per write stacks one dialog per write; coalesce per object.
+            if (!IdeConcurrencyDetector.TryAcquireTickle(TickleKey)) return;
             foreach (var hwnd in IdeWindowHandles)
             {
                 if (hwnd != IntPtr.Zero)
@@ -101,6 +109,37 @@ namespace GxMcp.Worker.Helpers
         internal static Func<IEnumerable<IdeProcessInfo>> ProcessProvider { get; set; } = DefaultProcessProvider;
         internal static Func<IntPtr, IEnumerable<string>> ChildWindowTextProvider { get; set; } = DefaultChildWindowTextProvider;
         internal static Action<IntPtr> PostMessageAction { get; set; } = DefaultPostMessageAction;
+
+        /// <summary>Minimum interval between IDE nudges for the same object (issue #715).</summary>
+        internal static TimeSpan TickleCoalesceWindow { get; set; } = TimeSpan.FromSeconds(30);
+        internal static Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
+
+        private static readonly object TickleLock = new object();
+        private static readonly Dictionary<string, DateTime> LastTickleUtc =
+            new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// True when a nudge for <paramref name="key"/> may be sent now; records it. False while an
+        /// earlier nudge for the same object is still inside the coalescing window.
+        /// </summary>
+        internal static bool TryAcquireTickle(string key)
+        {
+            if (string.IsNullOrEmpty(key) || TickleCoalesceWindow <= TimeSpan.Zero) return true;
+            var now = UtcNow();
+            lock (TickleLock)
+            {
+                if (LastTickleUtc.TryGetValue(key, out var last) && now - last < TickleCoalesceWindow)
+                    return false;
+                if (LastTickleUtc.Count > 256)
+                {
+                    foreach (var k in LastTickleUtc.Where(kv => now - kv.Value >= TickleCoalesceWindow)
+                                                   .Select(kv => kv.Key).ToList())
+                        LastTickleUtc.Remove(k);
+                }
+                LastTickleUtc[key] = now;
+                return true;
+            }
+        }
 
         private static IEnumerable<IdeProcessInfo> DefaultProcessProvider()
         {
@@ -180,6 +219,9 @@ namespace GxMcp.Worker.Helpers
             ProcessProvider = DefaultProcessProvider;
             ChildWindowTextProvider = DefaultChildWindowTextProvider;
             PostMessageAction = DefaultPostMessageAction;
+            TickleCoalesceWindow = TimeSpan.FromSeconds(30);
+            UtcNow = () => DateTime.UtcNow;
+            lock (TickleLock) LastTickleUtc.Clear();
         }
 
         /// <summary>
@@ -189,7 +231,8 @@ namespace GxMcp.Worker.Helpers
         {
             var status = new IdeConcurrencyStatus
             {
-                TickleAction = PostMessageAction
+                TickleAction = PostMessageAction,
+                TickleKey = (kbPath ?? kbName ?? string.Empty).Trim() + "|" + (targetObjectName ?? string.Empty).Trim()
             };
 
             var processes = ProcessProvider?.Invoke()?.ToList() ?? new List<IdeProcessInfo>();
