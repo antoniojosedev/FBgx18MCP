@@ -164,7 +164,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "drift_check", "drift_report", "optimize_analyze", "optimize_suggest", "optimize_report", "sql_ddl", "sql_navigation", "records_query", "types_list", "types_describe", "types_validate", "reorg_impact", "reorg_preview" },
                     mutating: new[] { "sample_data", "records_insert", "records_update", "translations_import" }),
                 ["genexus_versioning"] = Contract(
-                    readOnly: new[] { "history_list", "history_get", "time_travel", "blame", "diff", "diff_generated" },
+                    readOnly: new[] { "history_list", "history_get", "history_diff", "time_travel", "blame", "diff", "diff_generated" },
                     mutating: new[] { "history_save", "history_restore", "undo" }),
                 ["genexus_io"] = Contract(
                     readOnly: new[] { "asset_find", "asset_read", "read_blob", "ocr", "validate_kb_text_files", "validate_text_in_memory", "list_text_files", "text_mirror_status" },

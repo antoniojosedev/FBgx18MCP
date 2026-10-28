@@ -1334,6 +1334,7 @@ namespace GxMcp.Gateway
             string? action = args["action"]?.ToString()?.Trim().ToLowerInvariant();
             return string.Equals(action, "history_get", StringComparison.Ordinal)
                 || string.Equals(action, "history_list", StringComparison.Ordinal)
+                || string.Equals(action, "history_diff", StringComparison.Ordinal)
                 || string.Equals(action, "diff", StringComparison.Ordinal)
                 || string.Equals(action, "diff_generated", StringComparison.Ordinal)
                 || string.Equals(action, "blame", StringComparison.Ordinal);

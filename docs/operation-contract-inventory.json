@@ -5,7 +5,7 @@
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
   "toolCount": 60,
-  "actionCount": 310,
+  "actionCount": 311,
   "tools": [
     {
       "tool": "genexus_k2b_designer",
@@ -2855,6 +2855,16 @@
         },
         {
           "action": "history_get",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": [],
+          "previewSupported": false
+        },
+        {
+          "action": "history_diff",
           "kind": "readOnly",
           "effects": "kb.read",
           "execution": "worker",
