@@ -110,7 +110,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_kb_version` | `list`, `changed_objects` (Design vs frozen, paginated, read-only) | `freeze`, `branch`, `set_active`, `revert` |
 | `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
 | `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `records_query`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `records_insert`, `records_update`, `translations_import` |
-| `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
+| `genexus_versioning` | `history_list`, `history_get`, `history_diff`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
 
 | `genexus_io` | `asset_find`, `asset_read`, `read_blob`, `ocr`, `validate_kb_text_files`, `validate_text_in_memory`, `list_text_files`, `text_mirror_status` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `text_mirror_start`, `text_mirror_stop`, `text_mirror_catchup`, `text_mirror_set_references`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
 | `genexus_variable` | — | `add`, `delete`, `modify` (add/modify accept `dimensions=1|2` with positive `dimensionSizes`; reads expose the persisted fixed-size metadata) |
@@ -151,7 +151,7 @@ Parameter-dependent side effects are classified conservatively in the gateway:
 the requested XPZ file.
 
 Acceptance-path side effects do not change an action's classification. The
-version-store reads `history_get`, `history_list`, `diff`, `diff_generated` and
+version-store reads `history_get`, `history_list`, `history_diff`, `diff`, `diff_generated` and
 `blame` accept an optional `async` flag: it returns an accepted envelope carrying
 `operationId` and `pollTarget` before the read starts and runs it detached, so the
 result is still fetchable through `genexus_lifecycle action=status/result` when the

@@ -408,6 +408,9 @@ namespace GxMcp.Gateway.Tests
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "history_list" }));
             Assert.True(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "history_get" }));
+            // Issue #710: comparing native revisions never writes.
+            Assert.True(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "history_diff" }));
+            Assert.False(Program.IsMutatingTool("genexus_versioning", new JObject { ["action"] = "history_diff" }));
             Assert.True(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "time_travel" }));
             Assert.True(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "blame" }));
 

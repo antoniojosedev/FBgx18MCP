@@ -131,6 +131,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_io", "ocr", "Ocr", "Run")]
         [InlineData("genexus_versioning", "history_list", "History", "list")]
         [InlineData("genexus_versioning", "history_get", "History", "get_source")]
+        [InlineData("genexus_versioning", "history_diff", "History", "diff")]
         [InlineData("genexus_versioning", "history_save", "History", "save")]
         [InlineData("genexus_versioning", "history_restore", "History", "restore")]
         [InlineData("genexus_versioning", "undo", "Undo", "Undo")]
@@ -165,6 +166,25 @@ namespace GxMcp.Gateway.Tests
         {
             var args = new JObject { ["action"] = actionName, ["name"] = "SampleObject", ["type"] = "Procedure" };
             AssertRoute(new OperationsRouter().ConvertToolCall(tool, args), module, action);
+        }
+
+        [Fact]
+        public void History_diff_forwards_both_revisions_part_and_context()
+        {
+            // Issue #710: the Worker compares versionId with toVersionId (0 = current).
+            var converted = new OperationsRouter().ConvertToolCall("genexus_versioning", JObject.Parse(@"{
+                action: 'history_diff', name: 'SampleObject', versionId: 2, toVersionId: 5, part: 'WebForm', context: 1
+            }"));
+            var routed = JObject.FromObject(converted!);
+            Assert.Equal("SampleObject", (string?)routed["target"]);
+            Assert.Equal(2, (int?)routed["versionId"]);
+            Assert.Equal(5, (int?)routed["toVersionId"]);
+            Assert.Equal("WebForm", (string?)routed["part"]);
+            Assert.Equal(1, (int?)routed["context"]);
+
+            var tools = JArray.Parse(File.ReadAllText(FindToolDefinitionsJson()));
+            AssertSchemaProperty(tools, "genexus_versioning", "toVersionId");
+            AssertSchemaProperty(tools, "genexus_versioning", "context");
         }
 
         [Fact]
