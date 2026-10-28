@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- **`genexus_query parent:<Folder>` lists the children of a nested Folder.** The parent index is keyed by the full parent path (`Root Module/NestA1/NestB1`), but `parent:` and `genexus_list_objects parent=` looked it up by the bare name, so they only matched a container whose path was its own name and returned nothing for a Folder below another container. They now match the last path segment and keep entries whose direct parent has that name, as the full-scan fallback already did; same-named Folders in different places are returned together.
 - **A Worker's first WebForm/Layout read no longer stalls every queued command for about three seconds.** That read always wrote a reflection dump of the SDK part types (`webform-sdk-probe.log`, about 1,100 lines, one file append per line) on the Worker's single STA lane. Behind a post-open index refresh of a changed object this delayed unrelated requests, for example an `apply_pattern` refusal that took 62 ms of SDK work waited 3.2 s. The dump is now off unless `GXMCP_WEBFORM_SDK_PROBE=1`.
 - Standalone native reads now obtain content and token metadata through one private serializable SQL read transaction with fresh caches; a failed or missing session cannot fall back to a new connection. The reader bounds its own lock waits, but writer blocking and active-session handoff remain unverified. MCP reads stay SDK-backed.
 - Native root-module lookup converts SQL GUIDs before applying an empty-string fallback and refuses duplicate or malformed root candidates instead of choosing by row order.
