@@ -180,6 +180,73 @@ namespace GxMcp.Worker.Tests
             Assert.Empty(paths);
         }
 
+        // ---- Folder into Folder: the SDK rewrites FolderType to the new parent's type ----
+
+        // Canonical form of a Folder's SerializeToXml captured live (GX18, KBTesteSdk18)
+        // before/after re-parenting it from Root Module into a Folder.
+        private const string ModuleTypeGuid = "c88fffcd-b6f8-0000-8fec-00b5497e2117";
+        private const string FolderTypeGuid = "00000000-0000-0000-0000-000000000008";
+        private const string FolderUnderModule =
+            "Properties/Property[1]/Name[1]=FolderType\n" +
+            "Properties/Property[1]/Value[1]=" + ModuleTypeGuid + "\n" +
+            "Properties/Property[2]/Name[1]=Description\n" +
+            "Properties/Property[2]/Value[1]=Keep\n";
+        private static readonly string FolderUnderFolder = FolderUnderModule.Replace(
+            "Value[1]=" + ModuleTypeGuid, "Value[1]=" + FolderTypeGuid);
+
+        [Fact]
+        public void DiffObjectXml_FolderTypeRewriteToDestinationType_IsTolerated()
+        {
+            var paths = ObjectMoveSnapshot.DiffObjectXml(FolderUnderModule, FolderUnderFolder,
+                "Root Module/MvFoldA", new Guid(FolderTypeGuid));
+            Assert.Empty(paths);
+        }
+
+        [Fact]
+        public void DiffObjectXml_FolderTypeNotMatchingDestinationType_StillFails()
+        {
+            var paths = ObjectMoveSnapshot.DiffObjectXml(FolderUnderModule, FolderUnderFolder,
+                "MvFoldA", new Guid(ModuleTypeGuid));
+            Assert.Contains("Properties/Property[1]/Value[1]", paths);
+        }
+
+        [Fact]
+        public void DiffObjectXml_FolderTypeWithoutDestinationType_IsStrict()
+        {
+            var paths = ObjectMoveSnapshot.DiffObjectXml(FolderUnderModule, FolderUnderFolder, "MvFoldA");
+            Assert.Contains("Properties/Property[1]/Value[1]", paths);
+        }
+
+        [Fact]
+        public void DiffObjectXml_OtherPropertyRewrittenToDestinationType_StillFails()
+        {
+            // Only the property named FolderType is placement bookkeeping; the same GUID
+            // rewrite on any other property (here Property[1] renamed) is authored content.
+            string before = FolderUnderModule.Replace("=FolderType", "=Theme");
+            string after = FolderUnderFolder.Replace("=FolderType", "=Theme");
+            var paths = ObjectMoveSnapshot.DiffObjectXml(before, after, "MvFoldA", new Guid(FolderTypeGuid));
+            Assert.Contains("Properties/Property[1]/Value[1]", paths);
+        }
+
+        [Fact]
+        public void DiffObjectXml_FolderTypeRewriteAlongsideAuthoredChange_ReportsOnlyAuthoredChange()
+        {
+            string after = FolderUnderFolder.Replace("Value[1]=Keep", "Value[1]=Changed");
+            var paths = ObjectMoveSnapshot.DiffObjectXml(FolderUnderModule, after, "MvFoldA", new Guid(FolderTypeGuid));
+            Assert.Equal(new[] { "Properties/Property[2]/Value[1]" }, paths);
+        }
+
+        [Fact]
+        public void DescribePropertyDifferences_NamesTheRejectedProperty()
+        {
+            var described = ObjectMoveSnapshot.DescribePropertyDifferences(FolderUnderModule, FolderUnderFolder,
+                new[] { "Properties/Property[1]/Value[1]" });
+            var entry = Assert.Single(described);
+            Assert.Equal("FolderType", (string)entry["property"]);
+            Assert.Equal(ModuleTypeGuid, (string)entry["before"]);
+            Assert.Equal(FolderTypeGuid, (string)entry["after"]);
+        }
+
         [Fact]
         public void DiffObjectXml_AuthoredElementChange_StillFails()
         {

@@ -2079,6 +2079,17 @@ namespace GxMcp.Gateway
                     if (value != null) trimmed[key] = value;
                 }
             }
+            if (code?.ToString().StartsWith("ControlConditionCarriers", StringComparison.Ordinal) == true)
+            {
+                // Issue #711: a refused WebForm write that would leave a control's Conditions
+                // different in its two property bags. The caller fixes the next call from the
+                // per-control values and the bag the IDE reads.
+                foreach (string key in new[] { "divergences", "canonicalCarrier", "savePathExercised", "dryRun" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
+                }
+            }
             string? status = error["status"]?.ToString();
             if (!string.IsNullOrEmpty(status) &&
                 !string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase))
