@@ -52,6 +52,7 @@ public sealed class EngineProcedureListRoutingTests : EngineRoutingTestBase
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3,\"offset\":-1,\"fields\":[\"name\"]}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3,\"fields\":[\"name\",\"path\"]}")]
+    [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3,\"fields\":[\"name\",\"parent\"]}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3,\"fields\":[\"name\"],\"sort\":\"lastUpdate\"}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3,\"fields\":[\"name\"],\"verbose\":true}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":3,\"fields\":[\"name\"],\"kb\":\"other\"}")]

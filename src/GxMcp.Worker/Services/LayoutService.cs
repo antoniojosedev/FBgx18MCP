@@ -331,13 +331,30 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return Models.McpResponse.Err(
-                    code: "LayoutReadException",
-                    message: ex.Message,
-                    hint: "Inspect the object type and retry; if the KB is closed reopen it first.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Verify the object exists and has a visual part.")),
-                    target: target);
+                return LayoutReadFailure(target, ex);
             }
+        }
+
+        /// <summary>
+        /// Issue #692: a get_tree issued right after KB open failed with the reflection
+        /// wrapper's generic "target of an invocation" message, hiding the SDK cause.
+        /// Report and log the root exception instead.
+        /// </summary>
+        internal static string LayoutReadFailure(string target, Exception ex)
+        {
+            ExceptionRoot.Log("[LAYOUT-READ] failed for '" + target + "'", ex);
+            Exception root = ExceptionRoot.Unwrap(ex) ?? ex;
+            return Models.McpResponse.Err(
+                code: "LayoutReadException",
+                message: root.Message,
+                hint: "The SDK failed while reading this layout. exceptionType and failureTrace name the cause, and the Worker log has a [LAYOUT-READ] line.",
+                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Verify the object exists and has a visual part.")),
+                target: target,
+                extra: new JObject
+                {
+                    ["exceptionType"] = root.GetType().Name,
+                    ["failureTrace"] = ExceptionRoot.FailureTrace(ex)
+                });
         }
 
         public string FindControls(string target, string propertyName = null, string query = null, int limit = 200)
@@ -1065,7 +1082,7 @@ namespace GxMcp.Worker.Services
                 _objectService.MarkReadCacheDirty(obj, "Layout");
                 WriteService.NotePerTargetWrite(target);
 
-                var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
+                var refreshedObj = ReloadForVerification(obj, target, out bool freshReload, out string freshUnavailable);
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
                 if (refreshed.Error != null) return refreshed.Error;
 
@@ -1075,7 +1092,7 @@ namespace GxMcp.Worker.Services
                     for (int attempt = 0; attempt < 20 && !exists; attempt++)
                     {
                         System.Threading.Thread.Sleep(500);
-                        var retryObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
+                        var retryObj = ReloadForVerification(obj, target, out freshReload, out freshUnavailable);
                         var retry = LoadVisualContext(retryObj, target, VisualSurface.Report);
                         if (retry.Error != null) break;
                         exists = ContainsPrintBlock(retry.Document, newName);
@@ -1093,7 +1110,7 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
-                return Models.McpResponse.Ok(target: target, code: "PrintBlockRenamed", result: new JObject
+                return Models.McpResponse.Ok(target: target, code: "PrintBlockRenamed", result: PersistenceConfirmation.Annotate(new JObject
                 {
                     ["name"] = obj.Name,
                     ["operation"] = "RenamePrintBlock",
@@ -1101,7 +1118,7 @@ namespace GxMcp.Worker.Services
                     ["newName"] = newName,
                     ["sourceChanged"] = (bool)sourceChange["changed"],
                     ["sourceChange"] = sourceChange
-                });
+                }, freshReload, freshUnavailable));
             }
             catch (Exception ex)
             {
@@ -1112,6 +1129,23 @@ namespace GxMcp.Worker.Services
                     nextSteps: new JArray(LayoutGetTreeStep(target, "Re-reads the layout to confirm the current state.")),
                     target: target);
             }
+        }
+
+        /// <summary>
+        /// Issue #692: the post-commit read-back of a print-block mutation has to read what the store holds.
+        /// The object the mutation just changed answers for itself, so a read through it proves nothing about
+        /// persistence. The object is reloaded with the SDK cache invalidated; when that is unavailable the
+        /// previous cached resolution is used and <paramref name="fresh"/> is false, which the response reports
+        /// as an unconfirmed check instead of a verified one.
+        /// </summary>
+        private KBObject ReloadForVerification(KBObject committed, string target, out bool fresh, out string unavailableReason)
+        {
+            KBObject reloaded = _objectService.ReloadSavedObjectFresh(committed, out unavailableReason);
+            fresh = reloaded != null;
+            return reloaded
+                ?? _objectService.FindObject(committed.Name, committed.TypeDescriptor?.Name)
+                ?? _objectService.FindObject(target)
+                ?? committed;
         }
 
         public string AddPrintBlock(string target, string printBlockName, int? height, bool appendPrintToSource = true)
@@ -1210,7 +1244,7 @@ namespace GxMcp.Worker.Services
                 _objectService.MarkReadCacheDirty(obj, "Layout");
                 WriteService.NotePerTargetWrite(target);
 
-                var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
+                var refreshedObj = ReloadForVerification(obj, target, out bool freshReload, out string freshUnavailable);
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
                 if (refreshed.Error != null) return refreshed.Error;
 
@@ -1220,7 +1254,7 @@ namespace GxMcp.Worker.Services
                     for (int attempt = 0; attempt < 20 && added == null; attempt++)
                     {
                         System.Threading.Thread.Sleep(500);
-                        var retryObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
+                        var retryObj = ReloadForVerification(obj, target, out freshReload, out freshUnavailable);
                         var retry = LoadVisualContext(retryObj, target, VisualSurface.Report);
                         if (retry.Error != null) break;
                         added = FindPrintBlockByName(retry.Document, printBlockName);
@@ -1238,7 +1272,7 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
-                return Models.McpResponse.Ok(target: target, code: "PrintBlockAdded", result: new JObject
+                return Models.McpResponse.Ok(target: target, code: "PrintBlockAdded", result: PersistenceConfirmation.Annotate(new JObject
                 {
                     ["name"] = obj.Name,
                     ["operation"] = "AddPrintBlock",
@@ -1247,7 +1281,7 @@ namespace GxMcp.Worker.Services
                     ["appendPrintToSource"] = appendPrintToSource,
                     ["sourceChanged"] = (bool)sourceChange["changed"],
                     ["sourceChange"] = sourceChange
-                });
+                }, freshReload, freshUnavailable));
             }
             catch (Exception ex)
             {
@@ -1337,10 +1371,11 @@ namespace GxMcp.Worker.Services
                 _objectService.MarkReadCacheDirty(obj, "Layout");
                 WriteService.NotePerTargetWrite(target);
 
-                // Cold read-back to prove the block is really gone from disk.
-                var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
+                // Read-back through a reloaded object to prove the block is really gone from the store (#692).
+                var refreshedObj = ReloadForVerification(obj, target, out bool freshReload, out string freshUnavailable);
                 var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
-                bool stillThere = refreshed.Error == null && refreshed.Document != null
+                if (refreshed.Error != null) return refreshed.Error;
+                bool stillThere = refreshed.Document != null
                     && ContainsPrintBlock(refreshed.Document, printBlockName);
                 if (stillThere)
                 {
@@ -1352,14 +1387,14 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
-                return Models.McpResponse.Ok(target: target, code: "PrintBlockDeleted", result: new JObject
+                return Models.McpResponse.Ok(target: target, code: "PrintBlockDeleted", result: PersistenceConfirmation.Annotate(new JObject
                 {
                     ["name"] = obj.Name,
                     ["operation"] = "DeletePrintBlock",
                     ["printBlockName"] = printBlockName,
                     ["sourceChanged"] = (bool)sourceChange["changed"],
                     ["sourceChange"] = sourceChange
-                });
+                }, freshReload, freshUnavailable));
             }
             catch (Exception ex)
             {

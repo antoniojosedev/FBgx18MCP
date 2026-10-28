@@ -83,7 +83,8 @@ namespace GxMcp.Worker.Services
             bool specifyOnly = false,
             bool fullDeploy = false,
             bool forceFullBuild = false,
-            IReadOnlyList<string> skipSpecifyTargets = null)
+            IReadOnlyList<string> skipSpecifyTargets = null,
+            bool refuseStaleEnvironmentCopy = false)
         {
             if (status == null) return InProcessBuildOutcome.CouldNotRun;
             if (kbHandle == null)
@@ -168,7 +169,7 @@ namespace GxMcp.Worker.Services
                     {
                         lineSink("[BUILD-INPROCESS] specifyOnly=true — running SpecifyOneOnly (Spec+Gen) only; Compile and deploy are SKIPPED. Use this for a fast spec check, not to produce runnable output.", false);
                         engine.ResetSectionFlags();
-                        bool specOk = ExecuteSpecifyResolved(kbHandle, targets, engine, lineSink)
+                        bool specOk = ExecuteSpecifyResolved(kbHandle, targets, engine, lineSink, refuseStaleEnvironmentCopy)
                             ?? ExecuteSpecifyOneOnly(kbHandle, targets, engine);
                         // Success here means "spec pass ran"; spec errors (if any) were emitted to
                         // the sink and counted. Report Succeeded so the caller surfaces the spec
@@ -867,6 +868,7 @@ namespace GxMcp.Worker.Services
 
         private static bool ExecuteBuildOne(object kbHandle, string objectName, IBuildEngine engine, bool buildCalled)
         {
+            bool brokerWasSuspended = IsSdkEventBrokerSuspended();
             try
             {
                 var typeBuildOne = _typeBuildOne;
@@ -902,6 +904,36 @@ namespace GxMcp.Worker.Services
             {
                 LogExceptionChain("BuildOne(" + objectName + ")", ex);
                 return false;
+            }
+            finally
+            {
+                RestoreSdkEventBroker(brokerWasSuspended);
+            }
+        }
+
+        // ArtechTask.EventsSuspended is not a per-task option: its setter writes the process-global
+        // EventsService.Events switch, and none of BuildOne / BuildAll / IdeWebBuildAndDeploy resets it
+        // (Artech.MsBuild.Common.ArtechTask, SDK 18). A task that suspends SDK events therefore has to give
+        // the switch back itself, or this Worker keeps every later SDK callback off for the rest of its
+        // life (#696). The task still runs with events suspended; what no longer happens is that the
+        // suspension outlives it. The builds that call the build services directly (BuildWithTheseOnly,
+        // batch, compile-only) never touch the switch, so they now always see the state the Worker started
+        // with instead of the one an earlier Build One or Rebuild left behind.
+        private static bool IsSdkEventBrokerSuspended()
+            => Artech.Architecture.Common.Events.EventsService.Events?.EventsSuspended ?? false;
+
+        private static void RestoreSdkEventBroker(bool suspended)
+        {
+            try
+            {
+                var events = Artech.Architecture.Common.Events.EventsService.Events;
+                if (events != null) events.EventsSuspended = suspended;
+            }
+            catch (Exception ex)
+            {
+                // Runs in a finally: a restore that throws would replace the build's own result, and the
+                // caller would then repeat a build that already ran under MSBuild.exe.
+                Logger.Warn("[BUILD-INPROCESS] could not restore the SDK event broker (suspended=" + suspended + "): " + ex.Message);
             }
         }
 
@@ -1417,7 +1449,8 @@ namespace GxMcp.Worker.Services
         // Resolve the keys with the homonym-safe resolver the build path uses and make
         // the same Specifier call SpecifyOneOnly.Specify makes. Returns null when the SDK
         // members are unavailable, so the caller can run the task as before.
-        private static bool? ExecuteSpecifyResolved(object kbHandle, List<string> targets, IBuildEngine engine, Action<string, bool> lineSink)
+        private static bool? ExecuteSpecifyResolved(object kbHandle, List<string> targets, IBuildEngine engine, Action<string, bool> lineSink,
+            bool refuseStaleEnvironmentCopy = false)
         {
             try
             {
@@ -1486,9 +1519,8 @@ namespace GxMcp.Worker.Services
                 // The specifier reads the environment's copy of each object, and only a
                 // build refreshes that copy (CopyModel, after its reorganization check).
                 // Copying it here could hide a pending reorganization, so say it instead.
-                if (staleCopies.Count > 0)
-                    lineSink("warning : changed since the last build: " + string.Join(", ", staleCopies)
-                        + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so this result reflects the source as of the last build.", false);
+                if (ApplyStaleEnvironmentCopyPolicy(refuseStaleEnvironmentCopy, staleCopies, lineSink))
+                    return false;
 
                 object options = Enum.ToObject(_typeBuildOptions, 0);
                 return WithTaskOutput(kbHandle, engine,
@@ -1504,6 +1536,43 @@ namespace GxMcp.Worker.Services
                 return null;
             }
         }
+
+        internal const string StaleSpecifyRefusalCode = "SpecifyStaleEnvironmentCopy";
+
+        internal const string StaleSpecifyRefusalHint =
+            "Nothing was specified: GeneXus specifies the environment's copy of an object, which only a build refreshes, "
+            + "so a spec-check right after an edit would describe the last build's source. "
+            + "Run genexus_lifecycle action=build target=<object> (skipFullDeploy=true) to get diagnostics for the current source.";
+
+        /// <summary>
+        /// Decides what a spec-check does with targets whose design object changed after the
+        /// environment copy GeneXus specifies (#654). A refusing caller (lifecycle
+        /// action=specify) gets an error line and no specification at all; the inline
+        /// save-and-validate paths keep specifying the copy and only warn, because they
+        /// surface the same marker as <c>staleEnvironmentCopy</c>.
+        /// Returns true when the specification was refused.
+        /// </summary>
+        internal static bool ApplyStaleEnvironmentCopyPolicy(
+            bool refuseStaleEnvironmentCopy, IReadOnlyList<string> staleCopies, Action<string, bool> lineSink)
+        {
+            if (staleCopies == null || staleCopies.Count == 0) return false;
+            string names = string.Join(", ", staleCopies);
+            if (refuseStaleEnvironmentCopy)
+            {
+                lineSink("error : [" + StaleSpecifyRefusalCode + "] specification refused, changed since the last build: " + names
+                    + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so the result would describe the source as of the last build, not the current source. "
+                    + "Run genexus_lifecycle action=build target=<object> first.", true);
+                return true;
+            }
+
+            lineSink("warning : changed since the last build: " + names
+                + ". GeneXus specifies the environment's copy of an object, which only a build refreshes, so this result reflects the source as of the last build.", false);
+            return false;
+        }
+
+        internal static bool IsStaleSpecifyRefusal(string output)
+            => !string.IsNullOrEmpty(output)
+               && output.IndexOf("[" + StaleSpecifyRefusalCode + "]", StringComparison.Ordinal) >= 0;
 
         internal static bool IsNeverBuilt(object designObject, object environmentCopy, bool separateEnvironment)
             => separateEnvironment && designObject != null && environmentCopy == null;
@@ -1585,6 +1654,7 @@ namespace GxMcp.Worker.Services
 
         private static bool ExecuteIdeWebBuildAndDeploy(object kbHandle, IBuildEngine engine, bool forceRebuild)
         {
+            bool brokerWasSuspended = IsSdkEventBrokerSuspended();
             try
             {
                 object task = Activator.CreateInstance(_typeIdeWebBuildAndDeploy);
@@ -1611,12 +1681,20 @@ namespace GxMcp.Worker.Services
                 LogExceptionChain("IdeWebBuildAndDeploy", ex);
                 return false;
             }
+            finally
+            {
+                RestoreSdkEventBroker(brokerWasSuspended);
+            }
         }
 
         private static bool ExecuteBuildAll(object kbHandle, IBuildEngine engine, Action<string, bool> lineSink)
         {
+            var events = Artech.Architecture.Common.Events.EventsService.Events;
+            bool originallySuspended = events.EventsSuspended;
             try
             {
+                if (SdkEventSuppressionScope.IsActive)
+                    throw new InvalidOperationException("Build All cannot start during SDK write-event isolation.");
                 object task = Activator.CreateInstance(_typeBuildAll);
                 SetProp(task, "KB", kbHandle);
                 SetProp(task, "ForceRebuild", false);
@@ -1625,25 +1703,34 @@ namespace GxMcp.Worker.Services
                 SetProp(task, "DoNotExecuteReorg", true);
                 SetProp(task, "DetailedNavigation", false);
                 SetProp(task, "Output", "IDE");
-                SetProp(task, "EventsSuspended", true);
+                // BuildEventsService consumes BeforeBuild/AfterCompile/AfterBuild from
+                // this broker. Suspending it also skips configured shell events (#696).
+                events.EventsSuspended = false;
                 SetProp(task, "BuildEngine", engine);
 
                 var execute = _typeBuildAll.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
                 if (execute == null)
                 {
-                    Logger.Error("[BUILD-INPROCESS] BuildAll.Execute method not found");
+                    lineSink("[GXMCP-BUILD-ALL] error: BuildAll.Execute method not found; no build was executed.", true);
                     return false;
                 }
                 object result = execute.Invoke(task, null);
                 bool ok = result is bool b && b;
-                if (!ok) Logger.Warn("[BUILD-INPROCESS] BuildAll.Execute returned false");
+                if (!ok)
+                    lineSink("[GXMCP-BUILD-ALL] error: BuildAll task did not report success (Execute returned "
+                        + (result is bool ? "false" : "a non-boolean result")
+                        + "). Inspect the preceding SDK output; do not automatically repeat configured build commands.", true);
                 return ok;
             }
             catch (Exception ex)
             {
                 LogExceptionChain("BuildAll", ex);
-                lineSink("[GXMCP-BUILD-ALL] BuildAll task failed: " + ex.Message, true);
+                lineSink("[GXMCP-BUILD-ALL] error: BuildAll task failed: " + ExceptionRoot.Unwrap(ex).Message, true);
                 return false;
+            }
+            finally
+            {
+                events.EventsSuspended = originallySuspended;
             }
         }
 

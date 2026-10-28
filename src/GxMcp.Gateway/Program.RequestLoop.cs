@@ -36,6 +36,14 @@ namespace GxMcp.Gateway
                 .ConfigureAwait(false);
         }
 
+        // Gateway-only handlers that read `kb` themselves: worker reload, and the
+        // genexus_kb pool actions (select/set_*/close) that take `kb` as the alias.
+        // Environment actions forward to the single-KB worker, so they still strip it.
+        private static bool KeepsKbArgument(string? toolName, string? action)
+            => string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(toolName, OperationClassifier.KbTool, StringComparison.OrdinalIgnoreCase)
+                    && !OperationClassifier.IsKbEnvironmentAction(toolName, action));
+
         private static JObject BuildStableKbContextError(string code, string message)
         {
             string hint = string.Equals(code, "KB_LEASE_EXPIRED", StringComparison.OrdinalIgnoreCase)
@@ -225,9 +233,9 @@ namespace GxMcp.Gateway
                             var argsObj = paramsObj?["arguments"] as JObject;
                             kbArg = argsObj?["kb"]?.ToString() ?? argsObj?["kbAlias"]?.ToString() ?? argsObj?["alias"]?.ToString();
                             // Strip `kb` from worker-bound args (worker is single-KB scoped),
-                            // but keep it for gateway-only reload so lease bypass and the
-                            // explicit target remain available to the orchestrator below.
-                            if (!string.Equals(toolNameForResolver, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase))
+                            // but keep it for gateway-only reload and KB pool actions so the
+                            // explicit target stays available to the gateway handler.
+                            if (!KeepsKbArgument(toolNameForResolver, resolverAction))
                             {
                                 argsObj?.Remove("kb");
                                 argsObj?.Remove("kbAlias");
@@ -342,7 +350,8 @@ namespace GxMcp.Gateway
                 {
                     // Meta-tools still strip any stray `kb` arg (cosmetic) and leave _currentKb null.
                     var argsObj = (request["params"] as JObject)?["arguments"] as JObject;
-                    argsObj?.Remove("kb");
+                    if (!KeepsKbArgument(toolNameForResolver, resolverAction))
+                        argsObj?.Remove("kb");
                     _currentKb.Value = null;
                 }
             }
@@ -488,19 +497,16 @@ namespace GxMcp.Gateway
                 // clients faster feedback on typos / missing required fields.
                 if (!string.IsNullOrEmpty(toolName))
                 {
+                    GatewayArgsValidator.NormalizeStringListArguments(toolName, args);
                     var validationResult = GatewayArgsValidator.Validate(toolName, args);
                     if (!validationResult.Ok)
                     {
-                        var firstViolation = validationResult.Violations[0];
-                        string hint = firstViolation.Actual == "missing"
-                            ? $"Required field '{firstViolation.Path}' is missing — expected {firstViolation.Expected}."
-                            : firstViolation.Actual == "unknown argument"
-                                ? $"Unknown argument '{firstViolation.Path}'."
-                                : $"Field '{firstViolation.Path}': expected {firstViolation.Expected}, got {firstViolation.Actual}.";
-                        if (!string.IsNullOrEmpty(firstViolation.Suggestion))
-                        {
-                            hint += $" Did you mean '{firstViolation.Suggestion}'?";
-                        }
+                        // Name the field, the received value and the accepted values for
+                        // EVERY violation, in hint and in message: clients that show only
+                        // error.message must still be able to correct the call (#655).
+                        string hint = GatewayArgsValidator.Describe(validationResult.Violations);
+                        string validationMessage =
+                            $"Arguments for tool '{toolName}' failed schema validation: {hint}";
 
                         var violationsArr = new Newtonsoft.Json.Linq.JArray(
                             validationResult.Violations.Select(v =>
@@ -511,6 +517,8 @@ namespace GxMcp.Gateway
                                     ["expected"] = v.Expected,
                                     ["actual"] = v.Actual
                                 };
+                                if (v.Received != null) vo["received"] = v.Received;
+                                if (v.Accepted != null) vo["accepted"] = new JArray(v.Accepted);
                                 if (!string.IsNullOrEmpty(v.Suggestion)) vo["suggestion"] = v.Suggestion;
                                 return vo;
                             }));
@@ -526,7 +534,7 @@ namespace GxMcp.Gateway
                                 ["error"] = new JObject
                                 {
                                     ["code"] = "InvalidArgs",
-                                    ["message"] = $"Arguments for tool '{toolName}' failed schema validation.",
+                                    ["message"] = validationMessage,
                                     ["hint"] = hint,
                                     ["violations"] = violationsArr
                                 }
@@ -537,7 +545,7 @@ namespace GxMcp.Gateway
                             ["error"] = new JObject
                             {
                                 ["code"] = "InvalidArgs",
-                                ["message"] = $"Arguments for tool '{toolName}' failed schema validation.",
+                                ["message"] = validationMessage,
                                 ["hint"] = hint,
                                 ["nextSteps"] = new JArray
                                 {

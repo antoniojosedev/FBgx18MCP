@@ -745,7 +745,7 @@ namespace GxMcp.Worker.Helpers
                 }
                 Logger.Info(persist
                     ? $"ReportLayoutHelper.RenamePrintBlock: '{currentName}' -> '{newName}' persisted and verified."
-                    : $"ReportLayoutHelper.RenamePrintBlock: '{currentName}' -> '{newName}' staged in memory.");
+                    : $"ReportLayoutHelper.RenamePrintBlock: '{currentName}' -> '{newName}' applied to the in-memory layout part (the caller saves and verifies it).");
                 return true;
             }
             catch (Exception ex)
@@ -842,7 +842,7 @@ namespace GxMcp.Worker.Helpers
                 }
                 Logger.Info(persist
                     ? $"ReportLayoutHelper.AddPrintBlock: '{printBlockName}' persisted and verified."
-                    : $"ReportLayoutHelper.AddPrintBlock: '{printBlockName}' staged in memory.");
+                    : $"ReportLayoutHelper.AddPrintBlock: '{printBlockName}' applied to the in-memory layout part (the caller saves and verifies it).");
                 return true;
             }
             catch (Exception ex)
@@ -897,7 +897,7 @@ namespace GxMcp.Worker.Helpers
                 }
                 Logger.Info(persist
                     ? $"ReportLayoutHelper.DeletePrintBlock: '{printBlockName}' persisted and verified."
-                    : $"ReportLayoutHelper.DeletePrintBlock: '{printBlockName}' staged in memory.");
+                    : $"ReportLayoutHelper.DeletePrintBlock: '{printBlockName}' applied to the in-memory layout part (the caller saves and verifies it).");
                 return true;
             }
             catch (Exception ex)

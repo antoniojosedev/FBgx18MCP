@@ -7,7 +7,7 @@ $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot '../test-live.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Get-OwnedDescendants', 'New-LiveGatewayConfig', 'Get-LiveBackendEvidence', 'Get-LiveKbOpenFailure')) {
+foreach ($name in @('Get-OwnedDescendants', 'New-LiveGatewayConfig', 'Get-LiveBackendEvidence', 'Get-LiveKbOpenFailure', 'Test-HttpPortBindable', 'Get-FreeHttpPort')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing production function: $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
@@ -29,11 +29,20 @@ if ($productionSource -notmatch [regex]::Escape("ResolutionPolicy = 'strict'")) 
 if ($productionSource -match 'DefaultKb\s*=|KBs\s*=') {
     throw 'The live config must not auto-open a second KB alias.'
 }
-foreach ($project in @('gatewayProject', 'workerProject')) {
+foreach ($project in @('gatewayProject')) {
     $invocation = '& dotnet test $' + $project + ' -c Release --no-build --no-restore'
     if (-not $productionSource.Contains($invocation)) {
         throw "Live tests must consume previously compiled Release tests without rebuilding: $project"
     }
+}
+# The solution builds Worker.Tests as Release|x86 (bin\x86\Release). Without the same
+# platform, `dotnet test --no-build` reads bin\Release, which only a stale checkout has.
+$solutionSource = Get-Content (Join-Path $root 'Genexus18MCP.sln') -Raw
+$workerGuid = [regex]::Match($solutionSource, '"GxMcp\.Worker\.Tests", "[^"]+", "\{([0-9A-F-]+)\}"').Groups[1].Value
+$workerPlatform = [regex]::Match($solutionSource, '\{' + $workerGuid + '\}\.Release\|Any CPU\.Build\.0 = Release\|(\S+)').Groups[1].Value
+if (-not $workerPlatform) { throw 'Cannot resolve the Release platform the solution builds Worker.Tests for.' }
+if (-not $productionSource.Contains('& dotnet test $workerProject -c Release -p:Platform=' + $workerPlatform + ' --no-build --no-restore')) {
+    throw "The Worker live check must run the tests the solution built for platform $workerPlatform."
 }
 foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH', 'live-summary.json', 'Show-LiveSummary', 'Assert-LiveGatewayMaster', '-filter $TestFilter', 'gxw32.exe', 'Legacy GXPublic live runs require -SkipBuild', 'live=$Status', "1 'failed'")) {
     if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
@@ -197,4 +206,16 @@ finally {
 if ($childExit -eq 0 -or ($output -join "`n") -notmatch 'live=unavailable') {
     throw 'The real entry point must fail closed when an explicitly supplied manifest is missing.'
 }
-Write-Host 'PASS: fixture rejection, provenance hashes, master/proxy log guard, benchmark alias contract and owned process selection.'
+# A port can be unusable without anything listening on it: Windows reserves dynamic ranges (netsh int ipv4 show
+# excludedportrange) and a socket can hold it bound. The harness binds the port, so the chooser must bind too.
+$firstFree = Get-FreeHttpPort
+$holder = [System.Net.Sockets.Socket]::new([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+try {
+    $holder.ExclusiveAddressUse = $true
+    $holder.Bind([System.Net.IPEndPoint]::new([System.Net.IPAddress]::Loopback, $firstFree))
+    $next = Get-FreeHttpPort
+    if ($next -eq $firstFree) { throw "Get-FreeHttpPort returned port $firstFree, which is bound but not listening; the live harness cannot bind it." }
+    if (Test-HttpPortBindable $firstFree) { throw 'Test-HttpPortBindable must report a bound port as unusable.' }
+} finally { $holder.Dispose() }
+
+Write-Host 'PASS: fixture rejection, provenance hashes, master/proxy log guard, benchmark alias contract, owned process selection and bindable port choice.'

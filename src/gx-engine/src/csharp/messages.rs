@@ -199,7 +199,7 @@ pub fn parse_resource_strings(bytes: &[u8]) -> Result<Vec<(String, String)>, Mes
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|&pair| u16::from_le_bytes(pair))
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect();
         let name: String = char::decode_utf16(units)
             .collect::<Result<String, _>>()

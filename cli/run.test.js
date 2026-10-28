@@ -1621,6 +1621,35 @@ test('doctor reports strict KB catalog ambiguity instead of ignoring Environment
     }
 });
 
+test('doctor names the config file and the explicit-path open fallback when no KB path is configured (#662)', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-no-kb-'));
+    try {
+        const configPath = path.join(tempRoot, 'config.json');
+        fs.writeFileSync(configPath, JSON.stringify({ GatewayMode: 'stdio-isolated', Environment: {} }));
+
+        const result = runCli(['doctor', '--format', 'json'], {
+            cwd: tempRoot,
+            env: {
+                ...sandboxHomeEnv(tempRoot),
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: path.join(tempRoot, 'missing', 'GxMcp.Gateway.exe')
+            }
+        });
+        assert.equal(result.status, 0);
+        const checks = JSON.parse(result.stdout).ok.checks;
+        const pathCheck = checks.find((c) => c.id === 'kb_path_exists');
+        assert.ok(pathCheck);
+        assert.equal(pathCheck.status, 'warn');
+        assert.ok(pathCheck.detail.includes(configPath), pathCheck.detail);
+        assert.match(pathCheck.detail, /genexus_kb action=open path=/);
+        const shapeCheck = checks.find((c) => c.id === 'kb_shape');
+        assert.ok(shapeCheck);
+        assert.match(shapeCheck.detail, /No KB path is configured/);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('doctor finds tool_definitions.json next to the gateway exe (not just dev-tree)', () => {
     // Regression for v2.6.6 bug: getToolDefinitionsPath() hard-coded the dev-tree
     // location, so every installed copy reported "tool_definitions.json is missing"

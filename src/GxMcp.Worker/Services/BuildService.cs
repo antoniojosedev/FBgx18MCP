@@ -553,6 +553,12 @@ namespace GxMcp.Worker.Services
         {
             if (status == null || !string.Equals(status.Action, "BuildAll", StringComparison.OrdinalIgnoreCase)) return;
             status.BuildMode = "BuildAll";
+            status.BuildEvents = new JObject
+            {
+                ["policy"] = "sdk",
+                ["executionVerified"] = JValue.CreateNull(),
+                ["verification"] = "Build All completion does not independently verify configured build commands. Inspect their output in fullLogPath and their external effects."
+            };
             status.KbOpened = status.KbOpened == true
                 || (!string.IsNullOrEmpty(output) && output.IndexOf("[GXMCP-BUILD-ALL] KB opened", StringComparison.OrdinalIgnoreCase) >= 0);
             status.BuildAllDone = status.BuildAllDone == true || HasBuildAllCompletionEvidence(output);
@@ -579,7 +585,7 @@ namespace GxMcp.Worker.Services
                 if (status.FailureOrigin == null)
                     status.FailureOrigin = (status.ErrorCount > 0) ? "errors" : "missing_completion_evidence";
                 status.Error = "Build All did not emit completion evidence; an exit code of 0 alone is not sufficient to confirm that Build All ran.";
-                status.Hint = "Inspect fullLogPath and retry after confirming the SDK/MSBuild task completed.";
+                status.Hint = "Inspect fullLogPath and reconcile any configured build commands and their external effects before retrying; missing completion evidence does not prove those commands did not run.";
             }
         }
 
@@ -735,6 +741,8 @@ namespace GxMcp.Worker.Services
             public bool? KbOpened { get; set; }
             [JsonProperty("buildAllDone", NullValueHandling = NullValueHandling.Ignore)]
             public bool? BuildAllDone { get; set; }
+            [JsonProperty("buildEvents", NullValueHandling = NullValueHandling.Ignore)]
+            public JObject BuildEvents { get; set; }
             [JsonProperty("reorgRequired", NullValueHandling = NullValueHandling.Ignore)]
             public bool? ReorgRequired { get; set; }
             [JsonProperty("msBuildExitCode", NullValueHandling = NullValueHandling.Ignore)]
@@ -859,6 +867,13 @@ namespace GxMcp.Worker.Services
             public string BuildPath { get; set; }
             public List<string> CallersToAlsoBuild { get; set; }
             public string Hint { get; set; }
+            // #654: action=specify validates the environment's copy of each object, which
+            // only a build refreshes. Say what was validated, and flag the case where the
+            // specifier itself warned that the object changed since that build.
+            [JsonProperty("validatedSource", NullValueHandling = NullValueHandling.Ignore)]
+            public string ValidatedSource { get; set; }
+            [JsonProperty("staleEnvironmentCopy", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? StaleEnvironmentCopy { get; set; }
             // v2.3.8 (Task 5.1/5.2): expansion plan applied to the BuildOne
             // sequence. Surfaced under _meta.buildPlan in status/result.
             public BuildPlan BuildPlan { get; set; }
@@ -874,6 +889,11 @@ namespace GxMcp.Worker.Services
             // issue #28 item 12: spec-check only — run SpecifyOneOnly (Spec+Gen), skip
             // Compile + deploy, so spc*/gen* diagnostics surface without a full build.
             [JsonIgnore] internal bool SpecifyOnly { get; set; }
+            // Issue #654: GeneXus specifies the environment's copy of an object, which only
+            // a build refreshes. A spec-check that has to answer for the current source
+            // (lifecycle action=specify) refuses a target changed since its last build
+            // instead of reporting the last build's diagnostics as current.
+            [JsonIgnore] internal bool RefuseStaleEnvironmentCopy { get; set; }
             // compile_check: spec+gen+compile the targets plus everything that calls
             // them (transitive callers), routed through the targeted BuildOne path so
             // the KB-wide DeveloperMenu regeneration (the dominant cost of a full
@@ -1299,9 +1319,12 @@ namespace GxMcp.Worker.Services
         // no Compile, no deploy) for the target so the agent sees spc*/gen* diagnostics
         // without the full ~compile+deploy build. Reuses the whole build-task pipeline;
         // the #13 error split surfaces the spec diagnostics under codeErrors.
-        public string Specify(string target) => Specify(target, queueLifecycle: true);
+        public string Specify(string target) => Specify(target, queueLifecycle: true, refuseStaleEnvironmentCopy: false);
 
         public string Specify(string target, bool queueLifecycle)
+            => Specify(target, queueLifecycle, refuseStaleEnvironmentCopy: false);
+
+        public string Specify(string target, bool queueLifecycle, bool refuseStaleEnvironmentCopy)
         {
             var plan = BuildCompileCheckPlan(target, buildPlanCap: 200, includeCallers: false, callerCap: 0);
             if (plan.TargetResolutionAvailable && plan.AmbiguousTargets.Count > 0)
@@ -1326,7 +1349,8 @@ namespace GxMcp.Worker.Services
                 : target;
             return Build("Build", canonicalTarget, includeCallees: "none", buildPlanCap: 200,
                 skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
-                specifyOnly: true, queueLifecycle: queueLifecycle);
+                specifyOnly: true, queueLifecycle: queueLifecycle,
+                refuseStaleEnvironmentCopy: refuseStaleEnvironmentCopy);
         }
 
         // mode=compile_check: "did my edits break the build?" without the ~200s
@@ -2193,15 +2217,16 @@ namespace GxMcp.Worker.Services
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool fullDeploy = false)
             => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly: false, fullDeploy: fullDeploy);
 
-        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly, bool fullDeploy = false, bool queueLifecycle = true)
+        public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly, bool fullDeploy = false, bool queueLifecycle = true,
+                            bool refuseStaleEnvironmentCopy = false)
             => Build(action, target, includeCallees, buildPlanCap, skipFullDeploy, notifyOnFailure, fastIncremental, specifyOnly,
                      compileCheck: false, compileCheckCallers: null, compileCheckTruncated: false, compileCheckGraphAvailable: true,
-                     fullDeploy: fullDeploy, queueLifecycle: queueLifecycle);
+                     fullDeploy: fullDeploy, queueLifecycle: queueLifecycle, refuseStaleEnvironmentCopy: refuseStaleEnvironmentCopy);
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly,
                             bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable,
                             bool fullDeploy = false, bool compileCheckCallersRequested = true, int compileCheckCallerCap = 0,
-                            bool queueLifecycle = true)
+                            bool queueLifecycle = true, bool refuseStaleEnvironmentCopy = false)
         {
             string globalRejection = RejectGlobalActionWithTarget(action, target);
             if (globalRejection != null) return globalRejection;
@@ -2401,6 +2426,8 @@ namespace GxMcp.Worker.Services
             status.Targets = targets.Count > 0 ? targets : null;
             status.BuildPlan = plan;
             status.SpecifyOnly = specifyOnly && targetedBuild;
+            if (status.SpecifyOnly) status.ValidatedSource = "environment-copy";
+            status.RefuseStaleEnvironmentCopy = status.SpecifyOnly && refuseStaleEnvironmentCopy;
             status.SkipFullDeploy = effectiveSkipFullDeploy;
             status.FullDeploy = fullDeploy
                 && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase);
@@ -3884,7 +3911,7 @@ namespace GxMcp.Worker.Services
             {
                 sb.AppendLine("    <Message Importance=\"High\" Text=\"[GXMCP-BUILD-ALL] KB opened\" />");
                 sb.AppendLine("    <Message Importance=\"High\" Text=\"[GXMCP-BUILD-ALL] BuildAll started\" />");
-                sb.AppendLine("    <BuildAll ForceRebuild=\"false\" CompileMains=\"true\" FailIfReorg=\"true\" DoNotExecuteReorg=\"true\" DetailedNavigation=\"false\" Output=\"IDE\" EventsSuspended=\"true\" />");
+                sb.AppendLine("    <BuildAll ForceRebuild=\"false\" CompileMains=\"true\" FailIfReorg=\"true\" DoNotExecuteReorg=\"true\" DetailedNavigation=\"false\" Output=\"IDE\" EventsSuspended=\"false\" />");
                 sb.AppendLine("    <Message Importance=\"High\" Text=\"[GXMCP-BUILD-ALL] BuildAll completed\" />");
             }
             else if (targets != null && targets.Count > 0 &&
@@ -4192,7 +4219,8 @@ namespace GxMcp.Worker.Services
                     specifyOnly: status.SpecifyOnly,
                     fullDeploy: status.FullDeploy,
                     forceFullBuild: status.FastIncrementalForceFullBuild,
-                    skipSpecifyTargets: status.FastIncrementalCanSkipSpecify);
+                    skipSpecifyTargets: status.FastIncrementalCanSkipSpecify,
+                    refuseStaleEnvironmentCopy: status.RefuseStaleEnvironmentCopy);
             }
             catch (Exception ex)
             {
@@ -4232,6 +4260,12 @@ namespace GxMcp.Worker.Services
                         status.Status = failed ? "Failed" : "Succeeded";
                         status.ExitCode = failed ? 1 : 0;
                         status.FailureOrigin = failed ? ((status.ErrorCount > 0) ? "errors" : (status.PhaseFailure != null ? "phase_failure" : "inproc_failure")) : null;
+                        if (failed && status.RefuseStaleEnvironmentCopy && InProcessBuildRunner.IsStaleSpecifyRefusal(fullText))
+                        {
+                            // Nothing was specified: say so, instead of leaving a bare error line.
+                            status.FailureOrigin = "stale_environment_copy";
+                            status.Hint = InProcessBuildRunner.StaleSpecifyRefusalHint;
+                        }
                         status.ChildProcessState = "none";
                         status.MsBuildExitCode = null; // No MSBuild process ran on this path.
                         FinalizeBuildAllStatus(status, fullText);
@@ -4896,6 +4930,12 @@ namespace GxMcp.Worker.Services
                         {
                             return;
                         }
+                    }
+                    if (status.SpecifyOnly && SpecificationDiagnostics.IsStaleEnvironmentCopyWarning(line))
+                    {
+                        status.StaleEnvironmentCopy = true;
+                        if (string.IsNullOrEmpty(status.Hint))
+                            status.Hint = "The specifier read the environment's copy of an object that changed since the last build, so these diagnostics may describe the source as of that build. Run genexus_lifecycle action=build for the current source.";
                     }
                     status.WarningCount++;
                     if (status.Warnings.Count < 50) status.Warnings.Add(line.Trim());

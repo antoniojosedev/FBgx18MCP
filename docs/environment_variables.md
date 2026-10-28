@@ -58,7 +58,7 @@ is the only authority there. Equivalent config keys: `Engine.Backend`,
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GXMCP_ENGINE_BACKEND` | `gxengine` lets the engine serve capabilities the capability gate marks at measured parity; anything else stays on the GeneXus SDK. | `sdk` |
+| `GXMCP_ENGINE_BACKEND` | `gxengine` (default): admitted blocking builds and admitted field-limited type-only queries are routed to the engine; `auto`: admitted blocking builds only; `sdk`: engine off. See [engine_backend.md](engine_backend.md) for the admitted space and fallback behavior. | `gxengine` |
 | `GXMCP_ENGINE_FALLBACK` | What happens when a routed capability is not at parity: `sdk` keeps the GeneXus SDK; `error` refuses the call with `EngineCapabilityNotParity`. | `sdk` |
 | `GXMCP_ENGINE_EXE` | Absolute path to the `gx-engine` executable. Authoritative: a missing file reports `EngineNotFound` instead of searching further. | unset (Gateway directory → `publish/` → checkout cargo output → `PATH`) |
 | `GXMCP_ENGINE_TIMEOUT_SECONDS` | Wall-clock budget for one engine invocation. | `120` |
@@ -183,7 +183,12 @@ permission.
 
 Both pins survive Worker and Gateway restarts because they live in the
 environment that launches the Worker, which is why they are the right place for
-a long-lived safety rail on a shared KB.
+a long-lived safety rail on a shared KB. The isolated Events save
+(`requireObjectSave`) additionally needs both of them: with neither set it
+refuses with `WriteDestinationPinsMissing` instead of running unguarded, and
+the pins alone do not make the SDK bundle eligible
+([Events save isolation](events-object-save-isolation.md)). The refusal reports
+the state of each pin variable (`absent`, `blank` or `present`), never a value.
 
 ## Human-in-the-loop elicitation
 
@@ -210,7 +215,7 @@ See [Human-in-the-loop elicitation](elicitation.md).
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GXMCP_TEST_KB` | Absolute path to the disposable KB used by `scripts/test-live.ps1` and the release preflight. `release-preflight.ps1` auto-selects `C:/KBs/KBTeste` for GeneXus 18 or `C:/KBs/KBTeste17` for GeneXus 17 when this is unset. | unset (local compatible fixture autodetected; live gate skipped when none exists) |
+| `GXMCP_TEST_KB` | Absolute path to the disposable KB used by `scripts/test-live.ps1` and the release preflight. Takes precedence over autodetection. When it is unset and the preflight runs in single-major mode, `release-preflight.ps1` auto-selects `C:/KBs/KBTeste` for GeneXus 18, `C:/KBs/KBTeste17` for GeneXus 17 and `C:/KBs/KBTeste<major>` for other majors, if that directory exists. The live matrix never autodetects: it requires an explicit KB. | unset (single-major: local fixture autodetected; with none, the live KB gate is skipped unless `-RequireLive` or `GXMCP_REQUIRE_LIVE_BUILD_ALL=1`/`-RequireBuildAll` is set, which make it fail) |
 | `GXMCP_TEST_FIXTURE` | Optional fixture attestation JSON matching `GXMCP_TEST_KB`; required for benchmark population comparisons, not normal live validation. | unset |
 | `GXMCP_LIVE_MAJORS` | Comma-, semicolon-, or whitespace-separated catalog majors for the live matrix used by `scripts/release-preflight.ps1` and CI. When set, the matrix validates only these majors; the standalone matrix command validates every catalog major when no `-Majors` flag is supplied. | unset (single-major preflight; all catalog majors for standalone matrix) |
 | `GXMCP_LIVE_GX_PATH_MAP` | Semicolon-separated `major=absolute-path` overrides for SDK installations used by the live matrix, for example `17=C:\Program Files (x86)\GeneXus\GeneXus17Trial;18=C:\Program Files (x86)\GeneXus\GeneXus18`. | unset (catalog default paths) |

@@ -258,8 +258,20 @@ fn select_design_model(
         .model_topology()
         .map_err(|error| format!("the KB's model topology could not be read: {error}"))
         .and_then(|rows| {
-            gx_engine::udm::version_scope::select_design_model(&rows, active, scope_use)
-                .map_err(|refusal| refusal.0)
+            let model_id =
+                gx_engine::udm::version_scope::select_design_model(&rows, active, scope_use)
+                    .map_err(|refusal| refusal.0)?;
+            // A build reads, from a KB with several versions, facts no Design model holds a version of:
+            // an entity with several versions among them cannot be pinned, so the build is refused.
+            if scope_use == gx_engine::udm::version_scope::ScopeUse::Build
+                && gx_engine::udm::version_scope::has_several_design_models(&rows)
+                && let Some(conflict) = client.unpinned_build_fact_conflict().map_err(|error| {
+                    format!("the build facts could not be pinned to the KB version: {error}")
+                })?
+            {
+                return Err(conflict);
+            }
+            Ok(model_id)
         });
     if selected.is_err() {
         *category = DiagnosticCategory::VersionScope;
@@ -427,7 +439,11 @@ const EXIT_PARTIAL: u8 = 3;
 /// A catalog of one object read by name from a native KB directory, for a single-object build.
 /// The object's references must all resolve inside the catalog: a reference to an object that is not
 /// read would drop a dependency silently, so such an object is refused and the full catalog is needed.
-fn load_one_object_catalog(kb: &str, name: &str) -> Result<gx_engine::catalog::Catalog, String> {
+fn load_one_object_catalog(
+    kb: &str,
+    name: &str,
+    model_id: i32,
+) -> Result<gx_engine::catalog::Catalog, String> {
     let path = std::path::Path::new(kb);
     if !path.join("knowledgebase.connection").exists() {
         return Err(format!(
@@ -435,7 +451,9 @@ fn load_one_object_catalog(kb: &str, name: &str) -> Result<gx_engine::catalog::C
         ));
     }
     let client = std::sync::Arc::new(
-        gx_engine::udm::client::UdmClient::connect_kb(path)?.with_persistent_reads(),
+        gx_engine::udm::client::UdmClient::connect_kb(path)?
+            .with_persistent_reads()
+            .with_design_model_id(model_id),
     );
     let reader = gx_engine::udm::reader::UdmReader::new(client);
     let object = reader
@@ -457,6 +475,7 @@ fn load_one_object_catalog(kb: &str, name: &str) -> Result<gx_engine::catalog::C
 fn load_closure_catalog(
     kb: &str,
     name: &str,
+    model_id: i32,
 ) -> Result<(gx_engine::catalog::ObjectId, gx_engine::catalog::Catalog), String> {
     let path = std::path::Path::new(kb);
     if !path.join("knowledgebase.connection").exists() {
@@ -465,7 +484,9 @@ fn load_closure_catalog(
         ));
     }
     let client = std::sync::Arc::new(
-        gx_engine::udm::client::UdmClient::connect_kb(path)?.with_persistent_reads(),
+        gx_engine::udm::client::UdmClient::connect_kb(path)?
+            .with_persistent_reads()
+            .with_design_model_id(model_id),
     );
     let reader = gx_engine::udm::reader::UdmReader::new(client);
     let (entry, objects) = reader
@@ -625,7 +646,9 @@ fn execute_rebuild_all(
         return Err("--closure needs --object: the entry object of the closure".into());
     }
     let active = active_version(design_model, kb_version)?;
-    // Before any read or output: a build reads the trunk Design model and its environments only.
+    // Before any read or output: a build reads the trunk Design model and its environments only. The model
+    // the preflight selects is the one every read below targets (a catalog file has none).
+    let mut build_model_id: Option<i32> = None;
     if kb_dir.is_dir() {
         let connection = gx_engine::udm::connection::KbConnectionInfo::from_kb_dir(kb_dir)?;
         if let Err(error) = gx_engine::udm::live::validate_sqlcmd_auth(&connection) {
@@ -634,12 +657,12 @@ fn execute_rebuild_all(
             return Err(error);
         }
         let client = gx_engine::udm::client::UdmClient::connect_kb(kb_dir)?;
-        select_design_model(
+        build_model_id = Some(select_design_model(
             &client,
             active,
             gx_engine::udm::version_scope::ScopeUse::Build,
             category,
-        )?;
+        )?);
     } else if active.is_some() {
         return Err(
             "--design-model and --kb-version apply to a Knowledge Base folder, not a catalog file"
@@ -665,8 +688,11 @@ fn execute_rebuild_all(
                 // Messages and runtime configuration: from the KB's entities and stored model properties, and
                 // the install's message text (GX18_INSTALL_DIR). A group that cannot be read fails a run that writes it.
                 // One client, one persistent reader session, for every KB read that configures the build.
-                let kb_client = gx_engine::udm::client::UdmClient::connect_kb(kb)
-                    .map(|client| client.with_persistent_reads());
+                let kb_client = gx_engine::udm::client::UdmClient::connect_kb(kb).map(|client| {
+                    client.with_persistent_reads().with_design_model_id(
+                        build_model_id.unwrap_or(gx_engine::udm::DEFAULT_DESIGN_MODEL_ID),
+                    )
+                });
                 let model_files = gx_engine::csharp::model_files::model_files_from_kb(
                     kb_client.as_ref().map_err(String::clone),
                     &gx_engine::csharp::model_files::genexus_install_dir(),
@@ -733,9 +759,10 @@ fn execute_rebuild_all(
                 };
                 (runtime_version, client_config, model_files, web_environment)
             });
+            let build_model = build_model_id.unwrap_or(gx_engine::udm::DEFAULT_DESIGN_MODEL_ID);
             let catalog = match (only_object, catalog_cache) {
                 (Some(name), _) if closure => {
-                    let (entry, catalog) = load_closure_catalog(kb, &name)?;
+                    let (entry, catalog) = load_closure_catalog(kb, &name, build_model)?;
                     closure_entry = Some(entry);
                     catalog
                 }
@@ -747,12 +774,16 @@ fn execute_rebuild_all(
                     let (catalog, status) = gx_engine::catalog_cache::load_native_kb(
                         std::path::Path::new(&kb),
                         std::path::Path::new(&cache_dir),
+                        build_model,
                     )?;
                     eprintln!("catalog cache: {status:?}");
                     catalog
                 }
-                (None, _) => gx_engine::catalog::Catalog::load(kb)?,
-                (Some(name), _) => load_one_object_catalog(kb, &name)?,
+                (None, _) => match build_model_id {
+                    Some(model_id) => gx_engine::catalog::Catalog::load_native_model(kb, model_id)?,
+                    None => gx_engine::catalog::Catalog::load(kb)?,
+                },
+                (Some(name), _) => load_one_object_catalog(kb, &name, build_model)?,
             };
 
             let environment = environment

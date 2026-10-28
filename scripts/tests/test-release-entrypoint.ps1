@@ -102,7 +102,7 @@ foreach ($marker in @('publicationState', 'publicationEvidencePath', 'nextAction
 $buildSource = Get-Content -LiteralPath (Join-Path $root 'build.ps1') -Raw
 if ($buildSource -notmatch '\$artifactGxPath\s*=\s*Get-GxPrimaryInstallPath\s+-Catalog\s+\$gxCatalog' -or
     $buildSource -notmatch '\$buildGxPath\s*=\s*\$artifactGxPath' -or
-    $buildSource -notmatch 'InstallationPath\s*=\s*\$artifactGxPath' -or
+    $buildSource -notmatch 'New-PublishConfigJson\s+-ArtifactGxPath\s+\$artifactGxPath' -or
     $buildSource -notmatch 'GX_PATH=\$buildGxPath' -or
     $buildSource -match '\$gxPath') {
     throw 'Build must keep the catalog artifact path separate from machine-specific SDK overrides.'

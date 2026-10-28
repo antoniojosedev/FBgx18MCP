@@ -476,6 +476,14 @@ namespace GxMcp.Gateway
         // covers names like edit/create/refactor; umbrella tools and
         // action-dependent tools need the explicit cases below.
         internal static void MarkRecordWriteOutcomeUnknown(JObject payload)
+            => MarkMutationOutcomeUnknown(payload);
+
+        /// <summary>
+        /// A mutation whose call ended without an answer (timeout) may or may not have
+        /// committed. The receipt says so explicitly instead of omitting the persistence
+        /// fields, which a caller can read as "nothing was written" and retry.
+        /// </summary>
+        internal static void MarkMutationOutcomeUnknown(JObject payload)
         {
             payload["retriable"] = false;
             payload["retryable"] = false;
@@ -552,6 +560,24 @@ namespace GxMcp.Gateway
             // a refresh without resolved KB identity must not flush unrelated clients.
             if (string.IsNullOrWhiteSpace(kbScope) || !IsRefreshRead(toolName, args)) return false;
             cache.InvalidateScope(kbScope);
+            return true;
+        }
+
+        /// <summary>
+        /// Drops what read-only calls cached while a write was in flight, once the write has
+        /// settled. The invalidation before the dispatch cannot cover them: a read that starts
+        /// after it and finishes before the write lands is stored at the new revision with
+        /// pre-write content and replays for the cache lifetime (#653). A preview does not
+        /// write and keeps its cache. An unresolved scope bumps the process-wide epoch, as the
+        /// pre-dispatch invalidation does.
+        /// </summary>
+        internal static bool InvalidateSettledMutationScope(
+            SemanticCacheStore cache, string kbScope, JObject? args, bool isMutating)
+        {
+            if (!isMutating || IsMutationPreview(args)) return false;
+            cache.InvalidateScope(kbScope);
+            if (string.IsNullOrWhiteSpace(kbScope))
+                System.Threading.Interlocked.Increment(ref SemanticCacheEpoch);
             return true;
         }
 
@@ -1787,7 +1813,7 @@ namespace GxMcp.Gateway
         private static HashSet<string>? ParseRequestedFields(JObject? toolArgs)
         {
             if (toolArgs == null) return null;
-            var token = toolArgs["fields"];
+            var token = FieldsArgument.Normalize(toolArgs["fields"]);
             if (token == null) return null;
 
             var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

@@ -232,6 +232,9 @@ namespace GxMcp.Worker.Tests
                 TimeoutMs = 0
             }));
             Assert.Equal("Timeout", timedOut["code"]?.ToString());
+            Assert.Equal("partial", timedOut["status"]?.ToString());
+            Assert.False(timedOut["result"]?["complete"]?.ToObject<bool>());
+            Assert.Equal("timeout", timedOut["result"]?["incompleteReason"]?.ToString());
             string cursor = timedOut["result"]?["nextCursor"]?.ToString();
             Assert.True(SourceSearchService.TryParseResumeCursor(
                 cursor, out int entry, out int skipped, out bool metadata));

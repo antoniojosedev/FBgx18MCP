@@ -229,7 +229,7 @@ if (-not (Test-Path $configPath)) {
             HttpPort = 0
             McpStdio = $true
             SessionIdleTimeoutMinutes = 10
-            WorkerIdleTimeoutMinutes = 5
+            WorkerIdleTimeoutMinutes = 30
             EmitStructuredContent = $false
             TerseResponses = $true
         }
@@ -246,7 +246,7 @@ if ($PSBoundParameters.ContainsKey("GeneXusPath")) {
 $config.GeneXus.InstallationPath = Get-ExistingPathOrPrompt "GeneXus installation path" $config.GeneXus.InstallationPath
 
 Write-Step "[1/2] Building gateway and worker"
-& (Join-Path $root "build.ps1")
+& (Join-Path $root "build.ps1") -PreserveEngineConfig
 if ($LASTEXITCODE -ne 0) {
     Fail "Build failed."
 }

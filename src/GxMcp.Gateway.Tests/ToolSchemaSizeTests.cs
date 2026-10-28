@@ -246,7 +246,11 @@ namespace GxMcp.Gateway.Tests
             // ~39621 tokens. The v3.16.0 budget of 39000 needs ~2500 more characters out of
             // descriptions whose remaining text is not duplicated elsewhere in the schema, so the
             // budget stays at 39700 (~79 headroom) instead of cutting guidance clients rely on.
-            Assert.True(approxTokens < 39700, $"tool_definitions.json is ~{approxTokens} tokens; budget 39700.");
+            // Issue #689 + #638: 39700 -> 39800 for genexus_kb's `kb`/`alias` descriptions naming the five pool
+            // actions that take `kb` in place of `alias` (close, select, set_session_default, set_persistent_default,
+            // set_default) and genexus_wwp's `gridPath` taking the grid's name. The schema is what the caller reads to
+            // build the call, so a description that omits the actions is the defect. Measured ~39745 tokens; ~55 headroom.
+            Assert.True(approxTokens < 39800, $"tool_definitions.json is ~{approxTokens} tokens; budget 39800.");
         }
 
         [Theory]
@@ -291,12 +295,20 @@ namespace GxMcp.Gateway.Tests
         // the property names, types, enums and 40-character published descriptions of the new
         // genexus_wwp/genexus_workwith/genexus_wire inputs, which cannot shrink without changing
         // the schema. Headroom over the measured size is ~132 / ~126 bytes.
-        [InlineData("all", 102750)]
+        // genexus_wwp regenerate_derived (the action enum value plus the `scope` and `expectedVersions`
+        // inputs): all 102750 -> 103000, authoring 71200 -> 71500, ui 50000 -> 50300. Measured all 102844,
+        // authoring 71300, ui 50208 bytes; the inputs are the property names, types and the scope enum, which
+        // the 40-character published descriptions do not shrink.
+        // genexus_query.fields (#637: clients that did not see the array sent it as text): ui 50000 -> 50200
+        // (measured 50098), the only profile that crossed its budget; the token budget above does not move.
+        // Both landed together with the #637-#662 fixes (whose new descriptions were trimmed to keep the
+        // token budget): ui measured 50316 bytes, so ui 50300 -> 50400.
+        [InlineData("all", 103000)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 71200)]
+        [InlineData("authoring", 71500)]
         [InlineData("devops", 52500)]
-        [InlineData("ui", 50000)]
+        [InlineData("ui", 50400)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)
         {

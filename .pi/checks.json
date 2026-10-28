@@ -1,69 +1,60 @@
 {
   "version": 1,
   "checks": {
-    "lint-setup": {
-      "description": "Lint environment regression tests only; no native SDK, KB, SQL or Cloud access",
-      "argv": [
-        "node",
-        "--test",
-        "scripts/lint.test.js"
-      ],
+    "build-event-regression": {
+      "description": "Build All event dispatch, broker restoration, external template and persistence confirmation regressions (no KB)",
+      "argv": ["dotnet", "test", "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj", "-c", "Release", "--no-restore", "--filter", "FullyQualifiedName~BuildAllEventDispatchTests|FullyQualifiedName~BuildAllFailureEvidenceTests|FullyQualifiedName~BuildAllTests|FullyQualifiedName~PersistenceConfirmationTests", "--logger", "console;verbosity=minimal"],
       "timeoutMs": 120000
+    },
+    "build-event-gateway": {
+      "description": "Lifecycle compact response preserves Build All event evidence and classification",
+      "argv": ["dotnet", "test", "src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj", "-c", "Release", "--no-restore", "--filter", "FullyQualifiedName~LifecycleResponseShaperTests", "--logger", "console;verbosity=minimal"],
+      "timeoutMs": 120000
+    },
+    "worker-unit": {
+      "description": "Worker non-process tests; live SDK/KB evidence remains a separate lane",
+      "argv": ["dotnet", "test", "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj", "-c", "Release", "--filter", "Category!=ProcessSmoke", "--logger", "console;verbosity=minimal"],
+      "timeoutMs": 600000
+    },
+    "lint-setup": {
+      "description": "CLI setup and lint contract tests",
+      "argv": ["node", "--test", "scripts/lint.test.js"],
+      "timeoutMs": 120000
+    },
+    "wwp-grid-variable": {
+      "description": "add_grid_variable projected-column confirmation and native writer ownership contracts",
+      "argv": ["dotnet", "test", "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj", "--no-restore", "--nologo", "-v:minimal", "-m:1", "--filter", "FullyQualifiedName~WwpStaleObjectEnvelopeTests|FullyQualifiedName~WwpGridVariableProjectionTests"],
+      "timeoutMs": 120000
+    },
+    "integration-preflight": {
+      "description": "Canonical PR integration gates against the fetched origin/main; no SDK KB writes or publication",
+      "argv": ["pwsh", "-NoProfile", "-File", "scripts/integration-preflight.ps1", "-BaseRef", "origin/main"],
+      "timeoutMs": 600000
+    },
+    "tool-contracts": {
+      "description": "Tool schema (tool_definitions.json) and capabilities table contract gate; read-only",
+      "argv": ["python", "scripts/validate-tool-contracts.py"],
+      "timeoutMs": 120000
+    },
+    "operation-inventory": {
+      "description": "docs/operation-contract-inventory.json matches its generator; read-only",
+      "argv": ["python", "scripts/generate-operation-contract-inventory.py", "--check"],
+      "timeoutMs": 120000
+    },
+    "gateway-tests": {
+      "description": "Gateway .NET tests excluding ProcessSmoke (help budgets, goldens, tool help); no SDK, KB or Cloud",
+      "argv": ["dotnet", "test", "src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj", "-c", "Release", "--filter", "Category!=ProcessSmoke", "--logger", "console;verbosity=minimal"],
+      "timeoutMs": 600000
     },
     "rust-clippy": {
       "description": "gx-engine clippy over all targets with warnings denied (CODING_STANDARDS.md validation lanes)",
-      "argv": [
-        "cargo",
-        "clippy",
-        "--manifest-path",
-        "src/gx-engine/Cargo.toml",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings"
-      ],
+      "argv": ["cargo", "clippy", "--manifest-path", "src/gx-engine/Cargo.toml", "--all-targets", "--", "-D", "warnings"],
       "timeoutMs": 600000
     },
     "rust-test": {
       "description": "gx-engine cargo test suite (offline unit tests)",
-      "argv": [
-        "cargo",
-        "test",
-        "--manifest-path",
-        "src/gx-engine/Cargo.toml"
-      ],
+      "argv": ["cargo", "test", "--manifest-path", "src/gx-engine/Cargo.toml"],
       "timeoutMs": 600000
-    },
-    "gateway-tests": {
-      "description": "Gateway .NET tests excluding ProcessSmoke; needs a prior restore (--no-restore)",
-      "argv": [
-        "dotnet",
-        "test",
-        "src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj",
-        "-c",
-        "Release",
-        "--no-restore",
-        "--filter",
-        "Category!=ProcessSmoke"
-      ],
-      "timeoutMs": 600000
-    },
-    "tool-contracts": {
-      "description": "Tool schema (tool_definitions.json) and capabilities table contract gate",
-      "argv": [
-        "python",
-        "scripts/validate-tool-contracts.py"
-      ],
-      "timeoutMs": 120000
-    },
-    "operation-inventory": {
-      "description": "Checks docs/operation-contract-inventory.json matches its generator; read-only",
-      "argv": [
-        "python",
-        "scripts/generate-operation-contract-inventory.py",
-        "--check"
-      ],
-      "timeoutMs": 120000
     }
   }
 }

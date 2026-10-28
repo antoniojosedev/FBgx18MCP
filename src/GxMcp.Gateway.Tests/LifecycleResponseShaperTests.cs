@@ -49,6 +49,18 @@ namespace GxMcp.Gateway.Tests
             Assert.True(obj["truncated"]!.Value<bool>());
         }
 
+        // Issue #656: "30 errors" next to a 10-entry list read as a contradiction because
+        // nothing said how many entries were left out.
+        [Fact]
+        public void Compact_True_ReportsTotalShownAndOmittedErrors()
+        {
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(MakeBuildStatus(30, 5), compact: true));
+
+            Assert.Equal(30, obj["totalErrors"]!.Value<int>());
+            Assert.Equal(10, obj["shownErrors"]!.Value<int>());
+            Assert.Equal(20, obj["omittedErrors"]!.Value<int>());
+        }
+
         [Fact]
         public void Compact_True_DedupsRepeatedWarning()
         {
@@ -82,6 +94,31 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(new[] { "CallerA", "CallerB" }, evidence["callersAdded"]!.ToObject<string[]>());
             Assert.True(evidence["truncated"]!.Value<bool>());
             Assert.True(evidence["callerGraphAvailable"]!.Value<bool>());
+        }
+
+        [Theory]
+        [InlineData("buildEvents", "Running")]
+        [InlineData("BuildEvents", "Succeeded")]
+        [InlineData("buildEvents", "Failed")]
+        [InlineData("BuildEvents", "Cancelled")]
+        [InlineData("buildEvents", "ReorgRequired")]
+        public void Compact_True_PreservesUnverifiedBuildEventEvidence(string field, string status)
+        {
+            var raw = JObject.Parse(MakeBuildStatus(0, 0));
+            raw[field] = new JObject
+            {
+                ["policy"] = "sdk",
+                ["executionVerified"] = JValue.CreateNull()
+            };
+            raw["Status"] = status;
+            raw["buildAllDone"] = status == "Succeeded";
+            var compact = JObject.Parse(LifecycleResponseShaper.Compact(raw.ToString(), compact: true));
+            Assert.True(JToken.DeepEquals(raw[field], compact["buildEvents"]));
+            Assert.Equal(JTokenType.Null, compact["buildEvents"]!["executionVerified"]!.Type);
+            Assert.Equal(status, compact["Status"]!.Value<string>());
+            Assert.Equal(status == "Succeeded", compact["buildAllDone"]!.Value<bool>());
+            var full = JObject.Parse(LifecycleResponseShaper.Compact(raw.ToString(), compact: false));
+            Assert.True(JToken.DeepEquals(raw[field], full[field]));
         }
 
         [Fact]

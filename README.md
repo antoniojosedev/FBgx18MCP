@@ -176,7 +176,9 @@ remaining workflows and evidence required.
 
 ### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
 
-A speed comparison requires the same input workload, target, dependency closure, observable results and success criteria. Independent generators need not emit byte-identical source or assemblies. Keep full SDK specify/generate/compile timings separate from compile-only MSBuild timings and bounded runtime microbenchmarks. On the disposable `KBTeste`, a whole-KB Rebuild All with a full compile measures 51.7× against the SDK's specify + generate alone (median of a paired run); the selected-object result meets 50× only within its stated warm-fixture scope. Historical microbenchmarks do not establish a whole-KB speed goal:
+A speed comparison requires the same input workload, target, dependency closure, observable results and success criteria. Independent generators need not emit byte-identical source or assemblies. Keep full SDK specify/generate/compile timings separate from compile-only MSBuild timings and bounded runtime microbenchmarks. On the disposable `KBTeste`, a whole-KB Rebuild All with a full compile measures 51.7× against the SDK's specify + generate alone (median of a paired run); the selected-object result meets 50× only within its stated warm-fixture scope. Historical microbenchmarks do not establish a whole-KB speed goal.
+
+**Scope of these numbers.** They were measured on disposable KBs with a single Design model. In a KB with versions the engine builds only the trunk, verified so far on one disposable copy; a frozen version or a branch builds on the SDK ([open check](docs/engine_backend.md#open-check-for-trunk-builds-of-a-kb-with-versions-issue-637)). It also needs SQL credentials in the process environment or the connection file for a KB on SQL Server with SQL authentication, and it skips web UI objects (a partial build, exit 3). A type-only `genexus_query` is served by the engine only when `fields` is limited to `name`/`type`, and once the SDK search index is warm it is faster on the SDK: 38 ms of SDK time against 300–370 ms for the engine on an 86-Procedure KB behind a remote SQL Server (2026-10-23, direct `kb-query` against the Gateway's `sdkMs`). The engine query path therefore helps mainly before the SDK index is ready.
 
 | Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
 | :--- | :---: | :---: | :---: | :--- |
@@ -615,7 +617,7 @@ in GeneXus first.
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set
 - `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
-- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel tabs and typed children
+- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel and Transaction tabs and typed children
 - `genexus_workwith` — typed authoring of standard WorkWith (WorkWith for Web) pattern actions on tabs (`General`, etc.), procedure calls, conditions, and parameters
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
@@ -684,7 +686,7 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 | Reorganize Transaction view (form layout, action row) | edit under `/instance/transaction/...` | ✅ verified live |
 | Reorganize Selection view (list/grid, filters, orders) | edit under `/instance/level/selection/...` | ✅ verified live |
 | Auto-rebuild `childrenOrderedList` from XML order | done implicitly on every write; report under `childrenOrderedListReconciliation` | ✅ verified live |
-| Add / move / remove WebPanel tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
+| Add / move / remove WebPanel and Transaction tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
 | Add or reconcile one grid Attribute caption | `genexus_wwp` `add_grid_attribute` | ✅ isolated dry-run, full PatternInstance/WebForm snapshots, exact rollback and no implicit lifecycle |
 
 **Recommended workflow for a screen redesign:**
@@ -767,7 +769,7 @@ The installer writes a `config.json` for you. To customize networking, timeouts,
     "HttpPort": 5000,
     "BindAddress": "127.0.0.1",
     "SessionIdleTimeoutMinutes": 10,
-    "WorkerIdleTimeoutMinutes": 60,
+    "WorkerIdleTimeoutMinutes": 30,
     "MaxOpenKbs": 3,
     "ArtifactOutputDirectory": "C:\\GenexusMCP\\Artifacts"
   },
@@ -898,6 +900,16 @@ Releases ship through `release.ps1`; the full protocol is in [`docs/release_prot
 - **Entry point:** `./release.ps1 -Version <X.Y.Z>` builds the artifacts, creates the `v<version>` tag and the GitHub Release (with `publish.zip`, its checksum and the Nexus VSIX attached). Nothing is published by a push to `main`.
 - **Workflow:** creating that release fires [`.github/workflows/release.yml`](.github/workflows/release.yml) on the `release: [published]` event; a manual `workflow_dispatch` with a `tag` re-runs it for a release that already exists. The workflow **verifies** the release's assets and publishes the package to npm — it does not create the tag or the release.
 - **npm authentication:** [OIDC Trusted Publishing](https://docs.npmjs.com/trusted-publishers). There is no npm token secret to configure, and the workflow unsets any token it finds before publishing.
+
+---
+
+## Support the project
+
+If you'd like to help cover the AI tokens used in developing and maintaining this
+project, voluntary contributions via Pix are welcome. Any contribution is
+appreciated — thank you!
+
+Pix key: `492d0dbc-4768-47f3-8480-d532385b639a`
 
 ---
 

@@ -926,7 +926,7 @@ namespace GxMcp.Worker.Services
                                 Description = description,
                                 Parent = hierarchy.ParentName,
                                 ParentPath = hierarchy.ParentPath,
-                                ParentFolderPath = string.IsNullOrEmpty(hierarchy.ParentPath) ? "Root Module" : "Root Module/" + hierarchy.ParentPath,
+                                ParentFolderPath = IndexCacheService.ComposeParentFolderPath(hierarchy.ParentPath),
                                 Path = hierarchy.Path,
                                 Module = hierarchy.ModuleName,
                                 LastUpdate = lu,
@@ -1233,19 +1233,30 @@ namespace GxMcp.Worker.Services
                         : DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
                     DateTime newHwm = normalizedHwm;
 
-                    var changedKeys = kb.DesignModel.Objects.GetKeys(safeHwm);
-                    foreach (var key in (System.Collections.IEnumerable)changedKeys)
+                    // Issue #692: this thread runs beside the STA command thread right after
+                    // KB open. Its SDK reads take SdkGate (see SdkGate's invariant), so the
+                    // first command after a respawn does not load the same objects concurrently.
+                    var changedKeys = new List<object>();
+                    using (SdkGate.Enter())
+                    {
+                        foreach (var key in (System.Collections.IEnumerable)kb.DesignModel.Objects.GetKeys(safeHwm))
+                            changedKeys.Add(key);
+                    }
+                    foreach (var key in changedKeys)
                     {
                         if (!IsCurrentIndexOperation(operationGeneration)) return;
                         try
                         {
-                            var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
-                            if (obj == null) continue;
-                            DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
-                            if (objectLastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
-                            _indexCacheService.UpdateEntry(obj);
+                            using (SdkGate.Enter())
+                            {
+                                var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
+                                if (obj == null) continue;
+                                DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+                                if (objectLastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
+                                _indexCacheService.UpdateEntry(obj);
+                                if (objectLastUpdate > newHwm) newHwm = objectLastUpdate;
+                            }
                             MarkIndexProgressHeartbeat(operationGeneration);
-                            if (objectLastUpdate > newHwm) newHwm = objectLastUpdate;
                             changed++;
                         }
                         catch { /* skip individual object failures */ }
@@ -1267,16 +1278,20 @@ namespace GxMcp.Worker.Services
                         int storedCount = idx.Objects.Count;
                         if (idx.GuidToKey == null)
                             throw new InvalidOperationException("catalog reconciliation impossible: the restored index has no guid map");
-                        var reconciliation = IndexCatalogReconciler.Reconcile(
-                            (object)kb.DesignModel.Objects,
-                            o => ((global::Artech.Architecture.Common.Objects.KBObject)o).Guid.ToString(),
-                            idx.GuidToKey.Keys.ToList(),
-                            progress: () => MarkIndexProgressHeartbeat(operationGeneration));
+                        IndexCatalogReconciliation reconciliation;
+                        using (SdkGate.Enter())
+                        {
+                            reconciliation = IndexCatalogReconciler.Reconcile(
+                                (object)kb.DesignModel.Objects,
+                                o => ((global::Artech.Architecture.Common.Objects.KBObject)o).Guid.ToString(),
+                                idx.GuidToKey.Keys.ToList(),
+                                progress: () => MarkIndexProgressHeartbeat(operationGeneration));
+                        }
                         var applied = IndexCatalogReconciler.Apply(
                             reconciliation,
                             () => IsCurrentIndexOperation(operationGeneration),
                             guid => _indexCacheService.RemoveEntryByGuid(guid),
-                            missingObject => _indexCacheService.UpdateEntry((dynamic)missingObject),
+                            missingObject => { using (SdkGate.Enter()) _indexCacheService.UpdateEntry((dynamic)missingObject); },
                             progress: () => MarkIndexProgressHeartbeat(operationGeneration));
                         if (applied.Superseded) return;
                         deleted = applied.Removed;

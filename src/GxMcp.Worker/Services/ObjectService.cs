@@ -675,6 +675,20 @@ namespace GxMcp.Worker.Services
                     ["id"] = idStr
                 };
                 if (placementMeta != null) responsePayload["placement"] = placementMeta;
+
+                // Issue #692: an ObjectCreated that cannot say whether the store holds the object leaves the
+                // caller guessing. Only a cache-invalidated reload by identity counts as verified; an Attribute
+                // already went through that reload above, so its result is reused.
+                JToken attributeVerified = typedMeta?["attribute"]?["persistedVerified"];
+                if (attributeVerified != null && attributeVerified.Type == JTokenType.Boolean && attributeVerified.Value<bool>())
+                {
+                    PersistenceConfirmation.Annotate(responsePayload, true, null);
+                }
+                else
+                {
+                    KBObject reloaded = ReloadSavedObjectFresh(newObj, out string reloadUnavailable);
+                    PersistenceConfirmation.Annotate(responsePayload, reloaded != null, reloadUnavailable);
+                }
                 JObject metaObj = null;
                 if (typedMeta != null)
                 {
@@ -1695,6 +1709,22 @@ namespace GxMcp.Worker.Services
                 Logger.Error("Native object resolution failed for " + guid + ": " + ex.Message);
                 return new NativeResolution { Status = NativeResolutionStatus.Failed, Error = ex };
             }
+        }
+
+        /// <summary>
+        /// True when the SDK no longer holds this object, which was deleted after the caller got hold of it. A
+        /// resolution that fails for any other reason is not "absent": the caller keeps its normal behavior.
+        /// </summary>
+        internal bool IsAbsentFromModel(KBObject obj)
+        {
+            if (obj == null) return false;
+            try
+            {
+                var kb = _kbService.GetKB();
+                if (kb == null) return false;
+                return ResolveByNativeIdentity(kb, obj.Guid, obj.TypeDescriptor?.Name).Status == NativeResolutionStatus.Absent;
+            }
+            catch { return false; }
         }
 
         // Shared with the Structure rollback's created-global cleanup (issue #592), which
@@ -3857,8 +3887,7 @@ namespace GxMcp.Worker.Services
             try { (seed.Model.Objects as IKBModelObjectsCacheConfiguration)?.RemoveFromCaches(seed); }
             catch (Exception ex) { Logger.Debug("Fresh-read cache eviction failed: " + ex.GetType().Name); }
 
-            RemoveReadCacheEntries(seed.Guid, null);
-            ObjectReader.InvalidateAll();
+            RemoveReadCacheEntries(seed.Guid, null); // also drops the ObjectReader response cache
             // Resolve through the same module-aware route as genexus_read after
             // invalidation. Loading by EntityKey here bypassed that route and could
             // expose a different Source representation from the public read.
@@ -3873,6 +3902,33 @@ namespace GxMcp.Worker.Services
                 };
                 return null;
             }
+            return fresh;
+        }
+
+        /// <summary>
+        /// Issue #692: reloads a just-saved object from the store (SDK cache invalidated, resolved by native
+        /// identity) so a post-commit check reads what was persisted, not the in-memory instance the write
+        /// just changed. Returns null, with <paramref name="unavailableReason"/>, when no fresh instance can
+        /// be obtained; the caller then reports the check as unconfirmed instead of verified.
+        /// </summary>
+        internal KBObject ReloadSavedObjectFresh(KBObject saved, out string unavailableReason)
+        {
+            unavailableReason = null;
+            if (saved == null)
+            {
+                unavailableReason = "no saved object to reload";
+                return null;
+            }
+            KBObject fresh = null;
+            try { fresh = FindObjectFreshByIdentity(saved); }
+            catch (Exception ex)
+            {
+                Logger.Warn("ReloadSavedObjectFresh: fresh re-read of '" + saved.Name + "' failed: " + ex.Message);
+                unavailableReason = ex.Message;
+                return null;
+            }
+            if (fresh == null)
+                unavailableReason = _lastResolutionDiagnostic?["message"]?.ToString();
             return fresh;
         }
 
@@ -4388,6 +4444,32 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// The complete text of several parts of one object, each read as <see cref="ReadObjectSourceForVerification"/>
+        /// reads it, but with the object resolved once. A part the object does not have, or that has no text, is
+        /// left out of the result. Used where a whole object is captured before and after a change: resolving a
+        /// fresh handle per part costs several times the read itself.
+        /// </summary>
+        internal Dictionary<string, string> ReadObjectPartsForVerification(string target, IEnumerable<string> partNames, string typeFilter = null)
+        {
+            var texts = new Dictionary<string, string>(StringComparer.Ordinal);
+            var obj = FindObjectFresh(target, typeFilter);
+            if (obj == null) return texts;
+            foreach (string partName in partNames)
+            {
+                try
+                {
+                    string response = ReadObjectSourceInternal(obj, ResolvePartName(obj, partName), offset: 0, limit: 0, client: "mcp", minimize: false);
+                    JObject payload = JObject.Parse(response);
+                    string text = payload["source"]?.Type == JTokenType.String ? payload["source"].ToString()
+                        : payload["content"]?.Type == JTokenType.String ? payload["content"].ToString() : null;
+                    if (text != null) texts[partName] = text;
+                }
+                catch { /* a part the object does not have is not captured */ }
+            }
+            return texts;
+        }
+
+        /// <summary>
         /// Read multiple named parts of an object in one call.
         /// Returns a JSON object: { name, type, parts: { Source: "...", Variables: "..." } }
         /// Parts that are not found or produce no source are silently omitted.
@@ -4867,6 +4949,12 @@ namespace GxMcp.Worker.Services
         /// </summary>
         internal static void RemoveReadCacheEntries(Guid objectGuid, string resolvedPart)
         {
+            // Issue #653: ObjectReader caches whole response envelopes keyed by the
+            // request (name/type/part shape), with no object-identity index, so a write
+            // cannot select the entries it made stale. A plain read after a successful
+            // edit was served from it until the TTL expired.
+            ObjectReader.InvalidateAll();
+
             string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
             string objectPrefix = objectGuid.ToString("N") + "|";
             foreach (var kvp in _readCache)

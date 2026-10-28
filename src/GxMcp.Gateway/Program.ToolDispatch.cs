@@ -128,6 +128,7 @@ namespace GxMcp.Gateway
             }
 
             timeoutPayload["reReadRequired"] = true;
+            MarkMutationOutcomeUnknown(timeoutPayload);
             if (timeoutPayload["error"] is JObject timeoutError)
             {
                 timeoutError["retryable"] = false;
@@ -521,7 +522,7 @@ namespace GxMcp.Gateway
             if (workerCmd == null)
             {
                 return BuildToolResultContent(
-                    new JObject { ["error"] = "Tool conversion produced no worker command." },
+                    BuildNoWorkerCommandError(tName, tArgs),
                     isError: true,
                     toolName: tName,
                     toolArgs: tArgs);
@@ -845,6 +846,14 @@ namespace GxMcp.Gateway
             // survive the authoritative refresh.
             InvalidateRefreshReadScope(_semanticCache, kbScope, tName, tArgs);
 
+            // The same race exists for every write (#653): the pre-dispatch invalidation
+            // above opens a new generation, a read that starts inside it (a batched
+            // edit+read, or a read while a slow edit is still saving) is cached with the
+            // pre-edit source, and the generation fence cannot tell that entry from a
+            // fresh one. Close the generation again now that the write has settled
+            // (applied, refused or timed out).
+            InvalidateSettledMutationScope(_semanticCache, kbScope, tArgs, isMutating);
+
             // apply_pattern { validate: true } — post-apply build of the
             // generated host so the LLM sees compile failures in a single
             // tool call. Without this the agent declared "Success" and only
@@ -996,6 +1005,31 @@ namespace GxMcp.Gateway
                 isError: true,
                 toolName: tName,
                 toolArgs: tArgs);
+        }
+
+        /// <summary>
+        /// Error for a tool call that neither the Gateway nor any router turned into a Worker
+        /// command (issue #662). Names the tool and action so the caller can tell a mistyped
+        /// action from a Gateway routing gap, instead of a generic conversion failure.
+        /// </summary>
+        internal static JObject BuildNoWorkerCommandError(string toolName, JObject? toolArgs)
+        {
+            string? action = toolArgs?["action"]?.ToString();
+            string target = string.IsNullOrWhiteSpace(action)
+                ? $"Tool '{toolName}'"
+                : $"Tool '{toolName}' action '{action}'";
+            string hint = string.Equals(toolName, OperationClassifier.KbTool, StringComparison.OrdinalIgnoreCase)
+                ? "genexus_kb actions are list, open, close, select, set_session_default, set_persistent_default, set_default, create, set_startup, get_startup, list_environments, get_environment and set_environment. " +
+                  "action=open needs no configured KB: pass path=<KB root> (alias optional)."
+                : "Check the action name against the tool schema (tools/list).";
+            return new JObject
+            {
+                ["error"] = $"{target} produced no Worker command: the Gateway has no route for it.",
+                ["code"] = "TOOL_ROUTE_NOT_FOUND",
+                ["tool"] = toolName,
+                ["action"] = action,
+                ["hint"] = hint
+            };
         }
 
         /// <summary>

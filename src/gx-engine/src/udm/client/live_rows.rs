@@ -138,8 +138,8 @@ pub(super) fn decode_hex_value(hex: &str, declared_len: usize) -> Result<Vec<u8>
         .as_chunks::<2>()
         .0
         .iter()
-        .map(|&[high, low]| {
-            let (high, low) = (TABLE[high as usize], TABLE[low as usize]);
+        .map(|pair| {
+            let (high, low) = (TABLE[pair[0] as usize], TABLE[pair[1] as usize]);
             invalid |= (high | low) & 0xF0;
             (high << 4) | (low & 0x0F)
         })

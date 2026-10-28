@@ -53,13 +53,35 @@ namespace GxMcp.Worker.Tests
             public void ExecuteUpdate(string label, Action mutation) { Updates++; mutation(); }
         }
 
+        // Models the Artech.Packages.Patterns element contract the writers depend on: CreateChildElement
+        // gives the child its Parent, AddElement refuses a child whose Parent is another element, and
+        // MoveElement is the one call that changes a Parent (Remove + ChangeParentCommand + Add).
         internal sealed class Element
         {
-            public Element(string type) { Type = type; }
+            private readonly string _name;
+
+            public Element(string type, string name = null)
+            {
+                Type = type;
+                _name = name;
+                Children = new Children(this);
+            }
             public string Type { get; }
+            // The child element name in its parent (`tabs`) as the SDK reports it, while Type is the element type
+            // of the form (`TabsTransaction`).
+            public string Name => _name ?? Type;
+            // The real engine hands out a `tab` that already holds its single mandatory `table`.
+            public bool EngineCreatesTabTable { get; set; }
+            public Element Parent { get; set; }
             public Attributes Attributes { get; } = new Attributes();
-            public Children Children { get; } = new Children();
+            public Children Children { get; }
             public string ToXmlString() => new XElement(Type).ToString();
+            public void MoveElement(Element newParent)
+            {
+                Parent.Children.Items.Remove(this);
+                Parent = newParent;
+                newParent.Children.Items.Add(this);
+            }
         }
 
         internal sealed class Attributes
@@ -72,8 +94,16 @@ namespace GxMcp.Worker.Tests
 
         internal sealed class Children : IEnumerable
         {
+            private readonly Element _owner;
+            public Children(Element owner) { _owner = owner; }
             public List<Element> Items { get; } = new List<Element>();
-            public Element CreateChildElement(string type) => new Element(type);
+            public Element CreateChildElement(string type)
+            {
+                var child = new Element(type) { Parent = _owner, EngineCreatesTabTable = _owner.EngineCreatesTabTable };
+                if (type == "tab" && _owner.EngineCreatesTabTable)
+                    child.Children.Items.Add(new Element("table") { Parent = child, EngineCreatesTabTable = true });
+                return child;
+            }
             public IEnumerator GetEnumerator() => Items.GetEnumerator();
         }
     }
@@ -91,6 +121,11 @@ namespace Artech.Packages.Patterns.Objects
             _child = (GxMcp.Worker.Tests.WwpEmptyNativeCommandTests.Element)child;
         }
         public bool IsSafeToExecute() => true;
-        public void Execute() => _parent.Children.Items.Add(_child);
+        public void Execute()
+        {
+            if (!ReferenceEquals(_child.Parent, _parent))
+                throw new InvalidOperationException("Element '" + _child.Type + "' can not be added as child of '" + _parent.Type + "'.");
+            _parent.Children.Items.Add(_child);
+        }
     }
 }

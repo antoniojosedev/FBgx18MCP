@@ -24,6 +24,7 @@ mod inspect;
 mod kb_facts;
 mod listing;
 mod live_rows;
+mod model_pin;
 mod model_reads;
 mod prefetch;
 mod read_view;

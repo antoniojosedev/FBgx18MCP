@@ -26,8 +26,8 @@ pub struct ModelTopologyRow {
     pub kb_version: Option<i32>,
 }
 
-/// What the selected model is used for. A build also reads the generating environment, which the engine
-/// resolves only for the trunk Design model with every environment under it.
+/// What the selected model is used for. A build serves only the trunk Design model, and reads its facts
+/// (attributes, tables, messages, properties, theme) under that model and the environments below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeUse {
     Read,
@@ -121,6 +121,11 @@ pub(crate) fn property_scalars(
     Ok(found)
 }
 
+/// Whether the Knowledge Base stores more than one Design model, that is, has KB versions besides one.
+pub fn has_several_design_models(rows: &[ModelTopologyRow]) -> bool {
+    rows.iter().filter(|row| row.parent_id == 0).count() > 1
+}
+
 /// The Design model `active` selects in `rows`, or the only Design model when `active` is `None`.
 /// The trunk Design model may store no `KBVersion` property; it then counts as version 0.
 pub fn select_design_model(
@@ -179,29 +184,18 @@ pub fn select_design_model(
             design
         }
     };
-    if scope_use == ScopeUse::Build {
-        if designs.len() != 1 {
-            return refuse(
-                "native build facts are not yet pinned to a KB version; builds require a single Design model".into(),
-            );
-        }
-        if version_of(selected) != 0 || selected.model_id != DEFAULT_DESIGN_MODEL_ID {
-            return refuse(format!(
-                "the active version's Design model is {} (KB version {}); native builds cover only the trunk Design model {}",
-                selected.model_id,
-                version_of(selected),
-                DEFAULT_DESIGN_MODEL_ID
-            ));
-        }
-        if let Some(environment) = rows
-            .iter()
-            .find(|row| row.parent_id != 0 && row.parent_id != selected.model_id)
-        {
-            return refuse(format!(
-                "environment model {} generates Design model {}, not the trunk: native builds read the environments of the trunk only",
-                environment.model_id, environment.parent_id
-            ));
-        }
+    if scope_use == ScopeUse::Build
+        && (version_of(selected) != 0 || selected.model_id != DEFAULT_DESIGN_MODEL_ID)
+    {
+        // Every build fact is read under the selected Design model (and its own environments), so the
+        // other versions of a versioned KB cannot leak into the trunk. Only the trunk is built: no SDK
+        // build of a frozen version or branch has been compared with the engine's.
+        return refuse(format!(
+            "the active version's Design model is {} (KB version {}); native builds cover only the trunk Design model {}",
+            selected.model_id,
+            version_of(selected),
+            DEFAULT_DESIGN_MODEL_ID
+        ));
     }
     Ok(selected.model_id)
 }
@@ -309,35 +303,58 @@ mod tests {
     }
 
     #[test]
-    fn versioned_builds_are_refused_until_every_build_fact_is_model_pinned() {
-        // Object parts are model-pinned, but attribute/table/message facts still use latest
-        // global entity versions. A newer branch fact must never leak into a trunk build.
-        let refusal = select_design_model(&versioned(), active(1, 0), ScopeUse::Build).unwrap_err();
-        assert!(refusal.0.contains("build facts"), "{refusal}");
+    fn a_versioned_knowledge_base_builds_its_named_trunk() {
+        // Issue #637: the trunk of a KB that has other versions was refused with "build facts are not
+        // yet pinned". Every build fact is now read under the selected Design model, so the trunk builds.
+        assert_eq!(
+            select_design_model(&versioned(), active(1, 0), ScopeUse::Build),
+            Ok(1)
+        );
     }
 
     #[test]
-    fn a_build_covers_only_the_trunk_with_its_own_environments() {
-        let trunk = vec![row(1, 0, Some(0)), row(2, 1, None)];
-        assert_eq!(
-            select_design_model(&trunk, active(1, 0), ScopeUse::Build),
-            Ok(1)
+    fn a_versioned_build_still_needs_the_named_version() {
+        let refusal = select_design_model(&versioned(), None, ScopeUse::Build).unwrap_err();
+        assert!(
+            refusal.0.contains("3 Design models") && refusal.0.contains("--design-model"),
+            "{refusal}"
         );
+    }
+
+    #[test]
+    fn a_build_never_covers_another_version_than_the_trunk() {
+        // Frozen version and development branch: no SDK build of them is compared, so they are refused.
+        for (model, version) in [(3, 1), (4, 2)] {
+            let refusal =
+                select_design_model(&versioned(), active(model, version), ScopeUse::Build)
+                    .unwrap_err();
+            assert!(refusal.0.contains("only the trunk"), "{refusal}");
+        }
         let branch_only = vec![row(4, 0, Some(2))];
         let branch = select_design_model(&branch_only, active(4, 2), ScopeUse::Build).unwrap_err();
         assert!(branch.0.contains("only the trunk"), "{branch}");
-        let mut foreign = trunk;
-        foreign.push(row(5, 4, None));
-        let environment = select_design_model(&foreign, active(1, 0), ScopeUse::Build).unwrap_err();
-        assert!(
-            environment.0.contains("environment model 5"),
-            "{environment}"
-        );
-        // A read of the trunk is not affected by another version's environment.
+    }
+
+    #[test]
+    fn another_versions_environment_does_not_block_the_trunk_build() {
+        // Environment 5 generates branch 4. Build facts are read under the trunk and its own
+        // environments only, so it cannot reach the trunk build.
+        let mut rows = vec![row(1, 0, Some(0)), row(2, 1, None)];
+        rows.push(row(4, 0, Some(2)));
+        rows.push(row(5, 4, None));
         assert_eq!(
-            select_design_model(&foreign, active(1, 0), ScopeUse::Read),
+            select_design_model(&rows, active(1, 0), ScopeUse::Build),
             Ok(1)
         );
+    }
+
+    #[test]
+    fn only_a_knowledge_base_with_several_design_models_is_versioned() {
+        assert!(has_several_design_models(&versioned()));
+        assert!(!has_several_design_models(&[
+            row(1, 0, Some(0)),
+            row(2, 1, None)
+        ]));
     }
 
     #[test]

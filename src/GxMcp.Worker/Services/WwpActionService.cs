@@ -240,7 +240,8 @@ namespace GxMcp.Worker.Services
                             ["instanceGuid"] = parentInstance.Guid.ToString("D"),
                             ["instanceEntityKey"] = parentInstance.Key?.ToString(),
                             ["parentGuid"] = parent.Guid.ToString("D"),
-                            ["catalog"] = parentCatalog
+                            ["catalog"] = parentCatalog,
+                            ["variables"] = DeclaredVariablesJson(new[] { parent, parentInstance })
                         });
                     }
                 }
@@ -308,24 +309,14 @@ namespace GxMcp.Worker.Services
                     ?? args?["expectedVersion"]?.ToString()
                     ?? args?["versionToken"]?.ToString();
                 string operation = NormalizeOperation(args?["action"]?.ToString());
-                 if (IsGridColumnOperation(operation) && string.IsNullOrWhiteSpace(expectedVersion))
+                 // A preview changes nothing and answers with the token a write must pin, so it does not need one;
+                 // the write that follows does (#638).
+                 if (GridColumnWriteLacksVersion(operation, expectedVersion, args))
                      return McpResponse.Err(code: "ExpectedVersionRequired",
-                         message: "baseVersion is required for move_grid_column/add_grid_variable, including dryRun previews.",
+                         message: "baseVersion is required to write move_grid_column/add_grid_variable; a dryRun preview returns the versionToken to pass.",
                          target: target, extra: new JObject { ["currentVersion"] = versionToken });
                  if (operation == "add_grid_variable")
-                 {
-                     JObject identityError = ResolveGridVariableReference(args, out string verifiedReference);
-                     if (identityError != null)
-                         return McpResponse.Err(code: identityError["code"]?.ToString() ?? "GridVariableIdentityRequired",
-                             message: identityError["error"]?.ToString() ?? identityError["message"]?.ToString()
-                                 ?? "The presentation variable identity could not be verified.",
-                             target: target, extra: new JObject
-                             {
-                                 ["variable"] = args?["variable"]?.ToString() ?? args?["variableName"]?.ToString(),
-                                 ["variableReference"] = args?["variableReference"]?.ToString()
-                             });
-                     args["_variableReference"] = verifiedReference;
-                 }
+                     return RunAddGridVariableOperation(target, requestedObject, instance, xml, versionToken, args);
                  if (!IsExpectedVersion(expectedVersion, versionToken))
                     return BuildWwpStaleObject(target, expectedVersion, versionToken,
                         "The WorkWithPlus PatternInstance changed after the caller's read; no action mutation was applied.");
@@ -350,6 +341,8 @@ namespace GxMcp.Worker.Services
                     return RunTabOperation(target, requestedObject, instance, instancePart, xml, operation, args);
                 if (IsComboPropertyOperation(operation))
                     return RunComboPropertyOperation(target, requestedObject, instance, instancePart, xml, args);
+                if (IsRegenerateDerivedOperation(operation))
+                    return RunRegenerateDerivedOperation(target, requestedObject, instance, instancePart, xml, args);
 
                 XDocument beforeDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
                 JObject before = Project(beforeDocument);
@@ -357,7 +350,9 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Ok(target: target, code: "WwpActionsRead", result: new JObject
                     {
                         ["instance"] = instance.Name,
-                        ["catalog"] = before
+                        ["catalog"] = before,
+                        ["variables"] = DeclaredVariablesJson(
+                            new[] { WwpProjectionHelper.ResolveHostParent(instance, _objects, xml), requestedObject, instance })
                     });
 
                 XDocument afterDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
@@ -438,14 +433,6 @@ namespace GxMcp.Worker.Services
                     string projectionError = VerifyGridProjection(refreshedTarget, after, args);
                     if (!string.IsNullOrWhiteSpace(projectionError) && !ReferenceEquals(refreshedTarget, requestedObject))
                         projectionError = VerifyGridProjection(requestedObject, after, args);
-                    if (operation == "add_grid_variable")
-                    {
-                        string variableError = VerifyGridVariableDeclaration(
-                            new[] { refreshedTarget, requestedObject, persistedInstance },
-                            args?["variable"]?.ToString() ?? args?["variableName"]?.ToString(),
-                            args?["_variableReference"]?.ToString());
-                        if (string.IsNullOrWhiteSpace(projectionError)) projectionError = variableError;
-                    }
                     if (!string.IsNullOrWhiteSpace(projectionError))
                     {
                         JObject rollback = TryRollback(target, refreshedTarget, xml, before, rollbackOnFailure,

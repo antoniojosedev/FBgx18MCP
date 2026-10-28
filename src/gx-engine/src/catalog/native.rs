@@ -12,6 +12,15 @@ pub(super) fn load(path: &Path) -> Result<Catalog, String> {
     read_catalog(client, &topology)
 }
 
+/// The catalog of Design model `model_id`, already selected for the caller's operation (see
+/// `udm::version_scope::select_design_model`): a build names its trunk model after its own preflight.
+pub(super) fn load_model(path: &Path, model_id: i32) -> Result<Catalog, String> {
+    let client = UdmClient::connect_kb(path)?
+        .with_persistent_reads()
+        .with_design_model_id(model_id);
+    UdmReader::new(Arc::new(client)).read_catalog()
+}
+
 fn read_catalog(client: UdmClient, topology: &[ModelTopologyRow]) -> Result<Catalog, String> {
     let model = crate::udm::version_scope::select_design_model(
         topology,

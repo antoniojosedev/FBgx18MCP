@@ -1991,6 +1991,8 @@ namespace GxMcp.Gateway
                 "implicitLifecycleActions", "mutation", "partialPersistenceDetected",
                 "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted",
                 "requiredPins", "effectivePins", "profileRevision", "profileRevisionSource", "phase", "persistabilityVerified",
+                // Isolation refusal: every independent blocker with its remediation, beside the pin evidence above.
+                "blocker", "reason", "reasonCode", "blockers",
                 "isolation", "writeAttempted", "verificationCompleted", "persistenceUncertain",
                 "transactionRolledBack", "rollbackVerified", "otherPartsIntact", "otherObjectMetadataIntact",
                 // Isolated Events save failure diagnostics: where the save stopped and the
@@ -2001,7 +2003,7 @@ namespace GxMcp.Gateway
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
-                "nearMatches", "nearMatchHint", "nearMatchHintDetail", "eolDiff",
+                "nearMatches", "nearMatchHint", "nearMatchHintDetail", "eolDiff", "literalEscapeSequences", "literalEscapeHint",
                 "did_you_mean", "noNearMatchHint",
                 // Save+specify (SpecificationFailed): the itemized spc/gen diagnostics and
                 // the stale-environment-copy warning are the whole point of the error.
@@ -2010,7 +2012,10 @@ namespace GxMcp.Gateway
                 "fieldErrors",
                 // Optimistic-concurrency retry contract: a refused token is only useful if the
                 // caller can see the token that is current.
-                "currentVersion", "expectedVersion"
+                "currentVersion", "expectedVersion",
+                // genexus_wwp regenerate_derived: which objects were stale or missing a token, the
+                // paste-ready token map, and the evidence of the unit's rollback.
+                "staleObjects", "expectedVersions", "missing"
             };
             foreach (var k in diagnosticKeys)
             {
@@ -2056,6 +2061,19 @@ namespace GxMcp.Gateway
                     "requires", "visibleIf", "sdkName", "discardedOnSave", "requested", "matches", "available", "element",
                     "detail", "partialPersistence", "patternReReadConfirmed", "webFormProjectionConfirmed", "snapshot",
                     "rollbackPerformed", "versionTokenBefore", "lifecycleExecuted" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
+                }
+            }
+            if (code?.ToString().StartsWith("WwpRegenerate", StringComparison.Ordinal) == true)
+            {
+                // genexus_wwp regenerate_derived failures: what the engine reported, which objects fell
+                // outside the requested scope, the contract that still disagrees, and whether the whole
+                // unit was restored and proved by a fresh re-read.
+                foreach (string key in new[] { "engine", "outOfScope", "diff", "contractConsistency", "snapshot",
+                    "rollback", "rollbackPerformed", "rollbackVerified", "partialPersistence", "persisted",
+                    "patternSha256Before", "patternSha256After", "lifecycleExecuted" })
                 {
                     JToken? value = ResolveErrorField(error, key);
                     if (value != null) trimmed[key] = value;
@@ -2442,12 +2460,28 @@ namespace GxMcp.Gateway
             {
                 ["status"] = job.Status,
                 ["operationId"] = job.Id,
+                ["jobId"] = job.Id,
                 ["kind"] = job.Kind,
                 ["summary"] = job.Summary,
                 ["startedAt"] = job.StartedAt.ToString("o"),
                 ["completedAt"] = job.CompletedAt?.ToString("o")
             };
+            if (!string.IsNullOrWhiteSpace(job.WorkerTaskId)) terminal["workerTaskId"] = job.WorkerTaskId;
+            // Issue #656: a stored payload that names another Worker task is not this
+            // job's output. Refuse it rather than hand a caller the wrong job's errors.
+            if (job.Result is JObject stored
+                && job.Kind?.StartsWith("lifecycle/", StringComparison.OrdinalIgnoreCase) == true
+                && !string.IsNullOrWhiteSpace(job.WorkerTaskId)
+                && !ResultBelongsToWorkerTask(stored, job.Id, job.WorkerTaskId))
+            {
+                terminal["status"] = "Error";
+                terminal["code"] = "ResultJobMismatch";
+                terminal["message"] = "The stored result names a different Worker task than the one this job ran, so it was not returned.";
+                terminal["hint"] = "Poll genexus_lifecycle action=status for this job, or re-run the operation.";
+                return (terminal, isError: true);
+            }
             if (job.Result != null) terminal["result"] = job.Result;
+            if (job.Result is JObject storedResult) AttachErrorTruncation(terminal, storedResult);
             bool isErr = string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
                       || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
                       // issue #79: a watchdog-stalled job is terminal AND an error — the
@@ -2477,6 +2511,47 @@ namespace GxMcp.Gateway
                 }
             }
             return (terminal, isErr);
+        }
+
+        /// <summary>
+        /// True unless <paramref name="payload"/> stamps a task identity that is neither this
+        /// Gateway job nor the Worker task it ran. The Worker stamps <c>TaskId</c> and
+        /// <c>operationId</c> on every build result; a payload without either is not judged.
+        /// </summary>
+        internal static bool ResultBelongsToWorkerTask(JObject? payload, string? jobId, string? workerTaskId)
+        {
+            if (payload == null) return true;
+            foreach (string field in new[] { "TaskId", "taskId", "operationId", "workerTaskId" })
+            {
+                string? stamped = payload[field]?.Type == JTokenType.String ? payload[field]!.ToString() : null;
+                if (string.IsNullOrWhiteSpace(stamped)) continue;
+                if (string.Equals(stamped, workerTaskId, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(stamped, jobId, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// States how much of the error list a result carries. The Worker keeps only the first
+        /// entries of a long error list while its error count covers all of them, so without
+        /// this a caller sees "80 errors" beside 50 entries and cannot tell why (#656).
+        /// The omitted entries are only in <c>fullLogPath</c>; there is no further page.
+        /// </summary>
+        internal static void AttachErrorTruncation(JObject envelope, JObject result)
+        {
+            int? total = result["ErrorCount"]?.Value<int?>() ?? result["errorCount"]?.Value<int?>();
+            JArray? shown = result["Errors"] as JArray ?? result["errors"] as JArray;
+            if (total == null || shown == null) return;
+
+            int omitted = Math.Max(0, total.Value - shown.Count);
+            envelope["totalErrors"] = total.Value;
+            envelope["shownErrors"] = shown.Count;
+            envelope["omittedErrors"] = omitted;
+            envelope["truncated"] = omitted > 0;
+            string? fullLog = (result["FullLogPath"] ?? result["fullLogPath"])?.ToString();
+            if (omitted > 0 && !string.IsNullOrWhiteSpace(fullLog)) envelope["fullLogPath"] = fullLog;
         }
 
         /// <summary>

@@ -10,7 +10,7 @@ function generateConfig(gxPath, kbPath) {
             McpStdio: true,
             ToolProfile: 'standard',
             SessionIdleTimeoutMinutes: 10,
-            WorkerIdleTimeoutMinutes: 5,
+            WorkerIdleTimeoutMinutes: 30,
             // Lean + terse defaults: the MCP client is an LLM agent that reads
             // content[0].text only. structuredContent duplicates the whole payload
             // (+42-46% bytes) and next_legal_actions/_meta.tokens are UX sugar the
@@ -37,7 +37,7 @@ function generateNeutralConfig(gxPath, { workerPath, gatewayMode = 'stdio-isolat
             ToolProfile: 'standard',
             WorkerSharingMode: 'isolated',
             SessionIdleTimeoutMinutes: 10,
-            WorkerIdleTimeoutMinutes: 5,
+            WorkerIdleTimeoutMinutes: 30,
             EmitStructuredContent: false,
             TerseResponses: true
         },
