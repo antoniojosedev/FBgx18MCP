@@ -101,6 +101,47 @@ namespace GxMcp.Worker.Tests
             return new CallGraphFixture { Index = svc };
         }
 
+        // Folders nested below the Root Module (Root Module/NestA1/NestB1/NestWp1), as GX18
+        // reports them. Built through AddOrUpdateBatch so ChildrenByParent exists and the
+        // parent filters take their indexed path rather than the full-scan fallback.
+        public static CallGraphFixture IndexWithNestedFolders()
+        {
+            return IndexOfPlacedEntries(
+                "Folder:NestA1@Root Module",
+                "Folder:NestB1@Root Module/NestA1",
+                "WebPanel:NestWp1@Root Module/NestA1/NestB1",
+                "Procedure:OtherProc@Root Module");
+        }
+
+        // Each spec is "Type:Name@ParentPath"; Parent is the last ParentPath segment and the
+        // Guid is the spec itself, as ResolveHierarchy and the index builder would record them.
+        public static CallGraphFixture IndexOfPlacedEntries(params string[] specs)
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(System.Linq.Enumerable.Select(specs, spec =>
+            {
+                int colon = spec.IndexOf(':'), at = spec.IndexOf('@');
+                string parentPath = spec.Substring(at + 1);
+                return new SearchIndex.IndexEntry
+                {
+                    Type = spec.Substring(0, colon),
+                    Name = spec.Substring(colon + 1, at - colon - 1),
+                    ParentPath = parentPath,
+                    Parent = parentPath.Substring(parentPath.LastIndexOf('/') + 1),
+                    Guid = spec
+                };
+            }));
+            svc.MarkIndexComplete(specs.Length);
+            return new CallGraphFixture { Index = svc };
+        }
+
+        // Names of the `results` array of a SearchService or ListService JSON response.
+        public static string[] ResultNames(string json)
+        {
+            var results = (Newtonsoft.Json.Linq.JArray)Newtonsoft.Json.Linq.JObject.Parse(json)["results"];
+            return System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(results, r => r["name"].ToString()));
+        }
+
         // v2.6.8: fixture for temporal sort/cursor/since tests. Five procedures
         // with distinct LastUpdate timestamps spanning 30 days, plus a sixth
         // with no timestamp (sentinel MinValue) to exercise the skip-on-emit
