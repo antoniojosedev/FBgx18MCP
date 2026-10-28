@@ -3931,10 +3931,7 @@ namespace GxMcp.Worker.Services
 
             // Invalidation can refresh a retained SDK instance in place (notably
             // DesignSystem). Evict it as well, as EventsSaveIsolation.Fresh does.
-            // Older SDKs may not support eviction; the identity/reference guard
-            // below still refuses any result that is not independently loaded.
-            try { (seed.Model.Objects as IKBModelObjectsCacheConfiguration)?.RemoveFromCaches(seed); }
-            catch (Exception ex) { Logger.Debug("Fresh-read cache eviction failed: " + ex.GetType().Name); }
+            EvictRetainedInstance(seed);
 
             RemoveReadCacheEntries(seed.Guid, null); // also drops the ObjectReader response cache
             // Resolve through the same module-aware route as genexus_read after
@@ -3981,7 +3978,12 @@ namespace GxMcp.Worker.Services
             return fresh;
         }
 
-        /// <summary>Re-reads an object by its native identity after invalidating SDK caches.</summary>
+        /// <summary>
+        /// Re-reads an object by its native identity after invalidating SDK caches. The SDK keeps some
+        /// object types (UserControl, Image, ThemeClass, DesignSystem) resident, so invalidating is not
+        /// enough: the retained instance is evicted too, as <see cref="FindObjectFresh"/> does.
+        /// On a null result <see cref="GetLastResolutionDiagnostic"/> says which step failed.
+        /// </summary>
         internal KBObject FindObjectFreshByIdentity(KBObject expected)
         {
             _lastResolutionDiagnostic = null;
@@ -3990,28 +3992,33 @@ namespace GxMcp.Worker.Services
             string type = expected.TypeDescriptor?.Name;
             string entityKey = null;
             try { entityKey = expected.Key?.ToString(); } catch { }
-            if (!InvalidateCache(expected))
-            {
-                _lastResolutionDiagnostic = new JObject
-                {
-                    ["code"] = "FreshReadUnavailable",
-                    ["message"] = "The SDK object cache could not be invalidated; a verification read was not attempted."
-                };
-                return null;
-            }
 
-            InvalidateAllReadCaches();
-            var fresh = FindObject(null, type, guid, entityKey);
-            if (fresh == null || fresh.Guid != expected.Guid || object.ReferenceEquals(fresh, expected))
-            {
-                _lastResolutionDiagnostic = new JObject
+            var fresh = FreshObjectReload.Reload(
+                expected,
+                candidate => candidate.Guid,
+                candidate => InvalidateCache(candidate),
+                candidate =>
                 {
-                    ["code"] = "FreshReadUnavailable",
-                    ["message"] = "The native identity resolver did not return a fresh instance of the same object."
-                };
-                return null;
-            }
+                    InvalidateAllReadCaches();
+                    EvictRetainedInstance(candidate);
+                },
+                () => FindObject(null, type, guid, entityKey),
+                out FreshReloadOutcome outcome);
+            if (fresh == null)
+                _lastResolutionDiagnostic = FreshObjectReload.Describe(outcome, type);
             return fresh;
+        }
+
+        /// <summary>
+        /// Drops <paramref name="obj"/> from the SDK object caches so the next lookup builds a new
+        /// instance. <c>Invalidate</c> alone leaves a type the SDK keeps resident (UserControl, Image,
+        /// ThemeClass, DesignSystem) pointing at the same instance. Best effort: an SDK without eviction
+        /// leaves the identity/reference guard to refuse any result that is not independently loaded.
+        /// </summary>
+        private static void EvictRetainedInstance(KBObject obj)
+        {
+            try { (obj.Model.Objects as IKBModelObjectsCacheConfiguration)?.RemoveFromCaches(obj); }
+            catch (Exception ex) { Logger.Debug("Fresh-read cache eviction failed: " + ex.GetType().Name); }
         }
 
         private string FormatReadNotFound(string target)
