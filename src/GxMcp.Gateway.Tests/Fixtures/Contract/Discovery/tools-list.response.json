@@ -713,15 +713,23 @@
             "type": "string"
           },
           "firstItem": {
-            "description": "object SDT/Transaction optional: name…",
+            "description": "object SDT/Transaction: seed item/key…",
             "type": "string"
           },
           "firstItemType": {
-            "description": "object SDT/Transaction optional: type…",
+            "description": "object SDT/Transaction: seed item/key…",
             "type": "string"
           },
           "folder": {
             "description": "object: Folder destination (created in…",
+            "type": "string"
+          },
+          "imagePath": {
+            "description": "object Image (or imageUrl): absolute…",
+            "type": "string"
+          },
+          "imageUrl": {
+            "description": "object Image: http(s) URL.",
             "type": "string"
           },
           "includePatternInstance": {

@@ -309,10 +309,14 @@ namespace GxMcp.Gateway.Tests
         // Issue #710 adds genexus_versioning history_diff (the action enum value and the `toVersionId`
         // input; the other descriptions were shortened to compensate): all 103000 -> 103100 (measured
         // 103030), devops 52500 -> 52600 (measured 52577).
-        [InlineData("all", 103100)]
+        // Issue #729 adds genexus_create `imagePath`/`imageUrl` (an Image cannot be saved without an
+        // image). Profiles cut every description to 40 chars, so shortening firstItem/firstItemType only
+        // offsets the full-schema token budget: all 103100 -> 103250 (measured 103191), authoring
+        // 71500 -> 71650 (measured 71562).
+        [InlineData("all", 103250)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 71500)]
+        [InlineData("authoring", 71650)]
         [InlineData("devops", 52600)]
         [InlineData("ui", 50400)]
         [InlineData("db", 40000)]

@@ -545,6 +545,21 @@ namespace GxMcp.Worker.Services
                 }
                 catch { /* lookup is best-effort; if it throws, Save will surface the duplicate error anyway */ }
 
+                // Issue #729: the SDK refuses to save an Image without an image item, so a
+                // request without imagePath/imageUrl is refused here — for dryRun too — instead
+                // of passing the preview and failing Save() with a bare "validation failed".
+                ImageCreatePlan imagePlan = null;
+                if (ImageCreatePlan.IsImageType(type))
+                {
+                    imagePlan = ImageCreatePlan.FromOptions(options);
+                    if (imagePlan.Error != null)
+                    {
+                        return McpResponse.Err(code: imagePlan.ErrorCode, message: imagePlan.Error, target: name,
+                            hint: "Nothing was saved. Example: genexus_create type=Image name=" + name + " imagePath=C:\\images\\logo.png (or imageUrl=https://example.com/logo.png).",
+                            extra: new JObject { ["persisted"] = false });
+                    }
+                }
+
                 // A Transaction dry-run must not even construct the SDK object. The
                 // legacy initializer creates a KB-global seed Attribute as a side effect,
                 // so returning after KBObject.Create was not a read-only preview.
@@ -610,6 +625,7 @@ namespace GxMcp.Worker.Services
                     }
 
                     if (!string.IsNullOrWhiteSpace(plannedSeed)) planned["seededDescription"] = plannedSeed;
+                    if (imagePlan != null) planned["image"] = imagePlan.ToJson();
                     return McpResponse.Ok(target: name, code: "DryRun", result: planned);
                 }
 
@@ -861,7 +877,22 @@ namespace GxMcp.Worker.Services
             if (typeGuid == Guid.Empty)
                 throw new ArgumentException($"Unknown object type: {type}");
 
-            KBObject newObj = KBObject.Create(kb.DesignModel, typeGuid);
+            // Issue #729: an Image is built by the SDK factory that attaches its image item
+            // (neither factory saves nor names the object); KBObject.Create would leave it empty.
+            KBObject newObj;
+            if (ImageCreatePlan.IsImageType(type))
+            {
+                var imagePlan = ImageCreatePlan.FromOptions(options);
+                if (imagePlan.Error != null) throw new ArgumentException(imagePlan.Error);
+                newObj = imagePlan.FilePath != null
+                    ? Artech.Genexus.Common.Objects.Image.CreateFromFile(kb.DesignModel, imagePlan.FilePath)
+                    : Artech.Genexus.Common.Objects.Image.CreateExternal(kb.DesignModel, imagePlan.Url);
+                typedMeta = new JObject { ["image"] = imagePlan.ToJson() };
+            }
+            else
+            {
+                newObj = KBObject.Create(kb.DesignModel, typeGuid);
+            }
             newObj.Name = name;
             if (newObj is Artech.Architecture.Common.Objects.Module)
                 newObj.Module = kb.DesignModel.RootModule;
