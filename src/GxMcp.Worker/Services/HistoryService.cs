@@ -13,12 +13,14 @@ namespace GxMcp.Worker.Services
         private readonly ObjectService _objectService;
         private readonly WriteService _writeService;
         private readonly SDTService _sdtService;
+        private readonly RevisionContentReader _revisionReader;
 
         public HistoryService(ObjectService objectService, WriteService writeService)
         {
             _objectService = objectService;
             _writeService = writeService;
             _sdtService = new SDTService(objectService);
+            _revisionReader = new RevisionContentReader(_sdtService);
         }
 
         internal static string ResolveHistoryRoot(string kbPath)
@@ -493,8 +495,7 @@ namespace GxMcp.Worker.Services
                 obj = _objectService.FindObjectFreshByIdentity(obj);
                 if (obj == null) return Models.McpResponse.Err(code: "FreshReadUnavailable",
                     message: "A fresh SDT read could not be confirmed.", target: target);
-                var revision = obj.GetVersions().Cast<global::Artech.Architecture.Common.Objects.KBObject>()
-                    .FirstOrDefault(v => v.VersionId == versionId);
+                var revision = RevisionContentReader.FindRevision(obj, versionId);
                 if (revision == null) return Models.McpResponse.Err(code: "VersionNotFound",
                     message: "The requested revision is unavailable.", target: target);
                 try
@@ -507,30 +508,140 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex) { return Models.McpResponse.Err(code: "VersionPartUnavailable", message: ex.Message, target: target); }
             }
-            if (!TryGetVersionPartContent(obj, versionId, requestedPart, out string content, out string errorCode, out string reason))
-            {
-                return Models.McpResponse.Err(
-                    code: errorCode,
-                    message: reason,
-                    hint: "Use action=list to see available version IDs and parts for this object.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_versioning",
-                        args: new JObject { ["action"] = "history_list", ["name"] = target, ["part"] = requestedPart },
-                        why: "Returns available revisions and the requested part.")),
-                    target: target,
-                    extra: new JObject { ["part"] = requestedPart, ["versionId"] = versionId });
-            }
+
+            if (!TryResolveRevision(target, obj, requestedPart, versionId, out var targetRevision, out string failure))
+                return failure;
+
+            var rendered = _revisionReader.Render(targetRevision, requestedPart);
+            if (!rendered.Succeeded)
+                return RevisionReadFailure(target, requestedPart, versionId, rendered.ErrorCode, rendered.Reason);
 
             return Models.McpResponse.Ok(
                 target: target,
                 code: "VersionSourceRead",
                 result: new JObject
                 {
-                    ["source"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(content)),
+                    ["source"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(rendered.Content)),
                     ["isBase64"] = true,
                     ["versionId"] = versionId,
-                    ["part"] = requestedPart
+                    ["part"] = requestedPart,
+                    ["representation"] = rendered.Representation,
+                    ["revision"] = RevisionContentReader.RevisionInfo(targetRevision)
                 });
+        }
+
+        private static bool TryResolveRevision(
+            string target,
+            global::Artech.Architecture.Common.Objects.KBObject current,
+            string part,
+            int versionId,
+            out global::Artech.Architecture.Common.Objects.KBObject revision,
+            out string failure)
+        {
+            failure = null;
+            try { revision = RevisionContentReader.FindRevision(current, versionId); }
+            catch (Exception ex)
+            {
+                revision = null;
+                failure = RevisionReadFailure(target, part, versionId, "VersionSourceFailed",
+                    "SDK Version access failed: " + RevisionContentReader.InnermostMessage(ex));
+                return false;
+            }
+            if (revision != null) return true;
+            failure = RevisionReadFailure(target, part, versionId, "VersionNotFound",
+                "Version " + versionId + " not found for this object.");
+            return false;
+        }
+
+        private static string RevisionReadFailure(string target, string part, int versionId, string errorCode, string reason)
+        {
+            return Models.McpResponse.Err(
+                code: errorCode,
+                message: reason,
+                hint: "Use history_list without part to see the native revision IDs of this object.",
+                nextSteps: NativeRevisionListStep(target),
+                target: target,
+                extra: new JObject { ["part"] = part, ["versionId"] = versionId });
+        }
+
+        private static JArray NativeRevisionListStep(string target)
+        {
+            return new JArray(Models.McpResponse.NextStep(
+                tool: "genexus_versioning",
+                args: new JObject { ["action"] = "history_list", ["name"] = target },
+                why: "Returns the native SDK revisions of this object."));
+        }
+
+        /// <summary>
+        /// Issue #710 — read-only comparison of one part between two native SDK revisions.
+        /// <paramref name="toVersionId"/> = 0 compares against the current object. Nothing is
+        /// written: both sides are rendered by <see cref="RevisionContentReader.Render"/>.
+        /// </summary>
+        public string DiffVersions(string target, int versionId, int toVersionId, string partName, int contextLines)
+        {
+            string requestedPart = NormalizePartName(partName);
+            if (versionId <= 0)
+            {
+                return Models.McpResponse.Err(
+                    code: "VersionIdRequired",
+                    message: "history_diff needs versionId: the native revision to compare from.",
+                    hint: "List the native revisions with history_list (without part), then pass versionId and optionally toVersionId (omit it to compare with the current object).",
+                    nextSteps: NativeRevisionListStep(target),
+                    target: target,
+                    extra: new JObject { ["part"] = requestedPart });
+            }
+
+            try
+            {
+                var obj = _objectService.FindObject(target);
+                if (obj == null) return RevisionObjectNotFound(target);
+                // Same freshness rule as history_get: an SDT structure is read from a fresh object.
+                if (string.Equals(requestedPart, "SDTStructure", StringComparison.OrdinalIgnoreCase))
+                {
+                    obj = _objectService.FindObjectFreshByIdentity(obj);
+                    if (obj == null) return Models.McpResponse.Err(code: "FreshReadUnavailable",
+                        message: "A fresh SDT read could not be confirmed.", target: target);
+                }
+
+                if (!TryResolveRevision(target, obj, requestedPart, versionId, out var from, out string failure))
+                    return failure;
+                var to = obj;
+                if (toVersionId > 0 && !TryResolveRevision(target, obj, requestedPart, toVersionId, out to, out failure))
+                    return failure;
+
+                var fromSide = RenderSide(target, requestedPart, from, versionId, out failure);
+                if (fromSide == null) return failure;
+                var toSide = RenderSide(target, requestedPart, to, toVersionId, out failure);
+                if (toSide == null) return failure;
+                if (toVersionId <= 0) toSide.Info["label"] = "current";
+
+                return RevisionDiffEnvelope.Build(target, requestedPart, fromSide, toSide, contextLines);
+            }
+            catch (Exception ex)
+            {
+                return RevisionReadFailure(target, requestedPart, versionId, "VersionSourceFailed",
+                    "SDK Version access failed: " + RevisionContentReader.InnermostMessage(ex));
+            }
+        }
+
+        private RevisionDiffSide RenderSide(
+            string target,
+            string part,
+            global::Artech.Architecture.Common.Objects.KBObject source,
+            int requestedVersionId,
+            out string failure)
+        {
+            failure = null;
+            var rendered = _revisionReader.Render(source, part);
+            JObject info = RevisionContentReader.RevisionInfo(source);
+            if (!rendered.Succeeded)
+            {
+                int versionId = requestedVersionId > 0 ? requestedVersionId : (int?)info["versionId"] ?? 0;
+                failure = RevisionReadFailure(target, part, versionId, rendered.ErrorCode, rendered.Reason);
+                return null;
+            }
+            info["representation"] = rendered.Representation;
+            return new RevisionDiffSide(info, rendered.Content);
         }
 
         private bool TryGetVersionPartContent(
@@ -546,10 +657,7 @@ namespace GxMcp.Worker.Services
             reason = "Version " + versionId + " not found for this object.";
             try
             {
-                var versions = obj.GetVersions()
-                    .Cast<global::Artech.Architecture.Common.Objects.KBObject>()
-                    .ToList();
-                var targetVersion = versions.FirstOrDefault(v => v.VersionId == versionId);
+                var targetVersion = RevisionContentReader.FindRevision(obj, versionId);
                 if (targetVersion == null) return false;
 
                 global::Artech.Architecture.Common.Objects.KBObjectPart part;
@@ -560,7 +668,7 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex)
                 {
                     errorCode = "VersionPartUnavailable";
-                    reason = "Version " + versionId + " could not resolve part '" + partName + "': " + ex.Message;
+                    reason = "Version " + versionId + " could not resolve part '" + partName + "': " + RevisionContentReader.InnermostMessage(ex);
                     return false;
                 }
 
@@ -615,8 +723,7 @@ namespace GxMcp.Worker.Services
                 obj = _objectService.FindObjectFreshByIdentity(obj);
                 if (obj == null) return Models.McpResponse.Err(code: "FreshReadUnavailable",
                     message: "A fresh SDT read could not be confirmed; no restore was attempted.", target: target);
-                var revision = obj.GetVersions().Cast<global::Artech.Architecture.Common.Objects.KBObject>()
-                    .FirstOrDefault(v => v.VersionId == versionId);
+                var revision = RevisionContentReader.FindRevision(obj, versionId);
                 if (revision == null) return Models.McpResponse.Err(code: "VersionNotFound",
                     message: "The requested revision is unavailable.", target: target);
                 return _sdtService.RestoreRevision(obj, revision, versionId, expectedVersion, dryRun);

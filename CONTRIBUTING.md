@@ -87,6 +87,8 @@ $coverageRoot = Join-Path $env:TEMP 'gx-coverage-pr'
 cd src\nexus-ide; npm run lint
 ```
 
+On a pull request, CI skips the lanes your diff cannot affect: `scripts/ci/classify-lanes.ps1` maps each changed path through `scripts/ci/lane-paths.json`, and an unmapped path or a change under `.github/` or `scripts/ci/` runs every lane. Documentation is tested too, so a change to `README.md`, `CHANGELOG.md` or another document the Gateway or CLI tests read still runs those lanes. When a test starts reading a new repository file, add the file to the matching rule; `scripts/tests/test-ci-workflow-policy.ps1` fails until the map covers it.
+
 `collect.ps1` resolves the GeneXus SDK from `-GxPath`, then `GX_PATH`, then the default installation directory. For a non-default installation, use either form:
 
 ```pwsh

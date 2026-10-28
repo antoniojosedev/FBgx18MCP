@@ -49,12 +49,12 @@ verified. The physical storage facts behind the read path are recorded in
 
 ## Coverage accounting
 
-The MCP contract inventory contains **60 tools and 310 operation rows**. Locally
+The MCP contract inventory contains **60 tools and 311 operation rows**. Locally
 MCP-verified routing admits a restricted subset of **6 tools (10%)**:
 `genexus_query`, `genexus_lifecycle` (`build` / `rebuild`), `genexus_kb`
 (`get_environment`), `genexus_list_objects` (bounded Procedure pages),
 `genexus_kb_version` (`list`) and `genexus_inspect` (minimal Procedure
-inspection). Those are **7 of 310 operation rows (2.3%)**, each still subject to
+inspection). Those are **7 of 311 operation rows (2.3%)**, each still subject to
 the argument and capability gates below.
 
 | Tool | Natively routed request (`Backend=gxengine` only, except builds) | Everything else |

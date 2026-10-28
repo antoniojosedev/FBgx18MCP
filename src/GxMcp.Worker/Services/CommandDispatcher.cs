@@ -2860,6 +2860,10 @@ namespace GxMcp.Worker.Services
                 // Item 21 (friction 2026-05-22): dryRun=true returns the
                 // would-be diff without writing.
                 bool historyDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+                // Issue #710: history_diff compares versionId with toVersionId (0 = current).
+                if (string.Equals(action, "diff", StringComparison.OrdinalIgnoreCase))
+                    return _historyService.DiffVersions(target, verId, args?["toVersionId"]?.ToObject<int?>() ?? 0,
+                        partName, args?["context"]?.ToObject<int?>() ?? 3);
                 return _historyService.Execute(target, action, verId, partName, snapshotToken, discard, historyDryRun,
                     args?["expectedVersion"]?.ToString());
             }

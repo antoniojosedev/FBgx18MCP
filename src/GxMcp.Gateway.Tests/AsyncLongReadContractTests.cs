@@ -17,6 +17,7 @@ namespace GxMcp.Gateway.Tests
         [Theory]
         [InlineData("history_get")]
         [InlineData("history_list")]
+        [InlineData("history_diff")]
         [InlineData("diff")]
         [InlineData("diff_generated")]
         [InlineData("blame")]

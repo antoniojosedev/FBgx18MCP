@@ -5,6 +5,8 @@ param(
     [string]$HeadSha,
     # Test seam: bypasses git and classifies exactly these repository-relative paths.
     [string[]]$ChangedFile,
+    # Test seam: the repository whose base...head diff is classified.
+    [string]$Repository = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
     [string]$PathPolicy = (Join-Path $PSScriptRoot 'sdk-evidence-paths.json'),
     [string]$GitHubOutput = $env:GITHUB_OUTPUT
 )
@@ -14,7 +16,6 @@ param(
 # the classifier fails closed rather than guessing that a change is unrelated.
 
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 function Write-Decision([bool]$Required, [string]$Reason, [string[]]$Matched = @()) {
     $lines = @(
@@ -41,7 +42,8 @@ if (-not $PSBoundParameters.ContainsKey('ChangedFile')) {
     if ([string]::IsNullOrWhiteSpace($BaseSha) -or [string]::IsNullOrWhiteSpace($HeadSha)) {
         Write-Decision $true 'pull-request base/head SHA is unavailable'
     }
-    $ChangedFile = @(& git -C $root diff --name-only "$BaseSha...$HeadSha" 2>&1 | ForEach-Object { $_.ToString() })
+    # --no-renames lists both sides of a move; a rename would otherwise show only the new path.
+    $ChangedFile = @(& git -C $Repository diff --name-only --no-renames "$BaseSha...$HeadSha" 2>&1 | ForEach-Object { $_.ToString() })
     if ($LASTEXITCODE -ne 0) {
         Write-Decision $true "git diff $BaseSha...$HeadSha failed: $($ChangedFile -join ' ')"
     }

@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "description": "Which skippable CI lanes a changed path can affect. Rules are evaluated in order and the first rule whose pattern matches decides the path's lanes; patterns are PowerShell -like wildcards over repository-relative forward-slash paths ('*' also crosses '/'). A path no rule matches, or a rule whose lanes are ['all'], runs every lane. contracts (python + docs) is not listed: it checks line endings over every file, so it always runs. Map from what a lane reads, not from guesses: scripts/tests/test-ci-workflow-policy.ps1 re-derives every file each lane's evidence sources name and fails when a rule drops a lane that reads it.",
+  "lanes": {
+    "dotnet": "run_dotnet",
+    "toolchain": "run_toolchain",
+    "rust": "run_rust",
+    "rust-engine": "run_rust_engine"
+  },
+  "rules": [
+    {
+      "reason": "CI definitions and repository-wide configuration change how every lane runs",
+      "lanes": ["all"],
+      "patterns": [
+        ".github/*",
+        "scripts/ci/*",
+        ".gitattributes",
+        ".gitignore",
+        ".editorconfig",
+        "global.json",
+        ".cargo/*",
+        "rust-toolchain*",
+        ".npmrc"
+      ]
+    },
+    {
+      "reason": "the gx-engine README is read by cli/docs.test.js and the Gateway engine tests",
+      "lanes": ["rust-engine", "dotnet", "toolchain"],
+      "patterns": ["src/gx-engine/README.md"]
+    },
+    {
+      "reason": "the artifact diff script is named by cli/docs.test.js",
+      "lanes": ["rust-engine", "dotnet", "toolchain"],
+      "patterns": ["src/gx-engine/scripts/artifact_diff.py"]
+    },
+    {
+      "reason": "gx-engine crate; EngineBackendTests also scans its *.rs and VALIDATION.md, and Worker tests scan src/**/*.cs",
+      "lanes": ["rust-engine", "dotnet"],
+      "patterns": ["src/gx-engine/*"]
+    },
+    {
+      "reason": "gxwire crate; scripts/coverage/collect.ps1 builds it for the Gateway integration tests",
+      "lanes": ["rust", "dotnet"],
+      "patterns": ["src/gxwire/*"]
+    },
+    {
+      "reason": "Nexus IDE extension: compiled, linted, tested and packaged by the toolchain lane",
+      "lanes": ["toolchain"],
+      "patterns": ["src/nexus-ide/*"]
+    },
+    {
+      "reason": ".NET files the CLI and live-harness contract tests (npm test) also read",
+      "lanes": ["dotnet", "toolchain"],
+      "patterns": [
+        "src/GxMcp.Gateway/tool_definitions.json",
+        "src/GxMcp.Gateway/GxMcp.Gateway.csproj",
+        "src/GxMcp.Gateway/McpRouter.cs",
+        "src/GxMcp.Gateway/Program.Notifications.cs",
+        "src/GxMcp.Gateway/UpdateNotifier.cs",
+        "src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj",
+        "src/GxMcp.Gateway.Tests/LiveGatewayHarness.cs",
+        "src/GxMcp.Gateway.Tests/E2ELiveSmokeTests.cs",
+        "src/GxMcp.Worker/Services/LinterService.cs",
+        "src/GxMcp.Worker.Tests/GxMcp.Worker.Tests.csproj",
+        "Genexus18MCP.sln"
+      ]
+    },
+    {
+      "reason": ".NET sources, tests and build props",
+      "lanes": ["dotnet"],
+      "patterns": ["src/*"]
+    },
+    {
+      "reason": "Node CLI and packaging; Gateway tests read cli/lib/config.js and package metadata",
+      "lanes": ["toolchain", "dotnet"],
+      "patterns": ["cli/*", "package.json", "package-lock.json", "eslint.config.js", ".npmignore"]
+    },
+    {
+      "reason": "scripts are executed or source-asserted by both test lanes (and the always-on contracts lane)",
+      "lanes": ["dotnet", "toolchain"],
+      "patterns": ["scripts/*"]
+    },
+    {
+      "reason": "configuration, installers and release metadata read by the Gateway and CLI tests",
+      "lanes": ["dotnet", "toolchain"],
+      "patterns": [
+        "config/*",
+        "config.sample.json",
+        "config.neutral.sample.json",
+        "server.json",
+        "build.ps1",
+        "install.ps1",
+        "release.ps1",
+        "release-issues.json",
+        "setup.bat"
+      ]
+    },
+    {
+      "reason": "top-level documents asserted by Gateway contract tests and cli/docs.test.js",
+      "lanes": ["dotnet", "toolchain"],
+      "patterns": [
+        "README.md",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "GEMINI.md",
+        "CODING_STANDARDS.md",
+        "CONTRIBUTING.md",
+        "LICENSE"
+      ]
+    },
+    {
+      "reason": "documents the Gateway/Worker tests or sources name; every top-level docs/*.md is also indexed by cli/docs.test.js",
+      "lanes": ["dotnet", "toolchain"],
+      "patterns": [
+        "docs/README.md",
+        "docs/benchmarks/2026-09-20-live-rounds.md",
+        "docs/engine_backend.md",
+        "docs/envelope.md",
+        "docs/environment_variables.md",
+        "docs/events-object-save-isolation.md",
+        "docs/events-save-u16-candidate.md",
+        "docs/kb-isolation-contract.md",
+        "docs/llm_cli_mcp_playbook.md",
+        "docs/mcp-improvements-2026-05-22.md",
+        "docs/mcp-roadmap-ide-parity.md",
+        "docs/mcp_capabilities_inventory.md",
+        "docs/operation-contract-inventory.json",
+        "docs/plans/2026-10-13-open-issues-plan.md",
+        "docs/sdk-probe/*",
+        "docs/sdk_coverage_gap_matrix.md",
+        "docs/udm_storage_notes.md"
+      ]
+    },
+    {
+      "reason": "cli/docs.test.js indexes every top-level document and resolves docs/README.md links",
+      "lanes": ["toolchain"],
+      "patterns": ["docs/*"]
+    },
+    {
+      "reason": "plans and skills the Gateway/Worker tests or sources name; GxMcp.Gateway.csproj embeds .gemini/skills/nexa/** as MCP resources",
+      "lanes": ["dotnet"],
+      "patterns": [
+        ".gemini/skills/nexa/*",
+        ".gemini/skills/genexus18-guidelines/references/object-transaction.md",
+        "plans/README.md",
+        "plans/006-shared-filter-builder.md",
+        "plans/007-decompose-writeservice.md",
+        "plans/129-implementation-progress.md",
+        ".gemini/skills/genexus-mastery/SKILL.md"
+      ]
+    },
+    {
+      "reason": "plans and skills the CLI tests name",
+      "lanes": ["toolchain"],
+      "patterns": [
+        "plans/131-sdk-performance-benchmark.md",
+        ".agents/skills/gxe-artifact-parity/SKILL.md",
+        ".vscode/*"
+      ]
+    },
+    {
+      "reason": "read by no skippable lane; contracts still validates plans/v3-*.json, tests/agent-evals and line endings",
+      "lanes": [],
+      "patterns": [
+        "plans/*",
+        ".gemini/*",
+        ".agents/*",
+        ".pi/*",
+        "tests/*",
+        "schemas/*",
+        "scratchpad/*",
+        "CLAUDE.md",
+        "CONTEXT.md",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+        "TROUBLESHOOTING.md",
+        ".plugin-scanner.toml",
+        ".ripwire_quality_acks"
+      ]
+    }
+  ],
+  "evidence": {
+    "description": "Per lane, the files it compiles, runs or reads directly ('sources': each must map to the lane). With 'scan', the text of those sources is also searched for the names of other repository files, and each named file must map to the lane too. Runtime sources are scanned because the tests exercise them; the Rust crates read nothing outside their own directory (include_str!/CARGO_MANIFEST_DIR paths stay inside), so they are not scanned.",
+    "dotnet": { "scan": true, "sources": [
+      "src/GxMcp.Gateway.Tests/*",
+      "src/GxMcp.Worker.Tests/*",
+      "src/TestSupport/*",
+      "src/GxMcp.Gateway/*",
+      "src/GxMcp.Worker/*",
+      "src/GxMcp.Shared/*",
+      "src/Directory.Build.props",
+      "scripts/coverage/*",
+      "scripts/gx-version-catalog.ps1",
+      "scripts/mcp_smoke.ps1",
+      "scripts/workwith_persistence_smoke.ps1",
+      "scripts/generate-operation-contract-inventory.py",
+      "scripts/publish-config.ps1",
+      "scripts/find-unreachable.ps1",
+      "scripts/collect-diagnostics.ps1",
+      "build.ps1",
+      "install.ps1"
+    ] },
+    "toolchain": { "scan": true, "sources": [
+      "cli/*",
+      "scripts/*.js",
+      "scripts/tests/test-live.test.ps1",
+      "scripts/test-live.ps1",
+      "scripts/live-fixture.ps1",
+      "scripts/live-harness.ps1",
+      "scripts/test_live_patch_persistence_kbteste.ps1",
+      "package.json",
+      "eslint.config.js",
+      "src/nexus-ide/*"
+    ] },
+    "rust": { "scan": false, "sources": ["src/gxwire/*"] },
+    "rust-engine": { "scan": false, "sources": ["src/gx-engine/*"] }
+  }
+}
