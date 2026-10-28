@@ -399,6 +399,7 @@ namespace GxMcp.Worker.Helpers
                 // the incoming attributes. This is what makes adding ReportLines to an
                 // empty PrintBlock work end-to-end.
                 MethodInfo addChild = null;
+                var createdControls = new List<object>();
                 foreach (var bandObj in bandsList)
                 {
                     string blockName = GetBandName(bandObj) ?? GetBandControlName(bandObj);
@@ -520,6 +521,7 @@ namespace GxMcp.Worker.Helpers
                             appliedAssignments++;
                             anyChange = true;
                             existingNames.Add(elName);
+                            createdControls.Add(newControl);
                             Logger.Info($"ReportLayoutHelper.WriteLayout: created new control '{elName}' in print block '{blockName}'.");
                         }
                         catch (Exception addEx)
@@ -596,6 +598,14 @@ namespace GxMcp.Worker.Helpers
                         anyChange = true;
                         appliedAssignments++;
                     }
+                }
+
+                int reassignedIds = EnsureUniqueReportIds(bandsList, createdControls);
+                if (reassignedIds > 0)
+                {
+                    anyChange = true;
+                    appliedAssignments++;
+                    Logger.Info("ReportLayoutHelper.WriteLayout: assigned a unique Id to " + reassignedIds + " report component(s).");
                 }
 
                 if (anyChange)
@@ -811,6 +821,9 @@ namespace GxMcp.Worker.Helpers
                 // Prevent duplicate fixed control names when cloning a template.
                 var existingControlNames = CollectControlNames(bands);
                 EnsureUniqueControlNames(newBand, existingControlNames);
+                // Issue #728: the new band and any cloned controls carry the template's Id.
+                EnsureUniqueReportIds(bands.Concat(new[] { newBand }),
+                    new object[] { newBand }.Concat(GetCollection(newBand, "Items", "Elements", "Controls", "Components")?.Cast<object>() ?? Enumerable.Empty<object>()).ToList());
 
                 bool inserted = TryInsertBandBeforeFooter(layout, bands, newBand);
                 if (!inserted)
@@ -966,9 +979,66 @@ namespace GxMcp.Worker.Helpers
 
         private static bool IsExcludedAttribute(string name)
         {
-            string[] excluded = { "ControlName", "Name", "TypeName" };
+            // Id is owned by EnsureUniqueReportIds (issue #728); an incoming value could duplicate one.
+            string[] excluded = { "ControlName", "Name", "TypeName", "Id" };
             return excluded.Contains(name, StringComparer.OrdinalIgnoreCase);
         }
+
+        /// <summary>
+        /// Issue #728: the report generator keys each component's specification facts
+        /// (<c>lit_i(Id, …)</c>) by its <c>Id</c> (<c>RPT_ID</c>, default 1), so components that
+        /// share an Id all print as the first one. The IDE gives every added component
+        /// max(Id)+1 (<c>IdCreationService.CreateId</c>); components created here are
+        /// default-constructed or cloned and keep 1 or the template's Id. This reassigns every
+        /// Id that is &lt;= 0 or already taken, walking <paramref name="created"/> last so
+        /// pre-existing components keep theirs. Running it on every write also repairs
+        /// layouts saved with duplicates. Returns how many Ids were reassigned.
+        /// </summary>
+        internal static int EnsureUniqueReportIds(IEnumerable<object> bands, IList<object> created = null)
+        {
+            var components = new List<object>();
+            foreach (var band in bands)
+            {
+                if (band == null) continue;
+                components.Add(band);
+                var items = GetCollection(band, "Items", "Elements", "Controls", "Components");
+                if (items != null) components.AddRange(items.Cast<object>().Where(i => i != null));
+            }
+
+            bool IsCreated(object c) => created != null && created.Any(x => ReferenceEquals(x, c));
+            var withId = components.Where(c => !IsCreated(c)).Concat(components.Where(IsCreated))
+                .Select(c => new { Component = c, Prop = GetReportIdProperty(c) })
+                .Where(x => x.Prop != null)
+                .ToList();
+            if (withId.Count == 0) return 0;
+
+            int next = withId.Max(x => (int)x.Prop.GetValue(x.Component, null)) + 1;
+            if (next < 1) next = 1;
+            var used = new HashSet<int>();
+            int reassigned = 0;
+            foreach (var x in withId)
+            {
+                int id = (int)x.Prop.GetValue(x.Component, null);
+                if (id > 0 && used.Add(id)) continue;
+                try
+                {
+                    x.Prop.SetValue(x.Component, next, null);
+                    used.Add(next);
+                    next++;
+                    reassigned++;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("ReportLayoutHelper: cannot assign a unique Id to '" + GetObjectIdentity(x.Component) + "': " + (ex.InnerException ?? ex).Message);
+                }
+            }
+            return reassigned;
+        }
+
+        private static PropertyInfo GetReportIdProperty(object component)
+            => component.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .FirstOrDefault(p => p.Name == "Id" && p.PropertyType == typeof(int)
+                    && p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0);
 
         private static bool IsGeometryAttribute(string name)
             => string.Equals(name, "Left", StringComparison.OrdinalIgnoreCase)

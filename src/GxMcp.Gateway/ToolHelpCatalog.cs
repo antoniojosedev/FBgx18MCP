@@ -367,6 +367,9 @@ namespace GxMcp.Gateway
                 "## Attribute (new)\n" +
                 "Pass `dataType` (optionally with an inline size, e.g. `Numeric(12,2)`) plus `length`/`decimals` overrides, or `basedOn=<existingDomain>`. The write is fail-closed: a type that cannot be applied returns `CreateMetadataNotApplied` (unknown Domain: `DomainNotFound`) and nothing is saved, because an Attribute's Type cannot be changed through the MCP afterwards. " +
                 "`dryRun` previews the same `dataType`/`length`/`decimals`/`basedOn`; the real response's `_meta.attribute` echoes `requested`, `applied` and `persistedVerified` from a post-save re-read (`CreateMetadataNotPersisted` when the KB kept something else).\n\n" +
+                "## Image (new)\n" +
+                "The SDK refuses to save an Image without an image, so pass `imagePath` (absolute path of a local PNG/JPG/GIF/SVG…, or a `.zip` of density variants; the file is embedded in the KB) or `imageUrl` (external http(s) image). Without either the create is refused with `ImageSourceRequired` (bad path/URL: `ImageSourceInvalid`), in `dryRun` too, and nothing is saved. " +
+                "Example: `{ type: \"Image\", name: \"ImgLogo\", imagePath: \"C:\\\\images\\\\logo.png\" }`. Reference it from a layout/WebForm by name once created.\n\n" +
                 "## Domain (new)\n" +
                 "Pass either a primitive shape (`dataType` + `length`/`decimals`/`signed`) or `basedOn=<existingDomain>`. For an **enumerated domain**, add `enumValues=[{name,value}...]`.\n" +
                 "- The `value` for a Character/VarChar domain must be a quoted literal — e.g. `\"\\\"A\\\"\"` (string `\"A\"`). For Numeric, pass the literal number as a string (`\"1\"`).\n" +
