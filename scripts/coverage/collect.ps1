@@ -83,7 +83,9 @@ function Invoke-CoverageTest {
     ) + $BuildProperties + @(
         "--collect", "XPlat Code Coverage",
         "--settings", $SettingsPath,
-        "--results-directory", $resultsDir
+        "--results-directory", $resultsDir,
+        # Per-test durations for scripts/ci/assert-test-durations.ps1 (CI time budget).
+        "--logger", "trx;LogFileName=$Label.trx"
     )
     & dotnet @testArguments
     if ($LASTEXITCODE -ne 0) {
@@ -98,6 +100,7 @@ function Invoke-CoverageTest {
     }
 
     Copy-Item -LiteralPath $coverage.FullName -Destination (Join-Path $OutputRoot "$Label.cobertura.xml") -Force
+    Copy-Item -LiteralPath (Join-Path $resultsDir "$Label.trx") -Destination (Join-Path $OutputRoot "$Label.trx") -Force
 }
 
 function Get-BaseOutputPath {
