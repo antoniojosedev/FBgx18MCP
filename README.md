@@ -903,6 +903,16 @@ Releases ship through `release.ps1`; the full protocol is in [`docs/release_prot
 
 ---
 
+## Support the project
+
+If you'd like to help cover the AI tokens used in developing and maintaining this
+project, voluntary contributions via Pix are welcome. Any contribution is
+appreciated — thank you!
+
+Pix key: `492d0dbc-4768-47f3-8480-d532385b639a`
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
