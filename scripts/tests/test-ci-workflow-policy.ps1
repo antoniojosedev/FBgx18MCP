@@ -165,6 +165,154 @@ $contracts = Get-JobBlock $ci 'contracts'
 foreach ($step in @('run-release-script-tests.ps1', 'check-line-endings.ps1', 'test-ci-workflow-policy.ps1', 'check-build-warning-baseline.ps1 -ValidateOnly')) {
     Assert-Policy ($contracts.Contains($step)) "contracts lane must run $step."
 }
+Assert-Policy ($contracts -notmatch '(?m)^    (if|needs):') 'contracts must always run: its line-ending check covers every changed file.'
+
+# Lane selection: each skippable lane waits for `changes` and runs unless the classifier said
+# exactly 'false', so a missing output runs the lane. The coverage threshold is enforced whenever
+# the dotnet lane was required.
+$lanePolicy = Get-Content -LiteralPath (Join-Path $ciScripts 'lane-paths.json') -Raw | ConvertFrom-Json
+$laneOutputs = [ordered]@{}
+foreach ($lane in @($lanePolicy.lanes.PSObject.Properties)) { $laneOutputs[$lane.Name] = [string]$lane.Value }
+
+function Test-LaneSelection([string]$Workflow) {
+    $errors = @()
+    $changesJob = Get-JobBlock $Workflow 'changes'
+    if ($null -eq $changesJob -or $changesJob -notmatch 'classify-lanes\.ps1') { $errors += 'changes must run classify-lanes.ps1' }
+    foreach ($lane in $laneOutputs.Keys) {
+        $output = $laneOutputs[$lane]
+        if ($null -ne $changesJob -and $changesJob -notmatch "(?m)^      $([regex]::Escape($output)): \`$\{\{ steps\.lanes\.outputs\.$([regex]::Escape($output)) \}\}\s*$") {
+            $errors += "changes does not export $output"
+        }
+        $block = Get-JobBlock $Workflow $lane
+        if ($null -eq $block) { $errors += "job $lane is missing"; continue }
+        if ((Get-JobNeeds $Workflow $lane) -notcontains 'changes') { $errors += "$lane must need changes" }
+        if ($block -notmatch "(?m)^    if: \`$\{\{ needs\.changes\.outputs\.$([regex]::Escape($output)) != 'false' \}\}\s*$") {
+            $errors += "$lane must run unless needs.changes.outputs.$output is exactly 'false'"
+        }
+    }
+    $gate = Get-JobBlock $Workflow 'test'
+    $runDotnet = "if: \`$\{\{ needs\.changes\.outputs\.$($laneOutputs['dotnet']) != 'false' \}\}"
+    foreach ($step in @('Download coverage artifacts', 'Assert combined coverage threshold')) {
+        if ($null -eq $gate -or $gate -notmatch "(?m)^      - name: $([regex]::Escape($step))\s*\n        $runDotnet\s*$") {
+            $errors += "gate step '$step' must run exactly when the dotnet lane was required"
+        }
+    }
+    return $errors
+}
+
+Assert-Policy (@(Test-LaneSelection $ci).Count -eq 0) ('lane selection: ' + (@(Test-LaneSelection $ci) -join '; '))
+Assert-Policy (@($laneOutputs.Keys) -join ',' -eq 'dotnet,toolchain,rust,rust-engine') "lane-paths.json must classify exactly the skippable lanes, got $(@($laneOutputs.Keys) -join ',')."
+foreach ($rule in @($lanePolicy.rules)) {
+    foreach ($lane in @($rule.lanes)) {
+        Assert-Policy ($lane -eq 'all' -or $laneOutputs.Contains([string]$lane)) "lane rule '$($rule.reason)' names unknown lane '$lane'."
+    }
+}
+
+# Mutations: the lane-selection checks above must be able to fail.
+$dotnetRunsOnlyOnTrue = $ci -replace "needs\.changes\.outputs\.run_dotnet != 'false' \}\}(\s*\n    runs-on)", "needs.changes.outputs.run_dotnet == 'true' }}`$1"
+Assert-Policy ($dotnetRunsOnlyOnTrue -ne $ci) 'mutation setup: the dotnet condition was not changed.'
+Assert-Policy (@(@(Test-LaneSelection $dotnetRunsOnlyOnTrue) -like "dotnet must run unless*").Count -eq 1) "a dotnet lane that skips on a missing classification was not detected."
+$toolchainWithoutNeeds = $ci -replace "(?m)^    needs: \[changes\]\r?\n(    if: \`$\{\{ needs\.changes\.outputs\.run_toolchain)", '$1'
+Assert-Policy ($toolchainWithoutNeeds -ne $ci) 'mutation setup: the toolchain needs was not removed.'
+Assert-Policy (@(@(Test-LaneSelection $toolchainWithoutNeeds) -like 'toolchain must need changes').Count -eq 1) 'a lane that does not wait for changes was not detected.'
+$unexportedRust = $ci -replace '(?m)^      run_rust: [^\r\n]*\r?\n', ''
+Assert-Policy (@(@(Test-LaneSelection $unexportedRust) -like 'changes does not export run_rust').Count -eq 1) 'an unexported lane decision was not detected.'
+$unconditionalCoverage = $ci -replace "(?m)(^      - name: Assert combined coverage threshold\r?\n)        if: [^\r\n]*\r?\n", '$1'
+Assert-Policy ($unconditionalCoverage -ne $ci) 'mutation setup: the coverage condition was not removed.'
+Assert-Policy (@(@(Test-LaneSelection $unconditionalCoverage) -like "*Assert combined coverage threshold*").Count -eq 1) 'a coverage step not tied to the dotnet decision was not detected.'
+$gatedContracts = Get-JobBlock ($ci -replace "(?m)^(    name: contracts \(python \+ docs\)\r?\n)", "`$1    if: `${{ needs.changes.outputs.run_dotnet != 'false' }}`n") 'contracts'
+Assert-Policy ($gatedContracts -match '(?m)^    (if|needs):') 'mutation: a conditional contracts lane was not detected.'
+
+# The lane map must agree with what each lane reads. A lane's sources must map to it, and for a
+# scanned lane every repository file its sources name must map to it too, or a change to that file
+# would skip a lane that reads it. Names are matched as whole tokens; a name several files share
+# (README.md, Cargo.toml) counts only with its parent directory among the six tokens before it.
+# This over-approximates on purpose: a false match costs a lane run, a missed one a skipped test.
+function Get-LaneRule([object]$Policy, [string]$Path) {
+    foreach ($rule in @($Policy.rules)) {
+        if (@($rule.patterns | Where-Object { $Path -like $_ }).Count -gt 0) { return $rule }
+    }
+    return $null
+}
+
+$trackedFiles = @(& git -C $root ls-files)
+Assert-Policy ($LASTEXITCODE -eq 0 -and $trackedFiles.Count -gt 1000) 'git ls-files must list the repository for the lane-map evidence check.'
+$filesByName = $trackedFiles | Group-Object { (Split-Path $_ -Leaf).ToLowerInvariant() } -AsHashTable
+$scanExtensions = '\.(cs|csproj|props|targets|sln|ps1|psm1|py|js|mjs|cjs|ts|json|runsettings|xml|config)$'
+
+function Get-LaneReads([object]$Policy, [string]$Lane) {
+    $evidence = $Policy.evidence.$Lane
+    $sources = @($trackedFiles | Where-Object { $file = $_; @($evidence.sources | Where-Object { $file -like $_ }).Count -gt 0 })
+    $reads = [System.Collections.Generic.HashSet[string]]::new([string[]]$sources)
+    # The leading comma keeps PowerShell from unrolling the set into an array.
+    if (-not $evidence.scan) { return , $reads }
+    $context = @{}
+    foreach ($source in @($sources | Where-Object { $_ -match $scanExtensions })) {
+        $text = [IO.File]::ReadAllText((Join-Path $root $source))
+        # Relative references such as an MSBuild Include="..\..\.gemini\skills\nexa\references\*.md"
+        # name no single file, so resolve them (wildcards included) against the source's directory.
+        foreach ($match in [regex]::Matches($text, '(?:\.\.[\\/])+[A-Za-z0-9_.\-\\/*]+')) {
+            $full = [IO.Path]::GetFullPath((Join-Path (Join-Path $root (Split-Path $source -Parent)) $match.Value))
+            if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $relative = $full.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+            foreach ($file in @($trackedFiles | Where-Object { $_ -like $relative })) { [void]$reads.Add($file) }
+        }
+        $tokens = @([regex]::Matches($text, '[A-Za-z0-9_.\-]+') | ForEach-Object { $_.Value.TrimEnd('.').ToLowerInvariant() })
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            if (-not $filesByName.ContainsKey($tokens[$i])) { continue }
+            if (-not $context.ContainsKey($tokens[$i])) { $context[$tokens[$i]] = [System.Collections.Generic.HashSet[string]]::new() }
+            for ($j = [Math]::Max(0, $i - 6); $j -lt $i; $j++) { [void]$context[$tokens[$i]].Add($tokens[$j]) }
+        }
+    }
+    foreach ($name in $context.Keys) {
+        foreach ($file in @($filesByName[$name])) {
+            $directory = Split-Path $file -Parent
+            if (@($filesByName[$name]).Count -gt 1 -and $directory -and -not $context[$name].Contains((Split-Path $directory -Leaf).ToLowerInvariant())) { continue }
+            [void]$reads.Add($file)
+        }
+    }
+    return , $reads
+}
+
+$laneReads = @{}
+foreach ($lane in $laneOutputs.Keys) {
+    Assert-Policy ($null -ne $lanePolicy.evidence.$lane -and @($lanePolicy.evidence.$lane.sources).Count -gt 0) "lane-paths.json has no evidence sources for $lane."
+    $laneReads[$lane] = Get-LaneReads $lanePolicy $lane
+}
+Assert-Policy ($laneReads['dotnet'].Contains('docs/kb-isolation-contract.md') -and $laneReads['toolchain'].Contains('docs/engine_backend.md')) 'the evidence scan must find documents the tests read.'
+Assert-Policy (-not $laneReads['dotnet'].Contains('src/nexus-ide/package.json')) 'a shared file name must not match without its parent directory.'
+
+function Test-LaneMap([object]$Policy) {
+    $errors = @()
+    foreach ($lane in $laneOutputs.Keys) {
+        foreach ($file in $laneReads[$lane]) {
+            $rule = Get-LaneRule $Policy $file
+            if ($null -eq $rule -or @($rule.lanes) -contains 'all' -or @($rule.lanes) -contains $lane) { continue }
+            $errors += "$file is read by $lane but its rule '$($rule.reason)' skips $lane"
+        }
+    }
+    return $errors
+}
+
+Assert-Policy (@(Test-LaneMap $lanePolicy).Count -eq 0) ("lane-paths.json drops lanes that read a file:`n  " + (@(Test-LaneMap $lanePolicy) -join "`n  "))
+
+# Mutations: the evidence check must catch a rule that drops a reading lane.
+function Copy-LanePolicy { Get-Content -LiteralPath (Join-Path $ciScripts 'lane-paths.json') -Raw | ConvertFrom-Json }
+$withoutDotnetDocs = Copy-LanePolicy
+foreach ($rule in @($withoutDotnetDocs.rules)) { $rule.patterns = @($rule.patterns | Where-Object { $_ -ne 'docs/kb-isolation-contract.md' }) }
+Assert-Policy (@(@(Test-LaneMap $withoutDotnetDocs) -like 'docs/kb-isolation-contract.md is read by dotnet*').Count -eq 1) 'a document the Gateway tests read, mapped to toolchain only, was not detected.'
+$withoutToolDefinitions = Copy-LanePolicy
+foreach ($rule in @($withoutToolDefinitions.rules)) { $rule.patterns = @($rule.patterns | Where-Object { $_ -ne 'src/GxMcp.Gateway/tool_definitions.json' }) }
+Assert-Policy (@(@(Test-LaneMap $withoutToolDefinitions) -like 'src/GxMcp.Gateway/tool_definitions.json is read by toolchain*').Count -eq 1) 'the tool schema the CLI tests read, mapped to dotnet only, was not detected.'
+$gxwireOnlyRust = Copy-LanePolicy
+($gxwireOnlyRust.rules | Where-Object { $_.patterns -contains 'src/gxwire/*' }).lanes = @('rust')
+Assert-Policy (@(@(Test-LaneMap $gxwireOnlyRust) -like 'src/gxwire/* is read by dotnet*').Count -gt 0) 'gxwire mapped away from the dotnet lane that builds it was not detected.'
+$withoutEmbeddedSkills = Copy-LanePolicy
+foreach ($rule in @($withoutEmbeddedSkills.rules)) { $rule.patterns = @($rule.patterns | Where-Object { $_ -ne '.gemini/skills/nexa/*' }) }
+Assert-Policy (@(@(Test-LaneMap $withoutEmbeddedSkills) -like '.gemini/skills/nexa/references/common-collections.md is read by dotnet*').Count -eq 1) 'a skill the Gateway embeds through a csproj wildcard, mapped to no lane, was not detected.'
+$engineWithoutCrateLane = Copy-LanePolicy
+($engineWithoutCrateLane.rules | Where-Object { $_.patterns -contains 'src/gx-engine/*' }).lanes = @('dotnet')
+Assert-Policy (@(@(Test-LaneMap $engineWithoutCrateLane) -like 'src/gx-engine/* is read by rust-engine*').Count -gt 0) 'gx-engine sources mapped away from their crate lane were not detected.'
 $sdkScript = Get-Content -LiteralPath (Join-Path $ciScripts 'sdk-validation.ps1') -Raw
 Assert-Policy ($sdkScript -match 'check-build-warning-baseline\.ps1' -and $sdkScript -notmatch '-ValidateOnly') 'the SDK lane must compare real Release warning locations, not only validate the manifest.'
 
@@ -286,13 +434,81 @@ try {
     Assert-Classification 'missing-shas' @{ EventName = 'pull_request' } 'true'
     Assert-Classification 'diff-failure' @{ EventName = 'pull_request'; BaseSha = ('0' * 40); HeadSha = ('1' * 40) } 'true'
 
+    # classify-lanes.ps1: expected lanes are the ones that must run; every other lane is skipped.
+    function Assert-LaneClassification([string]$Name, [hashtable]$Arguments, [string[]]$Expected, [string]$ExpectedReason = '') {
+        $outputFile = Join-Path $work "lanes_$($Name -replace '\W', '_').out"
+        $invocation = "& '$(Join-Path $ciScripts 'classify-lanes.ps1')' -GitHubOutput '$outputFile'"
+        foreach ($key in $Arguments.Keys) {
+            $values = @([string]$Arguments[$key] -split ',' | ForEach-Object { "'$_'" })
+            $invocation += " -$key $($values -join ',')"
+        }
+        $output = & pwsh -NoProfile -Command $invocation 2>&1 | Out-String
+        Assert-Policy ($LASTEXITCODE -eq 0) "lanes '$Name' exited $($LASTEXITCODE): $output"
+        $written = Get-Content -LiteralPath $outputFile -Raw
+        $runAll = $Expected -contains 'all'
+        foreach ($lane in $laneOutputs.Keys) {
+            $want = ($runAll -or $Expected -contains $lane).ToString().ToLowerInvariant()
+            Assert-Policy ($written -match "(?m)^$($laneOutputs[$lane])=$want\s*$") "lanes '$Name' expected $($laneOutputs[$lane])=$want, got: $written"
+        }
+        if ($ExpectedReason) { Assert-Policy ($written.Contains($ExpectedReason)) "lanes '$Name' reason lacks '$ExpectedReason': $written" }
+    }
+    $pr = @{ EventName = 'pull_request' }
+    function With-Files([string]$Files) { @{ EventName = 'pull_request'; ChangedFile = $Files } }
+    Assert-LaneClassification 'docs-only' (With-Files 'docs/agent_playbook.md,docs/superpowers/specs/x.md') @('toolchain')
+    Assert-LaneClassification 'docs-read-by-gateway-tests' (With-Files 'README.md,CHANGELOG.md,docs/kb-isolation-contract.md') @('dotnet', 'toolchain')
+    Assert-LaneClassification 'plans-only' (With-Files 'plans/001-index-flush-count-regression-test.md') @()
+    Assert-LaneClassification 'cli-only' (With-Files 'cli/run.js,cli/run.test.js') @('dotnet', 'toolchain')
+    Assert-LaneClassification 'nexus-ide-only' (With-Files 'src/nexus-ide/src/extension.ts') @('toolchain')
+    Assert-LaneClassification 'gxwire-only' (With-Files 'src/gxwire/src/main.rs,src/gxwire/Cargo.lock') @('rust', 'dotnet')
+    Assert-LaneClassification 'gx-engine-only' (With-Files 'src/gx-engine/src/lib.rs') @('rust-engine', 'dotnet')
+    Assert-LaneClassification 'gx-engine-readme' (With-Files 'src/gx-engine/README.md') @('rust-engine', 'dotnet', 'toolchain')
+    Assert-LaneClassification 'csharp-only' (With-Files 'src/GxMcp.Worker/Services/PropertyService.cs,src/GxMcp.Gateway.Tests/EngineBackendTests.cs') @('dotnet')
+    Assert-LaneClassification 'tool-definitions' (With-Files 'src/GxMcp.Gateway/tool_definitions.json') @('dotnet', 'toolchain')
+    Assert-LaneClassification 'backslash-path' (With-Files 'src\gxwire\src\main.rs') @('rust', 'dotnet')
+    Assert-LaneClassification 'workflow-change' (With-Files 'docs/agent_playbook.md,.github/workflows/ci.yml') @('all') 'changes how every lane runs'
+    Assert-LaneClassification 'ci-script-change' (With-Files 'scripts/ci/assert-ci-gate.ps1') @('all') 'changes how every lane runs'
+    Assert-LaneClassification 'lane-map-change' (With-Files 'scripts/ci/lane-paths.json') @('all')
+    Assert-LaneClassification 'unmapped-path' (With-Files 'plans/001-index-flush-count-regression-test.md,brand-new/file.txt') @('all') "no lane rule maps 'brand-new/file.txt'"
+    Assert-LaneClassification 'empty-diff' (With-Files '') @('all') 'lists no changed files'
+    Assert-LaneClassification 'lanes-no-event' @{ EventName = 'workflow_dispatch'; BaseSha = 'a'; HeadSha = 'b' } @('all') 'no pull-request diff'
+    Assert-LaneClassification 'lanes-missing-shas' $pr @('all') 'SHA is unavailable'
+    Assert-LaneClassification 'lanes-diff-failure' @{ EventName = 'pull_request'; BaseSha = ('0' * 40); HeadSha = ('1' * 40) } @('all') 'failed'
+
+    # A move must classify both sides: rename detection would list only the new, unrelated path.
+    $renameRepo = Join-Path $work 'rename-repo'
+    New-Item -ItemType Directory -Path (Join-Path $renameRepo 'src/GxMcp.Gateway') -Force | Out-Null
+    function Invoke-RenameGit([string[]]$Arguments) {
+        $output = & git -C $renameRepo -c user.name=policy -c user.email=policy@example.invalid @Arguments 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { throw "git $($Arguments -join ' ') failed: $output" }
+        return $output.Trim()
+    }
+    Invoke-RenameGit @('init', '-q', '-b', 'main') | Out-Null
+    (1..40 | ForEach-Object { "internal static class EngineRouting$_ { }" }) | Set-Content -LiteralPath (Join-Path $renameRepo 'src/GxMcp.Gateway/EngineRouting.cs')
+    Invoke-RenameGit @('add', '.') | Out-Null
+    Invoke-RenameGit @('commit', '-q', '-m', 'base') | Out-Null
+    $renameBase = Invoke-RenameGit @('rev-parse', 'HEAD')
+    New-Item -ItemType Directory -Path (Join-Path $renameRepo 'plans') -Force | Out-Null
+    Invoke-RenameGit @('mv', 'src/GxMcp.Gateway/EngineRouting.cs', 'plans/engine-routing.md') | Out-Null
+    Invoke-RenameGit @('commit', '-q', '-m', 'move') | Out-Null
+    $renameHead = Invoke-RenameGit @('rev-parse', 'HEAD')
+    Assert-Policy ((Invoke-RenameGit @('diff', '--name-only', "$renameBase...$renameHead")) -eq 'plans/engine-routing.md') 'mutation setup: git must detect the move as a rename.'
+    $renameArguments = @{ EventName = 'pull_request'; BaseSha = $renameBase; HeadSha = $renameHead; Repository = $renameRepo }
+    Assert-LaneClassification 'rename-out-of-dotnet' $renameArguments @('dotnet')
+    Assert-Classification 'rename-out-of-engine-routing' $renameArguments 'true'
+
     # assert-ci-gate.ps1
     $commit = 'a' * 40
-    function New-NeedsJson([hashtable]$Overrides = @{}, [string]$SdkResult = 'skipped', [string]$SdkState = '', [string]$SdkCommit = '') {
+    function New-NeedsJson([hashtable]$Overrides = @{}, [string]$SdkResult = 'skipped', [string]$SdkState = '', [string]$SdkCommit = '', [hashtable]$Decisions = @{}) {
         $needs = [ordered]@{}
         foreach ($lane in @('changes', 'dotnet', 'toolchain', 'rust', 'rust-engine', 'contracts')) {
             $needs[$lane] = @{ result = $(if ($Overrides.ContainsKey($lane)) { $Overrides[$lane] } else { 'success' }); outputs = @{} }
         }
+        foreach ($lane in $laneOutputs.Keys) {
+            $output = $laneOutputs[$lane]
+            $needs['changes'].outputs[$output] = 'true'
+        }
+        foreach ($output in $Decisions.Keys) { $needs['changes'].outputs[$output] = $Decisions[$output] }
+        $needs['changes'].outputs['lanes_reason'] = 'test classification'
         $needs['sdk-validation'] = @{ result = $SdkResult; outputs = @{ state = $SdkState; commit = $SdkCommit } }
         $needs | ConvertTo-Json -Depth 5 -Compress
     }
@@ -309,6 +525,16 @@ try {
     Assert-Gate 'unrelated-optional-lane-failed' (New-NeedsJson -SdkResult 'failure' -SdkState 'fail') @{ SdkEvidenceRequired = 'false'; SdkEnabled = 'true' } 0
     Assert-Gate 'rust-engine-failed' (New-NeedsJson @{ 'rust-engine' = 'failure' }) @{ SdkEvidenceRequired = 'false' } 1 'rust-engine=failure'
     Assert-Gate 'lane-skipped-is-not-success' (New-NeedsJson @{ contracts = 'skipped' }) @{ SdkEvidenceRequired = 'false' } 1 'contracts=skipped'
+    Assert-Gate 'contracts-skipped-even-if-classified' (New-NeedsJson @{ contracts = 'skipped' } -Decisions @{ run_contracts = 'false' }) @{ SdkEvidenceRequired = 'false' } 1 'contracts=skipped'
+    Assert-Gate 'lane-skipped-by-classifier' (New-NeedsJson @{ 'rust-engine' = 'skipped' } -Decisions @{ run_rust_engine = 'false' }) @{ SdkEvidenceRequired = 'false' } 0 'Lanes skipped because this diff cannot affect them: rust-engine'
+    $docsOnly = @{ run_dotnet = 'false'; run_rust = 'false'; run_rust_engine = 'false' }
+    Assert-Gate 'docs-only-heavy-lanes-skipped' (New-NeedsJson @{ dotnet = 'skipped'; rust = 'skipped'; 'rust-engine' = 'skipped' } -Decisions $docsOnly) @{ SdkEvidenceRequired = 'false' } 0 'dotnet, rust, rust-engine'
+    Assert-Gate 'lane-skipped-but-required' (New-NeedsJson @{ dotnet = 'skipped' } -Decisions @{ run_dotnet = 'true' }) @{ SdkEvidenceRequired = 'false' } 1 "dotnet=skipped although run_dotnet='true'"
+    Assert-Gate 'lane-skipped-classification-missing' (New-NeedsJson @{ toolchain = 'skipped' } -Decisions @{ run_toolchain = '' }) @{ SdkEvidenceRequired = 'false' } 1 "toolchain=skipped although run_toolchain=''"
+    Assert-Gate 'lane-skipped-classification-garbled' (New-NeedsJson @{ rust = 'skipped' } -Decisions @{ run_rust = 'False ' }) @{ SdkEvidenceRequired = 'false' } 1 'rust=skipped although'
+    Assert-Gate 'classified-skip-but-failed' (New-NeedsJson @{ dotnet = 'failure' } -Decisions @{ run_dotnet = 'false' }) @{ SdkEvidenceRequired = 'false' } 1 'dotnet=failure'
+    Assert-Gate 'classified-skip-but-cancelled' (New-NeedsJson @{ rust = 'cancelled' } -Decisions @{ run_rust = 'false' }) @{ SdkEvidenceRequired = 'false' } 1 'rust=cancelled'
+    Assert-Gate 'classifier-failed' (New-NeedsJson @{ changes = 'failure'; dotnet = 'skipped' } -Decisions @{ run_dotnet = 'false' }) @{ SdkEvidenceRequired = 'false' } 1 'dotnet=skipped'
     Assert-Gate 'classification-missing' (New-NeedsJson) @{ SdkEvidenceRequired = '' } 1 'sdk_evidence_required'
     Assert-Gate 'backend-change-no-runner' (New-NeedsJson) @{ SdkEvidenceRequired = 'true'; SdkEnabled = '' } 1 'GXMCP_SDK_CI_ENABLED'
     Assert-Gate 'backend-change-lane-skipped' (New-NeedsJson) @{ SdkEvidenceRequired = 'true'; SdkEnabled = 'true' } 1 "concluded 'skipped'"
