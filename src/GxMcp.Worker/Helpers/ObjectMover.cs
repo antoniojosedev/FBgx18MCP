@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
@@ -27,6 +28,9 @@ namespace GxMcp.Worker.Helpers
             public bool Ok;
             public string Strategy;   // which persist path was taken
             public string Error;      // populated when Ok == false
+            // Every persist path that was tried and what it answered, in order. A refused
+            // move reports it, so the caller sees which SDK path said no and why.
+            public IReadOnlyList<string> Attempts;
         }
 
         /// <summary>
@@ -49,24 +53,24 @@ namespace GxMcp.Worker.Helpers
         /// <summary>
         /// Set <paramref name="obj"/>'s parent to <paramref name="container"/> and persist.
         /// Both are KBObject instances (folder/module are KBObjects that derive from the
-        /// Udm Entity type). Does NOT verify persistence — the caller re-reads the parent.
+        /// Udm Entity type). Does NOT verify persistence - the caller re-reads the parent.
         /// </summary>
         public static MoveResult SetParentAndSave(object obj, object container)
         {
-            if (obj == null) return new MoveResult { Ok = false, Error = "object is null" };
-            if (container == null) return new MoveResult { Ok = false, Error = "destination container is null" };
+            var attempts = new List<string>();
+            if (obj == null) return Failed("object is null", attempts);
+            if (container == null) return Failed("destination container is null", attempts);
 
             // 1. Set the in-memory parent (works at runtime; the facade-DLL no-op is a
-            //    decompilation artefact). Best-effort — SaveWithParent also passes the
+            //    decompilation artefact). Best-effort - SaveWithParent also passes the
             //    parent explicitly, so this is belt-and-suspenders.
-            TrySetParentProperty(obj, container);
+            string setError = TrySetParent(obj, container);
+            attempts.Add("KBObject.Parent = " + (setError == null ? "set" : "refused (" + setError + ")"));
 
             // 2. Resolve the Udm EntityManager (same lookup WebFormSaveDiagnostics uses).
-            Type emType = FindType("Artech.Layers.BL.EntityManager")
-                        ?? FindType("Artech.Udm.Framework.EntityManager")
-                        ?? FindFirstType("EntityManager");
+            Type emType = FindEntityManagerType();
             if (emType == null)
-                return new MoveResult { Ok = false, Error = "EntityManager type not found in loaded assemblies" };
+                return Failed("EntityManager type not found in loaded assemblies", attempts);
 
             object prefs = BuildSavePreferences();
 
@@ -77,18 +81,30 @@ namespace GxMcp.Worker.Helpers
             if (up != null)
             {
                 var inv = InvokeSave(emType, up, BuildArgs(up, obj, null, prefs));
-                if (inv == null) return new MoveResult { Ok = true, Strategy = "EntityManager.UpdateParent" };
+                if (inv == null)
+                {
+                    attempts.Add("EntityManager.UpdateParent = ok");
+                    return new MoveResult { Ok = true, Strategy = "EntityManager.UpdateParent", Attempts = attempts };
+                }
+                attempts.Add("EntityManager.UpdateParent = " + Describe(inv));
             }
+            else attempts.Add("EntityManager.UpdateParent = not available in this SDK");
 
-            // 3b. SaveWithParent(entity, parentEntity[, prefs]) — compatibility fallback
+            // 3b. SaveWithParent(entity, parentEntity[, prefs]) - compatibility fallback
             // for SDK builds without a usable UpdateParent overload. The caller snapshots
             // and verifies every part, so any destructive normalization is rejected.
             var swp = FindMethod(emType, "SaveWithParent", obj, container);
             if (swp != null)
             {
                 var inv = InvokeSave(emType, swp, BuildArgs(swp, obj, container, prefs));
-                if (inv == null) return new MoveResult { Ok = true, Strategy = "EntityManager.SaveWithParent" };
+                if (inv == null)
+                {
+                    attempts.Add("EntityManager.SaveWithParent = ok");
+                    return new MoveResult { Ok = true, Strategy = "EntityManager.SaveWithParent", Attempts = attempts };
+                }
+                attempts.Add("EntityManager.SaveWithParent = " + Describe(inv));
             }
+            else attempts.Add("EntityManager.SaveWithParent = not available in this SDK");
 
             // 3c. Last resort: plain Save on the object (some SDK builds persist the
             //     parent as part of a normal header save once Parent is set).
@@ -98,30 +114,64 @@ namespace GxMcp.Worker.Helpers
                 if (save != null)
                 {
                     save.Invoke(obj, null);
-                    return new MoveResult { Ok = true, Strategy = "KBObject.Save" };
+                    attempts.Add("KBObject.Save = ok");
+                    return new MoveResult { Ok = true, Strategy = "KBObject.Save", Attempts = attempts };
                 }
+                attempts.Add("KBObject.Save = not available");
             }
             catch (Exception ex)
             {
-                return new MoveResult { Ok = false, Error = "obj.Save() threw: " + Unwrap(ex).Message };
+                attempts.Add("KBObject.Save = " + Describe(Unwrap(ex)));
+                return Failed("obj.Save() threw: " + Unwrap(ex).Message, attempts);
             }
 
-            return new MoveResult { Ok = false, Error = "no persist path (SaveWithParent/UpdateParent/Save) resolved on " + emType.FullName };
+            return Failed("no persist path (SaveWithParent/UpdateParent/Save) resolved on " + emType.FullName, attempts);
         }
 
-        // ---- internals -------------------------------------------------------
+        /// <summary>
+        /// True when this SDK exposes at least one way to persist a new parent. Resolves the
+        /// persist path without calling it, so a dry run can tell a move that cannot work
+        /// from one that merely has not been tried.
+        /// </summary>
+        public static bool CanPersistParent(object obj, object container, out string detail)
+        {
+            detail = null;
+            Type emType = FindEntityManagerType();
+            if (emType == null)
+            {
+                detail = "EntityManager type not found in loaded assemblies";
+                return false;
+            }
+            if (obj != null && FindMethod(emType, "UpdateParent", obj, null, logBinding: false) != null) return true;
+            if (obj != null && container != null && FindMethod(emType, "SaveWithParent", obj, container, logBinding: false) != null) return true;
+            if (obj != null && obj.GetType().GetMethod("Save", Type.EmptyTypes) != null) return true;
+            detail = "no UpdateParent/SaveWithParent/Save path resolved on " + emType.FullName;
+            return false;
+        }
 
-        private static void TrySetParentProperty(object obj, object container)
+        /// <summary>
+        /// Sets the in-memory parent of <paramref name="obj"/>. Returns null when the setter accepted
+        /// the container, else why not. Used by object creation to place a new object before its first save.
+        /// </summary>
+        public static string TrySetParent(object obj, object container)
         {
             try
             {
-                var p = obj.GetType().GetProperty("Parent",
-                    BindingFlags.Public | BindingFlags.Instance);
-                if (p != null && p.CanWrite && p.PropertyType.IsInstanceOfType(container))
-                    p.SetValue(obj, container, null);
+                var p = obj.GetType().GetProperty("Parent", BindingFlags.Public | BindingFlags.Instance);
+                if (p == null || !p.CanWrite) return "the object has no writable Parent";
+                if (!p.PropertyType.IsInstanceOfType(container)) return "the destination is not a " + p.PropertyType.Name;
+                p.SetValue(obj, container, null);
+                return null;
             }
-            catch (Exception ex) { Logger.Info("[Move] set_Parent threw: " + Unwrap(ex).Message); }
+            catch (Exception ex)
+            {
+                string reason = Unwrap(ex).Message;
+                Logger.Info("[Move] set_Parent threw: " + reason);
+                return reason;
+            }
         }
+
+        // ---- internals -------------------------------------------------------
 
         // Plan 072: reflection enumerates methods in an UNSPECIFIED order, so the former
         // "first match wins" could bind a different SaveWithParent/UpdateParent overload
@@ -131,7 +181,7 @@ namespace GxMcp.Worker.Helpers
         // ties by preferring the LONGEST overload (the one declaring the most of the
         // parameters we can supply — SaveWithParent(entity, parent, prefs) over the 2-arg).
         // The chosen binding is logged so a wrong pick is diagnosable in the worker log.
-        internal static MethodInfo FindMethod(Type emType, string name, object arg0, object arg1 = null)
+        internal static MethodInfo FindMethod(Type emType, string name, object arg0, object arg1 = null, bool logBinding = true)
         {
             MethodInfo best = null;
             int bestScore = -1;
@@ -150,12 +200,23 @@ namespace GxMcp.Worker.Helpers
                     best = mi;
                 }
             }
-            if (best != null)
+            if (best != null && logBinding)
             {
                 Logger.Info("[Move] bound " + name + " -> " + Signature(best));
             }
             return best;
         }
+
+        private static Type FindEntityManagerType()
+            => FindType("Artech.Layers.BL.EntityManager")
+               ?? FindType("Artech.Udm.Framework.EntityManager")
+               ?? FindFirstType("EntityManager");
+
+        private static MoveResult Failed(string error, IReadOnlyList<string> attempts)
+            => new MoveResult { Ok = false, Error = error, Attempts = attempts };
+
+        private static string Describe(Exception ex)
+            => "threw " + ex.GetType().Name + ": " + ex.Message;
 
         private static string Signature(MethodInfo mi)
         {

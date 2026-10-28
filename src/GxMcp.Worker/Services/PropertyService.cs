@@ -859,7 +859,10 @@ namespace GxMcp.Worker.Services
                 {
                     string kind = propName.Trim().StartsWith("Module", StringComparison.OrdinalIgnoreCase) ? "Module"
                         : propName.Trim().StartsWith("Folder", StringComparison.OrdinalIgnoreCase) ? "Folder" : null;
-                    return _objectService.MoveObject(target, value, typeFilter, kind);
+                    // The scalar set has no version token of its own, so it moves against the version it
+                    // just read. action=move (baseVersion, dryRun) is the version-checked route.
+                    return _objectService.MoveObject(target, value, typeFilter, kind,
+                        baseVersion: WriteService.ComputeVersionToken(obj));
                 }
 
                 // issue #49: renaming an object by setting its "Name" via the generic property
