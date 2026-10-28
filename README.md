@@ -765,7 +765,7 @@ graph LR
     B -->|shared-host: named-pipe attachment| H[Per-KB WorkerHost broker]
     H -->|one compatible child| C
     C -->|Native SDK or legacy driver| D[GeneXus KB]
-    B -->|admitted builds and type-only queries| E[gx-engine]
+    B -->|admitted builds, type-only queries, bounded reads| E[gx-engine]
     E -->|direct UDM read| D
 ```
 
@@ -782,7 +782,7 @@ graph LR
 
 ### 🎮 Decompilation / Parity Progress
 
-Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. At the published 4.0.0 baseline, the disposable `KBTeste` Rebuild All recorded **346/346, 0 skipped, 0 refused** and **byte for byte (328/328 files)** C# agreement, together with web scripts, `gxcfg.js`, messages and runtime configuration. These historical counts do not validate later changes or prove that unsupported database semantics were preserved. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds and field-limited type-only queries; reads/edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
+Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. At the published 4.0.0 baseline, the disposable `KBTeste` Rebuild All recorded **346/346, 0 skipped, 0 refused** and **byte for byte (328/328 files)** C# agreement, together with web scripts, `gxcfg.js`, messages and runtime configuration. These historical counts do not validate later changes or prove that unsupported database semantics were preserved. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds, field-limited type-only queries and four bounded read-only requests; object reads, edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
 
 ### What builds today
 
@@ -822,8 +822,11 @@ replacement percentage.
 
 - Native-runtime oracle rows cover only their recorded inputs, encodings and
   environment; synthetic library tests alone do not establish native parity.
-- Admitted type-only queries and blocking builds/rebuilds are the current native
-  MCP surface. Reads and edits remain SDK-backed or fail closed; routing a call
+- Admitted type-only queries, blocking builds/rebuilds and four bounded read-only
+  requests (sole-environment `genexus_kb get_environment`, Procedure pages of
+  `genexus_list_objects`, `genexus_kb_version list`, minimal Procedure
+  `genexus_inspect`) are the current native MCP surface. Object reads
+  (`genexus_read`) and edits remain SDK-backed or fail closed; routing a call
   to a deferral guard is not native implementation coverage.
 - Storage decoding, navigation planning, object modeling and C# emission remain
   partial. Unsupported database statements must fail generation rather than
@@ -866,7 +869,7 @@ As new capabilities reach parity and additional optimizations land, follow this 
 ### Activation Flag & Safety Seam
 
 > [!IMPORTANT]
-> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do admitted type-only `genexus_query` calls selecting only `name`/`type` fields. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Edits, async/other directed builds, all reads, `usedby:` searches, ranked fuzzy queries and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
+> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do admitted type-only `genexus_query` calls selecting only `name`/`type` fields. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Four bounded read-only requests also use gx-engine: `genexus_kb get_environment` when the KB has exactly one stored environment, nonempty `typeFilter=Procedure` pages of `genexus_list_objects` (explicit `limit` 1..100, `name`/`type` fields), `genexus_kb_version action=list`, and `genexus_inspect type=Procedure projection=minimal` for an exact-case ASCII name. Edits, async/other directed builds, all reads through `genexus_read`, other shapes of those read tools, `usedby:` searches, ranked fuzzy queries and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
 
 No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the engine off (`"sdk"`), configure `config.json`:
 
@@ -880,7 +883,7 @@ No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the
 }
 ```
 
-- **`Engine.Backend`**: `"gxengine"` (default: admitted builds and field-limited type-only queries; reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
+- **`Engine.Backend`**: `"gxengine"` (default: admitted builds, field-limited type-only queries and the four bounded read-only requests; object reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
 - **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK outside admitted native coverage) or `"error"` (fails closed: `EngineCapabilityNotParity` for evidence-gate rejection; `EngineOperationOutsideAdmittedSpace` for read/edit deferrals and unsupported query/build arguments).
 - **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, and `capabilities`. Its `routedOperations` lists served native operations; `deferredOperations` lists read/edit deferrals separately, never as parity.
 
