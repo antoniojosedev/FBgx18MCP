@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "description": "CI time budget (CODING_STANDARDS.md, CI time budget). A test or script slower than its budget fails CI unless it is listed under 'exceptions' with the reason it cannot be faster. Make the test faster before adding an exception: inject the clock or timeout instead of waiting it out, shrink benchmark iterations, share expensive setup. Budgets apply on the hosted runners (GitHub Actions); local runs only report the slowest entries. gx-engine's per-test limit lives in src/gx-engine/.config/nextest.toml.",
+  "dotnetTestSeconds": 10,
+  "releaseScriptSeconds": 120,
+  "exceptions": {
+    "dotnet": {},
+    "releaseScripts": {}
+  }
+}

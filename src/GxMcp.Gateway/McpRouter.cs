@@ -2295,6 +2295,8 @@ namespace GxMcp.Gateway
         ///   <item>When <paramref name="cancellationToken"/> is signalled, returns a typed
         ///         request-cancelled envelope instead of waiting until the poll deadline.</item>
         /// </list>
+        /// <paramref name="clock"/> drives the deadline and heartbeat schedule (the system clock
+        /// when omitted), so a test can prove the safe-wait cap without waiting it out.
         /// </summary>
         internal static async Task<JObject> LongPollJob(
             BackgroundJobRegistry registry,
@@ -2303,8 +2305,10 @@ namespace GxMcp.Gateway
             JToken? progressToken = null,
             Func<JObject, Task>? heartbeat = null,
             CancellationToken cancellationToken = default,
-            string until = "terminal")
+            string until = "terminal",
+            TimeProvider? clock = null)
         {
+            clock ??= TimeProvider.System;
             // Clamp wait_seconds to [0, MaxLongPollSeconds]
             int requestedWaitSeconds = Math.Min(Math.Max(waitSeconds, 0), MaxLongPollSeconds);
 
@@ -2321,7 +2325,7 @@ namespace GxMcp.Gateway
                 ? "terminal" : "change";
             bool waitForTerminal = waitUntil == "terminal";
 
-            var startedAt = DateTime.UtcNow;
+            var startedAt = clock.GetUtcNow().UtcDateTime;
             var deadline = startedAt.AddSeconds(effectiveWaitSeconds);
             var nextHeartbeatAt = startedAt.AddSeconds(HeartbeatIntervalSeconds);
             JobEntry? job;
@@ -2353,9 +2357,9 @@ namespace GxMcp.Gateway
                 if (nowTerminal || (changed && !waitForTerminal))
                     break;
 
-                if (canHeartbeat && DateTime.UtcNow >= nextHeartbeatAt)
+                if (canHeartbeat && clock.GetUtcNow().UtcDateTime >= nextHeartbeatAt)
                 {
-                    int elapsed = (int)(DateTime.UtcNow - startedAt).TotalSeconds;
+                    int elapsed = (int)(clock.GetUtcNow().UtcDateTime - startedAt).TotalSeconds;
                     var note = new JObject
                     {
                         ["jsonrpc"] = "2.0",
@@ -2370,7 +2374,7 @@ namespace GxMcp.Gateway
                     };
                     try { await heartbeat!(note).ConfigureAwait(false); }
                     catch { /* heartbeat failure must not abort the poll */ }
-                    nextHeartbeatAt = DateTime.UtcNow.AddSeconds(HeartbeatIntervalSeconds);
+                    nextHeartbeatAt = clock.GetUtcNow().UtcDateTime.AddSeconds(HeartbeatIntervalSeconds);
                 }
 
                 try
@@ -2382,7 +2386,7 @@ namespace GxMcp.Gateway
                     return BuildRequestCancelledEnvelope(jobId);
                 }
             }
-            while (DateTime.UtcNow < deadline);
+            while (clock.GetUtcNow().UtcDateTime < deadline);
 
             if (job == null)
             {

@@ -144,9 +144,9 @@ Assert-Policy (@($legacyErrors -like "*rust-engine step 'Lint and format gx-engi
 Assert-Policy (@($legacyErrors -like "*rust-engine step 'Build and test gx-engine' runs 2 cargo commands*").Count -eq 1) 'the pre-fix chained test/build step was not detected.'
 $chainedWithChecks = $legacyWorkflow -replace '(?m)^(          cargo .*)$', "`$1`n          if (`$LASTEXITCODE -ne 0) { throw 'cargo failed' }"
 Assert-Policy (-not @(Test-RustLanesFailClosed $chainedWithChecks | Where-Object { $_ -like '*cargo commands without*' })) 'a chained step that checks $LASTEXITCODE after each command must be accepted.'
-$chainedTestAndBuild = $ci -replace '(?m)^        run: (cargo test --manifest-path src/gx-engine/Cargo.toml --locked)\r?\n\r?\n      - name: Build gx-engine\r?\n        shell: pwsh\r?\n        run: (cargo build [^\r\n]*)', "        run: |`n          `$1`n          `$2"
-Assert-Policy ($chainedTestAndBuild -ne $ci) 'mutation setup: test and build were not chained.'
-Assert-Policy (@(Test-RustLanesFailClosed $chainedTestAndBuild | Where-Object { $_ -like '*cargo commands without*' }).Count -gt 0) 'chaining the current test and build commands was not detected.'
+$chainedTestAndDoc = $ci -replace '(?ms)^        run: (cargo nextest run --manifest-path src/gx-engine/Cargo.toml [^\r\n]*)\r?\n.*?^      - name: Test gx-engine doctests\r?\n        shell: pwsh\r?\n        run: (cargo test --doc [^\r\n]*)', "        run: |`n          `$1`n          `$2"
+Assert-Policy ($chainedTestAndDoc -ne $ci) 'mutation setup: the test and doctest commands were not chained.'
+Assert-Policy (@(Test-RustLanesFailClosed $chainedTestAndDoc | Where-Object { $_ -like '*cargo commands without*' }).Count -gt 0) 'chaining the current test and doctest commands was not detected.'
 $gxwireWithoutClippy = $ci -replace '(?m)^        run: cargo clippy --manifest-path src/gxwire/Cargo.toml[^\r\n]*', '        run: Write-Host skipped'
 Assert-Policy ($gxwireWithoutClippy -ne $ci) 'mutation setup: gxwire clippy was not removed.'
 Assert-Policy (@(@(Test-RustLanesFailClosed $gxwireWithoutClippy) -like 'rust does not run a cargo command matching*clippy*').Count -eq 1) 'a missing gxwire clippy gate was not detected.'
@@ -162,9 +162,12 @@ Assert-Policy ($sdkJob -match 'github\.event\.pull_request\.head\.repo\.full_nam
 Assert-Policy ($sdkJob -match 'state: \$\{\{ steps\.status\.outputs\.state \}\}' -and $sdkJob -match 'commit: \$\{\{ steps\.status\.outputs\.commit \}\}') 'the SDK lane must export state and commit for the gate.'
 
 $contracts = Get-JobBlock $ci 'contracts'
-foreach ($step in @('run-release-script-tests.ps1', 'check-line-endings.ps1', 'test-ci-workflow-policy.ps1', 'check-build-warning-baseline.ps1 -ValidateOnly')) {
+foreach ($step in @('run-release-script-tests.ps1', 'check-line-endings.ps1', 'check-build-warning-baseline.ps1 -ValidateOnly')) {
     Assert-Policy ($contracts.Contains($step)) "contracts lane must run $step."
 }
+# This policy runs inside the release script suite, once; the contracts lane no longer repeats it.
+$suite = Get-Content -LiteralPath (Join-Path $root 'scripts/tests/run-release-script-tests.ps1') -Raw
+Assert-Policy ($suite -match "(?m)^\s*'test-ci-workflow-policy\.ps1',?\s*$") 'the release script suite must run test-ci-workflow-policy.ps1.'
 Assert-Policy ($contracts -notmatch '(?m)^    (if|needs):') 'contracts must always run: its line-ending check covers every changed file.'
 
 # Lane selection: each skippable lane waits for `changes` and runs unless the classifier said
@@ -240,6 +243,41 @@ Assert-Policy ($LASTEXITCODE -eq 0 -and $trackedFiles.Count -gt 1000) 'git ls-fi
 $filesByName = $trackedFiles | Group-Object { (Split-Path $_ -Leaf).ToLowerInvariant() } -AsHashTable
 $scanExtensions = '\.(cs|csproj|props|targets|sln|ps1|psm1|py|js|mjs|cjs|ts|json|runsettings|xml|config)$'
 
+# Tokenizes a source and records, for every token that is a tracked file name, the six tokens
+# before it. Compiled because the dotnet sources hold millions of tokens: the same loop in
+# PowerShell took about 20 of this script's 50 seconds.
+if (-not ('LaneEvidenceTokens' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+
+public static class LaneEvidenceTokens
+{
+    private static readonly Regex Token = new Regex(@"[A-Za-z0-9_.\-]+", RegexOptions.Compiled);
+
+    public static void Collect(string text, IDictionary fileNames, IDictionary context)
+    {
+        var window = new string[6];
+        int seen = 0;
+        foreach (Match match in Token.Matches(text))
+        {
+            string token = match.Value.TrimEnd('.').ToLowerInvariant();
+            if (fileNames.Contains(token))
+            {
+                var before = context[token] as HashSet<string>;
+                if (before == null) { before = new HashSet<string>(); context[token] = before; }
+                for (int back = Math.Min(seen, window.Length); back >= 1; back--) before.Add(window[(seen - back) % window.Length]);
+            }
+            window[seen % window.Length] = token;
+            seen++;
+        }
+    }
+}
+'@
+}
+
 function Get-LaneReads([object]$Policy, [string]$Lane) {
     $evidence = $Policy.evidence.$Lane
     $sources = @($trackedFiles | Where-Object { $file = $_; @($evidence.sources | Where-Object { $file -like $_ }).Count -gt 0 })
@@ -255,14 +293,9 @@ function Get-LaneReads([object]$Policy, [string]$Lane) {
             $full = [IO.Path]::GetFullPath((Join-Path (Join-Path $root (Split-Path $source -Parent)) $match.Value))
             if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
             $relative = $full.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
-            foreach ($file in @($trackedFiles | Where-Object { $_ -like $relative })) { [void]$reads.Add($file) }
+            foreach ($file in $trackedFiles) { if ($file -like $relative) { [void]$reads.Add($file) } }
         }
-        $tokens = @([regex]::Matches($text, '[A-Za-z0-9_.\-]+') | ForEach-Object { $_.Value.TrimEnd('.').ToLowerInvariant() })
-        for ($i = 0; $i -lt $tokens.Count; $i++) {
-            if (-not $filesByName.ContainsKey($tokens[$i])) { continue }
-            if (-not $context.ContainsKey($tokens[$i])) { $context[$tokens[$i]] = [System.Collections.Generic.HashSet[string]]::new() }
-            for ($j = [Math]::Max(0, $i - 6); $j -lt $i; $j++) { [void]$context[$tokens[$i]].Add($tokens[$j]) }
-        }
+        [LaneEvidenceTokens]::Collect($text, $filesByName, $context)
     }
     foreach ($name in $context.Keys) {
         foreach ($file in @($filesByName[$name])) {
@@ -366,9 +399,51 @@ function Test-NativeCommandExitCodes([string]$Workflow) {
 
 Assert-Policy (@(Get-WorkflowSteps $ci).Count -gt 20) 'the step parser must find the workflow steps.'
 Assert-Policy (@(Test-NativeCommandExitCodes $ci).Count -eq 0) ("native command exit codes: " + (@(Test-NativeCommandExitCodes $ci) -join '; '))
-foreach ($lane in @('gxwire', 'gx-engine')) {
-    Assert-Policy ($ci -match "(?m)^        run: cargo test --manifest-path src/$lane/Cargo.toml( --locked)?\s*$") "the $lane lane must run cargo test as a step of its own."
+Assert-Policy ($ci -match "(?m)^        run: cargo test --manifest-path src/gxwire/Cargo.toml( --locked)?\s*$") 'the gxwire lane must run cargo test as a step of its own.'
+# gx-engine runs its tests through nextest (parallel across test binaries, per-test time
+# limit) and its doctests, which nextest skips, through cargo test --doc.
+Assert-Policy ($ci -match '(?m)^        run: cargo nextest run --manifest-path src/gx-engine/Cargo.toml --locked --profile ci\s*$') 'the gx-engine lane must run cargo nextest with the ci profile as a step of its own.'
+Assert-Policy ($ci -match '(?m)^        run: cargo test --doc --manifest-path src/gx-engine/Cargo.toml --locked\s*$') 'the gx-engine lane must run its doctests as a step of its own.'
+
+# ---- CI time budget ---------------------------------------------------------
+# CI wall time is a budget (CODING_STANDARDS.md, CI time budget). Every job declares a
+# ceiling, and each test lane enforces a per-test limit, so a slow or hung test fails
+# where it was added instead of silently growing every later run.
+function Test-CiTimeBudget([string]$Workflow, [string]$NextestConfig) {
+    $errors = @()
+    foreach ($job in (Get-JobNames $Workflow)) {
+        $block = Get-JobBlock $Workflow $job
+        $timeout = [regex]::Match($block, '(?m)^    timeout-minutes:\s*(?<m>\d+)\s*$')
+        if (-not $timeout.Success) { $errors += "job $job declares no timeout-minutes"; continue }
+        $hosted = $block -notmatch '(?m)^    runs-on:\s*\[self-hosted'
+        if ($hosted -and [int]$timeout.Groups['m'].Value -gt 30) { $errors += "hosted job $job allows $($timeout.Groups['m'].Value) minutes; the ceiling is 30" }
+    }
+    $dotnet = Get-JobBlock $Workflow 'dotnet'
+    if ($null -eq $dotnet -or $dotnet -notmatch 'assert-test-durations\.ps1') { $errors += 'the dotnet lane must assert the per-test time budget (assert-test-durations.ps1)' }
+    if ($NextestConfig -notmatch '(?ms)^\[profile\.ci\].*?^slow-timeout\s*=\s*\{[^}]*terminate-after\s*=\s*\d+') { $errors += 'the nextest ci profile must kill a test that exceeds its slow-timeout (terminate-after)' }
+    return $errors
 }
+
+$nextestConfig = Get-Content -LiteralPath (Join-Path $root 'src/gx-engine/.config/nextest.toml') -Raw
+Assert-Policy (@(Test-CiTimeBudget $ci $nextestConfig).Count -eq 0) ('CI time budget: ' + (@(Test-CiTimeBudget $ci $nextestConfig) -join '; '))
+$timeBudget = Get-Content -LiteralPath (Join-Path $ciScripts 'test-time-budget.json') -Raw | ConvertFrom-Json
+Assert-Policy ($timeBudget.dotnetTestSeconds -gt 0 -and $timeBudget.dotnetTestSeconds -le 30 -and $timeBudget.releaseScriptSeconds -gt 0 -and $timeBudget.releaseScriptSeconds -le 180) 'test-time-budget.json budgets must stay positive and tight (dotnet <= 30s per test, release scripts <= 180s each).'
+foreach ($group in @('dotnet', 'releaseScripts')) {
+    foreach ($entry in @($timeBudget.exceptions.$group.PSObject.Properties)) {
+        Assert-Policy (([string]$entry.Value).Trim().Length -ge 20) "time budget exception '$($entry.Name)' must explain why it cannot be faster."
+    }
+}
+
+# Mutations: the time-budget checks above must be able to fail.
+$noTimeout = $ci -replace '(?m)^    timeout-minutes: 5\r?\n', ''
+Assert-Policy ($noTimeout -ne $ci) 'mutation setup: a job timeout was not removed.'
+Assert-Policy (@(@(Test-CiTimeBudget $noTimeout $nextestConfig) -like 'job changes declares no timeout-minutes').Count -eq 1) 'a job without timeout-minutes was not detected.'
+$longTimeout = $ci -replace '(?m)^    timeout-minutes: 20$', '    timeout-minutes: 90'
+Assert-Policy (@(@(Test-CiTimeBudget $longTimeout $nextestConfig) -like 'hosted job dotnet allows 90*').Count -eq 1) 'a hosted job above the 30-minute ceiling was not detected.'
+$noDurationGate = $ci -replace 'assert-test-durations\.ps1', 'removed.ps1'
+Assert-Policy (@(@(Test-CiTimeBudget $noDurationGate $nextestConfig) -like '*assert-test-durations*').Count -eq 1) 'a dotnet lane without the per-test budget was not detected.'
+$noTerminate = $nextestConfig -replace 'terminate-after\s*=\s*\d+', ''
+Assert-Policy (@(@(Test-CiTimeBudget $ci $noTerminate) -like '*terminate-after*').Count -eq 1) 'a nextest profile that never kills a slow test was not detected.'
 Assert-Policy ($ci -match '(?m)^        run: cargo clippy --manifest-path src/gx-engine/Cargo.toml --all-targets( --locked)? -- -D warnings\s*$') 'the gx-engine lint must be a step of its own (-D warnings).'
 $mergedCargo = [regex]::Replace($ci, '(?m)^        run: (cargo clippy [^\r\n]+)\r?\n', [System.Text.RegularExpressions.MatchEvaluator] {
     param($match)
@@ -400,11 +475,37 @@ Assert-Policy ($verifier -notmatch '(?i)\b(skip|bypass|force|override)\b\s*[\]=)
 
 # ---- Behavior ---------------------------------------------------------------
 
+# Runs a CI script in this process, with the exit code a `pwsh -File` child would report
+# (its `exit N`, or 1 for an uncaught error). About 55 cases used to start a pwsh each,
+# which made this the slowest release script (40-95s under the parallel suite's load).
+# Strict mode is switched off for the callee, as in a fresh pwsh.
+function Invoke-ScriptInProcess([string]$Path, [hashtable]$Parameters) {
+    $global:LASTEXITCODE = 0
+    try {
+        $output = & { param($ScriptPath, $Splat) Set-StrictMode -Off; & $ScriptPath @Splat } $Path $Parameters *>&1 | Out-String
+        $exitCode = $global:LASTEXITCODE
+    } catch {
+        $output = $_ | Out-String
+        $exitCode = 1
+    }
+    [pscustomobject]@{ ExitCode = $exitCode; Output = $output }
+}
+
 function Invoke-CiScript([string]$Script, [hashtable]$Arguments) {
-    $argumentList = @('-NoProfile', '-File', (Join-Path $ciScripts $Script))
-    foreach ($key in $Arguments.Keys) { $argumentList += "-$key"; $argumentList += [string]$Arguments[$key] }
-    $output = & pwsh @argumentList 2>&1 | Out-String
-    [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+    $parameters = @{}
+    foreach ($key in $Arguments.Keys) { $parameters[$key] = [string]$Arguments[$key] }
+    Invoke-ScriptInProcess (Join-Path $ciScripts $Script) $parameters
+}
+
+# Splits each comma-separated argument into an array, as `-Name 'a','b'` would pass it.
+function ConvertTo-ArrayParameters([hashtable]$Arguments, [string]$OutputFile) {
+    $parameters = @{ GitHubOutput = $OutputFile }
+    foreach ($key in $Arguments.Keys) {
+        # A single value stays a string: an advanced script's [string] parameter refuses an array.
+        $values = [string[]]@([string]$Arguments[$key] -split ',')
+        $parameters[$key] = if ($values.Count -eq 1) { $values[0] } else { $values }
+    }
+    $parameters
 }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ('gxmcp-ci-policy-' + [guid]::NewGuid().ToString('N'))
@@ -413,14 +514,8 @@ try {
     # classify-sdk-evidence.ps1
     function Assert-Classification([string]$Name, [hashtable]$Arguments, [string]$Expected) {
         $outputFile = Join-Path $work "$($Name -replace '\W', '_').out"
-        # -Command keeps ChangedFile a real array; -File would pass "a,b" as one string.
-        $invocation = "& '$(Join-Path $ciScripts 'classify-sdk-evidence.ps1')' -GitHubOutput '$outputFile'"
-        foreach ($key in $Arguments.Keys) {
-            $values = @([string]$Arguments[$key] -split ',' | ForEach-Object { "'$_'" })
-            $invocation += " -$key $($values -join ',')"
-        }
-        $output = & pwsh -NoProfile -Command $invocation 2>&1 | Out-String
-        Assert-Policy ($LASTEXITCODE -eq 0) "classify '$Name' exited $($LASTEXITCODE): $output"
+        $result = Invoke-ScriptInProcess (Join-Path $ciScripts 'classify-sdk-evidence.ps1') (ConvertTo-ArrayParameters $Arguments $outputFile)
+        Assert-Policy ($result.ExitCode -eq 0) "classify '$Name' exited $($result.ExitCode): $($result.Output)"
         $written = Get-Content -LiteralPath $outputFile -Raw
         Assert-Policy ($written -match "(?m)^sdk_evidence_required=$Expected\s*$") "classify '$Name' expected $Expected, got: $written"
     }
@@ -437,13 +532,8 @@ try {
     # classify-lanes.ps1: expected lanes are the ones that must run; every other lane is skipped.
     function Assert-LaneClassification([string]$Name, [hashtable]$Arguments, [string[]]$Expected, [string]$ExpectedReason = '') {
         $outputFile = Join-Path $work "lanes_$($Name -replace '\W', '_').out"
-        $invocation = "& '$(Join-Path $ciScripts 'classify-lanes.ps1')' -GitHubOutput '$outputFile'"
-        foreach ($key in $Arguments.Keys) {
-            $values = @([string]$Arguments[$key] -split ',' | ForEach-Object { "'$_'" })
-            $invocation += " -$key $($values -join ',')"
-        }
-        $output = & pwsh -NoProfile -Command $invocation 2>&1 | Out-String
-        Assert-Policy ($LASTEXITCODE -eq 0) "lanes '$Name' exited $($LASTEXITCODE): $output"
+        $result = Invoke-ScriptInProcess (Join-Path $ciScripts 'classify-lanes.ps1') (ConvertTo-ArrayParameters $Arguments $outputFile)
+        Assert-Policy ($result.ExitCode -eq 0) "lanes '$Name' exited $($result.ExitCode): $($result.Output)"
         $written = Get-Content -LiteralPath $outputFile -Raw
         $runAll = $Expected -contains 'all'
         foreach ($lane in $laneOutputs.Keys) {

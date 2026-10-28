@@ -112,6 +112,10 @@ switch ($Action) {
             if (-not $state) { Write-Output "no gate named '$Name' in $GateDirectory"; exit 3 }
             if ($state.status -ne 'running') { break }
             if ($state.pid -ne 0 -and -not (Get-Process -Id $state.pid -ErrorAction SilentlyContinue)) {
+                # The gate may have written its result and exited between the read above
+                # and this process check; only a status still 'running' now means it died.
+                $state = Read-Status
+                if ($state -and $state.status -ne 'running') { break }
                 Write-Output "gate '$Name' died without a result (pid $($state.pid) is gone)"
                 exit 3
             }
