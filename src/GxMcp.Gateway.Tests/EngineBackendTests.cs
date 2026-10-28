@@ -122,6 +122,10 @@ namespace GxMcp.Gateway.Tests
         [InlineData("PARALLEL_REBUILD_ALL", "Engine")]
         [InlineData("udm_storage_access", "Sdk")]
         [InlineData("udm_type_query", "Sdk")]
+        [InlineData("udm_current_environment", "Sdk")]
+        [InlineData("udm_procedure_list", "Sdk")]
+        [InlineData("udm_kb_version_list", "Sdk")]
+        [InlineData("udm_procedure_inspect", "Sdk")]
         [InlineData("str_format", "Sdk")]
         [InlineData("numeric_core", "Sdk")]
         [InlineData("unknown_capability", "Sdk")]
@@ -138,6 +142,10 @@ namespace GxMcp.Gateway.Tests
         [Theory]
         [InlineData("parallel_rebuild_all", "Engine")]
         [InlineData("udm_type_query", "Engine")]
+        [InlineData("udm_current_environment", "Engine")]
+        [InlineData("udm_procedure_list", "Engine")]
+        [InlineData("udm_kb_version_list", "Engine")]
+        [InlineData("udm_procedure_inspect", "Engine")]
         [InlineData("udm_storage_access", "Sdk")]
         [InlineData("csharp_emitter", "Sdk")]
         [InlineData("unknown_capability", "Sdk")]
@@ -335,7 +343,7 @@ namespace GxMcp.Gateway.Tests
         /// <summary>Routed operations: each is Parity only for its documented admitted space.</summary>
         private static readonly string[] RoutedParityIds =
         {
-            "parallel_rebuild_all", "udm_type_query",
+            "parallel_rebuild_all", "udm_current_environment", "udm_kb_version_list", "udm_procedure_inspect", "udm_procedure_list", "udm_type_query",
         };
 
         private static readonly string[] UnsupportedIds = { "general_gx_surface" };
@@ -460,13 +468,17 @@ namespace GxMcp.Gateway.Tests
         public void Registry_ServedOperationsAndTheirCapabilityRecordsArePinned()
         {
             Assert.Equal(
-                new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild", "genexus_query" },
+                new[] { "genexus_inspect", "genexus_kb.get_environment", "genexus_kb_version.list", "genexus_lifecycle.build", "genexus_lifecycle.rebuild", "genexus_list_objects", "genexus_query" },
                 EngineCapabilityRegistry.RoutedOperations().OrderBy(o => o, StringComparer.Ordinal).ToArray());
 
             Assert.Equal(
                 new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild" },
                 EngineCapabilityRegistry.Find("parallel_rebuild_all")!.Consumers);
             Assert.Equal(new[] { "genexus_query" }, EngineCapabilityRegistry.Find("udm_type_query")!.Consumers);
+            Assert.Equal(new[] { "genexus_kb.get_environment" }, EngineCapabilityRegistry.Find("udm_current_environment")!.Consumers);
+            Assert.Equal(new[] { "genexus_list_objects" }, EngineCapabilityRegistry.Find("udm_procedure_list")!.Consumers);
+            Assert.Equal(new[] { "genexus_kb_version.list" }, EngineCapabilityRegistry.Find("udm_kb_version_list")!.Consumers);
+            Assert.Equal(new[] { "genexus_inspect" }, EngineCapabilityRegistry.Find("udm_procedure_inspect")!.Consumers);
             Assert.Empty(EngineCapabilityRegistry.Find("udm_storage_access")!.Consumers);
 
             // Every consumer is declared by exactly one capability: routing must be unambiguous.
@@ -856,7 +868,7 @@ namespace GxMcp.Gateway.Tests
                 {
                     // Only genuinely served operations are routed; read/edit are deferred, never routed.
                     Assert.Equal(
-                        new[] { "genexus_lifecycle.build", "genexus_lifecycle.rebuild", "genexus_query" },
+                        new[] { "genexus_inspect", "genexus_kb.get_environment", "genexus_kb_version.list", "genexus_lifecycle.build", "genexus_lifecycle.rebuild", "genexus_list_objects", "genexus_query" },
                         routed.OrderBy(o => o, StringComparer.Ordinal).ToArray());
                     Assert.DoesNotContain("genexus_read", routed);
                     Assert.DoesNotContain("genexus_edit", routed);

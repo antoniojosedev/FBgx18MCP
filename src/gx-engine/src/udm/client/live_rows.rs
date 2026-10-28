@@ -74,6 +74,23 @@ pub(super) fn parse_live_rows(raw: &str, columns: usize) -> Result<Vec<Vec<&str>
     Ok(rows)
 }
 
+impl UdmClient {
+    /// Runs one live `SELECT` and decodes each `columns`-field row with `decode`. A row that fails to
+    /// decode fails the whole read: a dropped row would be a false answer.
+    pub(super) fn live_records<T>(
+        &self,
+        sql: &str,
+        columns: usize,
+        decode: impl Fn(&[&str]) -> Result<T, String>,
+    ) -> Result<Vec<T>, String> {
+        let raw = self.execute_live_sql(sql)?;
+        parse_live_rows(&raw, columns)?
+            .iter()
+            .map(|row| decode(row))
+            .collect()
+    }
+}
+
 fn is_separator_line(line: &str) -> bool {
     line.contains('-') && line.chars().all(|c| matches!(c, '-' | ' ' | '\t'))
 }
@@ -131,6 +148,35 @@ pub(super) fn decode_hex_value(hex: &str, declared_len: usize) -> Result<Vec<u8>
         return Err("EntityVersionData hex value contains a non-hex digit".to_string());
     }
     Ok(data)
+}
+
+/// Two select-list columns carrying `expr` as its UTF-16 byte length and hex digits. NVARCHAR
+/// -> hex preserves Unicode, tabs and newlines through sqlcmd; pair with [`decode_nvarchar`].
+pub(super) fn nvarchar_hex_columns(expr: &str) -> String {
+    format!(
+        "DATALENGTH(CONVERT(NVARCHAR(MAX), {expr})), CONVERT(VARCHAR(MAX), CONVERT(VARBINARY(MAX), CONVERT(NVARCHAR(MAX), {expr})), 2)"
+    )
+}
+
+/// Decodes the two columns [`nvarchar_hex_columns`] selected. SQL NULL is refused, never empty.
+pub(super) fn decode_nvarchar(length: &str, hex: &str, column: &str) -> Result<String, String> {
+    let length = usize::try_from(parse_live_int(length.trim(), column)?)
+        .map_err(|_| format!("{column} length is negative"))?;
+    decode_utf16_le(&decode_hex_value(hex.trim(), length)?, column)
+}
+
+/// Strict UTF-16LE: an odd length or unpaired surrogate is refused, never replaced or truncated.
+pub(super) fn decode_utf16_le(bytes: &[u8], column: &str) -> Result<String, String> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(format!("{column} has an odd UTF-16 byte length"));
+    }
+    let words: Vec<_> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
+        .collect();
+    String::from_utf16(&words).map_err(|_| format!("{column} is not valid UTF-16"))
 }
 
 const fn hex_val(b: u8) -> Option<u8> {
