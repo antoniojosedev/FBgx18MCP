@@ -395,11 +395,42 @@ try {
     $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $exempt }
     Assert-Policy ($result.ExitCode -eq 0) "A -text CRLF file must be exempt: $($result.Output)"
     $clean = New-LineEndingRepo 'eol-clean' "* text=auto eol=lf`n"
-    & git -C $clean rm -q --cached crlf.txt
+    & git -C $clean rm -q -f crlf.txt
     $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $clean }
     Assert-Policy ($result.ExitCode -eq 0) "LF-only repository must pass: $($result.Output)"
+    # Working tree: a modified or untracked eol=lf file with CRLF bytes passes the index check
+    # because Git normalizes on add, so the check must read the working-tree EOL column.
+    function New-CommittedLfRepo([string]$Name, [string]$Attributes) {
+        $dir = New-LineEndingRepo $Name $Attributes
+        & git -C $dir rm -q -f crlf.txt
+        & git -C $dir -c user.name=policy -c user.email=policy@example.invalid commit -q -m 'lf only'
+        return $dir
+    }
+    $crlfBytes = [Text.Encoding]::ASCII.GetBytes("a`r`nb`r`n")
+    $patched = New-CommittedLfRepo 'eol-worktree-modified' "* text=auto eol=lf`n"
+    [IO.File]::WriteAllBytes((Join-Path $patched 'lf.txt'), $crlfBytes)
+    $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $patched }
+    Assert-Policy ($result.ExitCode -eq 1 -and $result.Output.Contains('lf.txt (w/crlf)')) "A modified eol=lf file with CRLF bytes was not rejected: $($result.Output)"
+    $untracked = New-CommittedLfRepo 'eol-worktree-untracked' "* text=auto eol=lf`n"
+    [IO.File]::WriteAllBytes((Join-Path $untracked 'new.txt'), $crlfBytes)
+    $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $untracked }
+    Assert-Policy ($result.ExitCode -eq 1 -and $result.Output.Contains('new.txt (w/crlf)')) "An untracked eol=lf file with CRLF bytes was not rejected: $($result.Output)"
+    $mixed = New-CommittedLfRepo 'eol-worktree-mixed' "* text=auto eol=lf`n"
+    [IO.File]::WriteAllBytes((Join-Path $mixed 'lf.txt'), [Text.Encoding]::ASCII.GetBytes("a`r`nb`n"))
+    $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $mixed }
+    Assert-Policy ($result.ExitCode -eq 1 -and $result.Output.Contains('lf.txt (w/mixed)')) "A modified eol=lf file with mixed endings was not rejected: $($result.Output)"
+    $worktreeExempt = New-CommittedLfRepo 'eol-worktree-exempt' "* text=auto eol=lf`nlf.txt -text`nnew.txt -text`n"
+    [IO.File]::WriteAllBytes((Join-Path $worktreeExempt 'lf.txt'), $crlfBytes)
+    [IO.File]::WriteAllBytes((Join-Path $worktreeExempt 'new.txt'), $crlfBytes)
+    $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $worktreeExempt }
+    Assert-Policy ($result.ExitCode -eq 0) "-text CRLF files in the working tree must be exempt: $($result.Output)"
+    $worktreeLf = New-CommittedLfRepo 'eol-worktree-lf' "* text=auto eol=lf`n"
+    [IO.File]::WriteAllBytes((Join-Path $worktreeLf 'lf.txt'), [Text.Encoding]::ASCII.GetBytes("c`nd`n"))
+    [IO.File]::WriteAllBytes((Join-Path $worktreeLf 'new.txt'), [Text.Encoding]::ASCII.GetBytes("e`n"))
+    $result = Invoke-CiScript 'check-line-endings.ps1' @{ Repository = $worktreeLf }
+    Assert-Policy ($result.ExitCode -eq 0) "LF-only modified and untracked files must pass: $($result.Output)"
     $result = Invoke-CiScript 'check-line-endings.ps1' @{}
-    Assert-Policy ($result.ExitCode -eq 0) "This repository must have no CRLF text blobs: $($result.Output)"
+    Assert-Policy ($result.ExitCode -eq 0) "This repository must have no CRLF text blobs or CRLF changed files: $($result.Output)"
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

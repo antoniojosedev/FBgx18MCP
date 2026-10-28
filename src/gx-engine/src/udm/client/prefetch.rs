@@ -52,10 +52,15 @@ impl UdmClient {
         let served = self.entity_type_resolver()?.served_type_ids();
         let parts_sql = |shard: usize| Self::model_parts_sql(model_id, &served, shard);
         let read_shard = |shard: usize, sql: String| -> Result<Vec<EntityVersionRecord>, String> {
-            let raw = match (shard, &self.connection_info, &self.read_session) {
-                (0, _, _) | (_, None, _) => self.execute_live_sql(&sql)?,
-                (_, Some(info), Some(_)) => live::ReadSession::start(info)?.query(&sql)?,
-                (_, Some(info), None) => live::execute_sqlcmd(info, &sql)?,
+            let raw = if self.consistent_read {
+                // A read view cannot fan out into independently committed SQL sessions.
+                self.execute_live_sql(&sql)?
+            } else {
+                match (shard, &self.connection_info, &self.read_session) {
+                    (0, _, _) | (_, None, _) => self.execute_live_sql(&sql)?,
+                    (_, Some(info), Some(_)) => live::ReadSession::start(info)?.query(&sql)?,
+                    (_, Some(info), None) => live::execute_sqlcmd(info, &sql)?,
+                }
             };
             parse_live_rows(&raw, 7)?
                 .into_iter()

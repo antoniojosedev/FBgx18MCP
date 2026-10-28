@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CLASSIFIER = ROOT / "src" / "GxMcp.Gateway" / "OperationClassifier.cs"
 TOOLS = ROOT / "src" / "GxMcp.Gateway" / "tool_definitions.json"
 OUTPUT = ROOT / "docs" / "operation-contract-inventory.json"
+REGISTRY = ROOT / "src" / "GxMcp.Gateway" / "EngineCapabilityRegistry.cs"
+ENGINE_DOC = ROOT / "docs" / "engine_backend.md"
 
 
 def _strings(value: str) -> list[str]:
@@ -71,7 +73,31 @@ def _skip_trivia(source: str, index: int) -> int:
     return index
 
 
-def _initialiser(source: str, field: str) -> str:
+def _balanced(source: str, cursor: int, open_char: str, close_char: str) -> tuple[int, int] | None:
+    """Return the indexes of the first ``open_char`` at or after ``cursor`` and its balancing ``close_char``.
+
+    Literals and comments are skipped as opaque units.  ``None`` when unterminated.
+    """
+    depth = 0
+    opened = -1
+    while cursor < len(source):
+        skipped = _skip_trivia(source, cursor)
+        if skipped != cursor:
+            cursor = skipped
+            continue
+        character = source[cursor]
+        if character == open_char:
+            opened = cursor if opened < 0 else opened
+            depth += 1
+        elif character == close_char and opened >= 0:
+            depth -= 1
+            if depth == 0:
+                return opened, cursor
+        cursor += 1
+    return None
+
+
+def _initialiser(source: str, field: str, file_name: str = "OperationClassifier.cs") -> str:
     """Return the text inside ``field``'s collection initialiser.
 
     Tolerant of the declaration's modifier text and indentation, and of nested
@@ -81,25 +107,11 @@ def _initialiser(source: str, field: str) -> str:
     """
     match = re.search(_DECLARATION.format(name=re.escape(field)), source)
     if not match:
-        raise ValueError(f"could not locate {field} in OperationClassifier.cs")
-    depth = 0
-    opened = -1
-    cursor = match.end()
-    while cursor < len(source):
-        skipped = _skip_trivia(source, cursor)
-        if skipped != cursor:
-            cursor = skipped
-            continue
-        character = source[cursor]
-        if character == "{":
-            opened = cursor if opened < 0 else opened
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                return source[opened + 1 : cursor]
-        cursor += 1
-    raise ValueError(f"unterminated initialiser for {field} in OperationClassifier.cs")
+        raise ValueError(f"could not locate {field} in {file_name}")
+    span = _balanced(source, match.end(), "{", "}")
+    if span is None:
+        raise ValueError(f"unterminated initialiser for {field} in {file_name}")
+    return source[span[0] + 1 : span[1]]
 
 
 def _set_block(source: str, field: str) -> set[str]:
@@ -296,6 +308,117 @@ def build_inventory(tools_path: Path = TOOLS, classifier_path: Path = CLASSIFIER
     }
 
 
+def _top_level_arguments(text: str) -> list[str]:
+    """Split a call's argument text on the commas outside nested brackets, strings and comments."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    cursor = 0
+    while cursor < len(text):
+        skipped = _skip_trivia(text, cursor)
+        if skipped != cursor:
+            cursor = skipped
+            continue
+        character = text[cursor]
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            parts.append(text[start:cursor])
+            start = cursor + 1
+        cursor += 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
+def read_native_routed_operations(path: Path = REGISTRY) -> list[str]:
+    """The product operations (``tool`` or ``tool.action``) the engine may serve.
+
+    Mirrors ``EngineCapabilityRegistry.RoutedOperations``: the consumers of every capability
+    whose status lets it route.  Fails closed if that routing rule is no longer the one this
+    projection assumes, or if the registry cannot be read.
+    """
+    source = path.read_text(encoding="utf-8")
+    if not re.search(r"MayRouteToEngine\s*=>\s*Status\s*==\s*EngineCapabilityStatus\.Parity\s*;", source):
+        raise ValueError(f"{path.name}: MayRouteToEngine is no longer 'Status == Parity'; the routed-operation projection must be revisited")
+    body = _initialiser(source, "All", path.name)
+    operations: list[str] = []
+    capabilities = 0
+    for start in re.finditer(r"new\s+EngineCapability\s*\(", body):
+        span = _balanced(body, start.end() - 1, "(", ")")
+        if span is None:
+            raise ValueError(f"{path.name}: unterminated EngineCapability declaration")
+        arguments = {}
+        for argument in _top_level_arguments(body[span[0] + 1 : span[1]]):
+            name, separator, value = argument.partition(":")
+            if separator:
+                arguments[name.strip()] = value.strip()
+        status = re.fullmatch(r"EngineCapabilityStatus\.(\w+)", arguments.get("status", ""))
+        consumers = arguments.get("consumers", "")
+        if not status or not (consumers == "Array.Empty<string>()" or consumers.startswith("new[]")):
+            raise ValueError(f"{path.name}: an EngineCapability has no readable status or consumers")
+        capabilities += 1
+        if status.group(1) == "Parity":
+            for consumer in _strings(consumers):
+                if consumer not in operations:
+                    operations.append(consumer)
+    if capabilities == 0:
+        raise ValueError(f"{path.name}: no EngineCapability declarations found")
+    return operations
+
+
+def native_coverage(inventory: dict, operations: list[str]) -> tuple[list[str], int]:
+    """The distinct tools and the inventory operation rows that ``operations`` name.
+
+    Every operation must resolve to exactly one published row: ``tool.action`` to that action, a
+    bare ``tool`` to the row of a tool that has no action selector.
+    """
+    rows_by_tool = {entry["tool"]: [row["action"] for row in entry["actions"]] for entry in inventory["tools"]}
+    tools: list[str] = []
+    for operation in operations:
+        tool, _, action = operation.partition(".")
+        if tool not in rows_by_tool:
+            raise ValueError(f"routed operation {operation} names a tool that is not published")
+        if (action or None) not in rows_by_tool[tool]:
+            raise ValueError(f"routed operation {operation} names no published operation row")
+        if tool not in tools:
+            tools.append(tool)
+    return tools, len(operations)
+
+
+def check_engine_doc(inventory: dict, operations: list[str], doc_path: Path = ENGINE_DOC) -> None:
+    """Fail when the hand-written coverage accounting disagrees with the registry and inventory."""
+    tools, rows = native_coverage(inventory, operations)
+    document = doc_path.read_text(encoding="utf-8")
+    heading = document.find("## Coverage accounting")
+    if heading < 0:
+        raise ValueError(f"{doc_path.name}: no '## Coverage accounting' section")
+    end = document.find("\n## ", heading + 1)
+    section = document[heading : end if end >= 0 else len(document)]
+    total_tools, total_rows = inventory["toolCount"], inventory["actionCount"]
+    expected = {
+        r"inventory\s+contains\s+\*\*(\d+)\s+tools\s+and\s+(\d+)\s+operation\s+rows\*\*": (str(total_tools), str(total_rows)),
+        r"admits\s+a\s+restricted\s+subset\s+of\s+\*\*(\d+)\s+tools\s+\((\d+)%\)\*\*": (
+            str(len(tools)), f"{100 * len(tools) / total_tools:.0f}"),
+        r"Those\s+are\s+\*\*(\d+)\s+of\s+(\d+)\s+operation\s+rows\s+\((\d+(?:\.\d+)?)%\)\*\*": (
+            str(rows), str(total_rows), f"{100 * rows / total_rows:.1f}"),
+    }
+    for pattern, values in expected.items():
+        match = re.search(pattern, section)
+        if not match:
+            raise ValueError(f"{doc_path.name}: coverage sentence not found: {pattern}")
+        if match.groups() != values:
+            raise ValueError(
+                f"{doc_path.name}: coverage says {match.group(0)!r}; the registry and inventory give {values}")
+    certified = re.search(r"\*\*\d+\s+of\s+(\d+)\s+tools\s+are\s+certified", document)
+    if not certified or certified.group(1) != str(total_tools):
+        raise ValueError(f"{doc_path.name}: 'tools are certified' denominator is not the published tool count {total_tools}")
+    missing = [tool for tool in tools if f"`{tool}`" not in section]
+    if missing:
+        raise ValueError(f"{doc_path.name}: coverage section does not name routed tools: {', '.join(missing)}")
+
+
 def verify_classifier_policy() -> None:
     """Cross-check the issue-scoped variants against OperationClassifier.Describe."""
     project = ROOT / "src" / "GxMcp.Gateway.Tests" / "GxMcp.Gateway.Tests.csproj"
@@ -327,6 +450,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             published = json.loads(output_path.read_text(encoding="utf-8"))
             if published != inventory:
                 raise ValueError(f"published inventory differs from generated policy: {output_path}")
+            check_engine_doc(inventory, read_native_routed_operations(REGISTRY), ENGINE_DOC)
             # The Python projection has issue-scoped special variants; validate those
             # against the executable C# policy too. A generic C#-driven projection
             # remains a separate follow-up rather than silently widening this gate.
@@ -334,7 +458,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.output and not args.check:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(inventory, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        print(f"operation-inventory: valid tools={inventory['toolCount']} actions={inventory['actionCount']}")
+        native_tools, native_rows = native_coverage(inventory, read_native_routed_operations(REGISTRY))
+        print(
+            f"operation-inventory: valid tools={inventory['toolCount']} actions={inventory['actionCount']} "
+            f"native-routed tools={len(native_tools)} rows={native_rows}")
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"operation-inventory: invalid: {exc}", file=sys.stderr)
