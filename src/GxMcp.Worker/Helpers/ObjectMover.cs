@@ -30,6 +30,23 @@ namespace GxMcp.Worker.Helpers
         }
 
         /// <summary>
+        /// Issue #712: true when the re-read parent is the container the move resolved.
+        /// The destination may be a path ("Root Module/A/B") that FindObject resolves, so
+        /// the persisted parent is matched by the container's identity first; the legacy
+        /// name comparison (bare names, a Root Module surfaced as DesignModel) still applies.
+        /// </summary>
+        internal static bool IsRequestedParent(Guid? actualParentGuid, string actualParentName,
+            Guid containerGuid, string destination)
+        {
+            if (actualParentGuid.HasValue && actualParentGuid.Value != Guid.Empty
+                && actualParentGuid.Value == containerGuid)
+                return true;
+            return !string.IsNullOrWhiteSpace(actualParentName)
+                && string.Equals(actualParentName.Trim(), (destination ?? string.Empty).Trim(),
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
         /// Set <paramref name="obj"/>'s parent to <paramref name="container"/> and persist.
         /// Both are KBObject instances (folder/module are KBObjects that derive from the
         /// Udm Entity type). Does NOT verify persistence — the caller re-reads the parent.

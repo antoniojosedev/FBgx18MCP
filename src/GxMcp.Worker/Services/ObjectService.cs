@@ -2781,6 +2781,16 @@ namespace GxMcp.Worker.Services
             catch { return null; }
         }
 
+        // Issue #712: a path destination resolves to the container, but the immediate
+        // parent name is only its leaf; verify the persisted parent by identity.
+        private static bool HasRequestedParent(KBObject obj, KBObject container, string destination)
+        {
+            Guid? parentGuid = null;
+            try { parentGuid = obj?.Parent?.Guid; }
+            catch (Exception ex) { Logger.Warn("MoveObject: parent identity unavailable, comparing by name: " + ex.Message); }
+            return Helpers.ObjectMover.IsRequestedParent(parentGuid, ImmediateParentName(obj), container.Guid, destination);
+        }
+
         // Move an object into a Folder or Module (its KB Explorer parent). Replaces the
         // old FolderPlacementUnsupported/FolderMoveNotSupported rejects — see ObjectMover
         // for why the "SDK can't do it" verdict was wrong (facade-DLL decompilation).
@@ -2929,8 +2939,7 @@ namespace GxMcp.Worker.Services
                         MarkReadCacheDirty(current);
                         var pending = kb.DesignModel.Objects.Get(obj.Guid) ?? current;
                         var pendingComparison = snapshot.Compare(pending, destination, Array.Empty<string>());
-                        string pendingParent = ImmediateParentName(pending);
-                        if (!string.Equals(pendingParent, destination, StringComparison.OrdinalIgnoreCase))
+                        if (!HasRequestedParent(pending, container, destination))
                             throw new InvalidOperationException("The SDK did not persist the requested parent inside the move transaction.");
                         if (!pendingComparison.Equal)
                             throw new InvalidOperationException("The SDK changed object content inside the move transaction: "
@@ -2990,7 +2999,7 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
-                bool finalMoved = string.Equals(to, destination, StringComparison.OrdinalIgnoreCase);
+                bool finalMoved = HasRequestedParent(fresh, container, destination);
                 if (!finalMoved || !comparison.Equal)
                 {
                     var rollback = rollbackOnFailure
