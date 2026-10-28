@@ -43,8 +43,10 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_lifecycle", null, null)]
         [InlineData("genexus_create_object", null, null)]
         [InlineData("genexus_whoami", null, null)]
-        // #650/#651: the location-bearing reads are SDK-Worker-only; the engine query answers name/type alone.
-        [InlineData("genexus_list_objects", null, null)]
+        // #650/#651: location-bearing reads stay SDK-Worker-only. genexus_list_objects is a consumer
+        // only for explicit name/type fields; EngineProcedureListRoutingTests pins that parent/path
+        // and implicit fields never start the engine.
+        [InlineData("genexus_list_objects", null, "genexus_list_objects")]
         [InlineData("genexus_object_context", null, null)]
         public void OperationKey_OnlyRoutedConsumersAreMapped(string tool, string? action, string? expected)
         {

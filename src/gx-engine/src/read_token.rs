@@ -7,17 +7,16 @@
 //! digits), the parent name when the GUID is unavailable, or `"root"`.
 //!
 //! This module only composes that string from inputs the caller has already
-//! established. It reads no KB, performs no timestamp or time-zone conversion,
-//! and is not wired into `kb-read`, routing or any admission decision. Inputs
-//! that cannot be represented exactly are refused with [`ReadTokenRefusal`];
-//! nothing is approximated or defaulted.
+//! established. It reads no KB and performs no timestamp or time-zone
+//! conversion. `kb_ops::read_object` supplies those inputs for a verified
+//! single-part read; MCP routing and admission decisions remain unwired.
+//! Inputs that cannot be represented exactly are refused with
+//! [`ReadTokenRefusal`]; nothing is approximated or defaulted.
 //!
 //! The tests compare against vectors produced independently with Python
-//! `hashlib`. Those vectors prove the string format and hash only. They do NOT
-//! prove that any stored SQL timestamp equals the SDK `KBObject.LastUpdate`,
-//! that a stored parent matches `KBObject.Parent`, or that engine-decoded source
-//! text is byte-identical to the SDK `ISource.Source`; those need a separate live
-//! differential before a native token may be issued or compared.
+//! `hashlib`. Those vectors prove the string format and hash only. The live
+//! `KBTeste` differential that established the timestamp, parent and source
+//! inputs is recorded in `kb_ops` tests and plan 132; it is not re-proved here.
 //!
 //! SHA-256 comes from the maintained RustCrypto `sha2` crate; no hashing code is
 //! implemented here. The tests check it against independently generated
@@ -68,7 +67,8 @@ impl std::error::Error for ReadTokenRefusal {}
 /// any conversion; this type only guarantees the value is a valid `DateTime` tick.
 /// Observed on GX18 (Plan 132, disposable copy, UTC-3 host): the SDK value equals
 /// the raw stored `ModelEntityOutput` `ObjectSaved` datetime ticks of the active
-/// version's Design model, with no time-zone shift. One profile only; not wired.
+/// version's Design model, with no time-zone shift. One profile only; wired into
+/// the single-part `kb-read` token, not into routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UtcTicks(i64);
 

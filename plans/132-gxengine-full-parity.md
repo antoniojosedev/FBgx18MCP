@@ -118,9 +118,10 @@ SDK pagination projects LF text to Windows CRLF and removes the final newline;
 version tokens hash the complete unpaginated text instead. Two sampled source
 fingerprints already match. A typed Transaction read resolves the name collision
 safely; bare ambiguous names remain errors. For an external Procedure with no
-stored Source, SDK part discovery returns Rules under the requested Source name;
-native missing-part reporting remains storage-truthful rather than copying this
-order-dependent alias.
+stored Source, SDK part discovery returns Rules under the requested Source name.
+The raw native read stays storage-truthful. Standalone SDK-page reads now resolve
+only the evidenced non-generated Procedure shape with exactly one Rules part and
+no stored parts except Rules/Variables; ambiguous aliases remain refused.
 
 The StyleClass correction projects only the evidenced design-class wrapper at
 the native read-payload boundary, preserving raw reader/codegen inputs. An
@@ -137,8 +138,60 @@ covered by the regression; no full-KB generator rerun is implied.
 `ObjectSaved` output timestamps (type 301, version 0) and parent GUIDs match
 10/10 sampled SDK tokens, including the two objects whose entity/model timestamps
 disagreed. Missing/duplicate rows, other versions, concurrent changes and general
-SDK timestamp semantics remain uncertified. No native token/routing promotion or
-SDK mutation is implied.
+SDK timestamp semantics remain uncertified. The token is now emitted by
+`kb-read` for verified text parts; read routing remains deferred (below).
+
+The native single-part `versionToken` is wired for the parts whose payload is SDK
+text (`Source`, `Events`, `Rules`, `Conditions`). Ten tokens captured for this
+wiring match exactly: `DCH37961700`/`DCM37961700` Source, `Gx0020`/`Gx0040`
+Events, `Transaction:LiveMoveAttributeRules`/`Transaction:Plan070Trn` empty Rules,
+`DCH37961700`/`Gx0020` non-empty Rules, and `DCH37961700` empty / `Gx0040`
+non-empty Conditions. The hash covers the complete unpaginated, projected text.
+`VARIABLE_IDS` is no longer exposed as an SDK part, and `Variables`, `Structure`
+and `WebForm` withhold the token because their current payload is an engine-native
+projection, not the SDK text; emitting a token there would certify bytes the SDK
+never returns.
+`AddDeviceTargetFilter` Source remains non-comparable because its native storage
+has no Source part. A missing/duplicate metadata row or zero-half parent is an
+error, not a silently dropped token.
+
+The Worker's line/UTF-16 pagination projection is wired into standalone
+`kb-read --page --parts <Part> --client mcp`; other clients are refused before
+connecting. Text tokens/pages are restricted to Procedure, WebPanel and
+Transaction objects. Other kinds and their SDK-specific projections remain
+unverified. The pure helper covers StringReader lines, UTF-16 (including
+non-BMP byte-budget boundaries), default/explicit windows and full-read slices.
+The candidate Gateway shaper validates flags, requested windows, continuation
+progress and count overflow. It is not registered: `genexus_read` remains
+SDK-deferred, or explicitly refused under `Fallback=error`.
+
+Resuming the interrupted OpenCode integration reproduced a missing-route
+regression (14 Gateway tests failed): removing read deferral without registering
+a capability silently bypassed the error-fallback policy. Deferral was restored;
+the original tests now pass without weakening assertions. New candidate response
+regressions also failed before the window/count validation fix. Sampled ordinary
+SDK single-part envelopes do not carry an `identity` block; do not demand one
+based on the earlier blanket assumption. The actual operation-specific envelope,
+freshness and read-to-edit workflow remain the acceptance criteria.
+
+A read-only disposable-clone differential matched eight supported pages, but
+three `AddDeviceGroups/Source` calls initially failed natively while the SDK
+returned content. Their root cause was the Source-to-Rules alias above. After a
+red-first regression, an ambiguity-gate mutation and the bounded fix, all three
+previously failing windows matched the SDK (default, limit=0, offset=99999 with
+limit=0). The new debug engine fingerprint is
+`2117a009ef634b26890e3f67cee4cb82fa2625cd7b1e5a6bd8be2e364d59f68f`;
+active SDK version was KBTeste, connection bytes unchanged and Gateway exit 0.
+Earlier passing pages were not replayed or relabeled as current-binary evidence.
+Initial failures remain recorded; this is not whole-read parity. Raw evidence,
+binary fingerprints and validation are recorded outside Git in the existing
+task ledger.
+
+Read metadata now distinguishes an absent ObjectSaved row (model timestamp
+fallback) from a present row with NULL timestamp (refusal), binds parent names to
+the active model, and rejects duplicate candidates. Source and metadata are still
+separate reads, not an atomic snapshot: concurrent-edit/freshness acceptance
+remains open before native MCP admission.
 
 A complete WebPanel inventory narrows the extra rows to `MasterPrompt`,
 `MasterUnanimoSidebar`, and `Trn353General`. Unfiltered SDK queries classify the
@@ -289,3 +342,67 @@ No row is currently certified complete.
 
 Do not remove the Worker or SDK fallback until the complete intended workflow
 inventory is verified. A finished increment closes only its own acceptance rows.
+
+## 2026-10-22: native read consistency continuation (unpublished)
+
+The full-tools target remains open: the contract inventory has 60 tools / 309
+action rows, not 60 independently implemented native tools. SDK fallback and
+refusal do not count as native compatibility.
+
+Integrated the previously isolated CLI parser/admission and root-metadata lanes.
+Root GUID fallback now converts to text before `ISNULL`; duplicate/malformed
+candidates are refused. Native reads use an operation-local serializable SQL
+transaction with fresh vocabulary/catalog caches. Nested alias/part reads reuse
+the same view. Prefetch cannot escape to independent SQL sessions. A failed
+or missing session cannot restart or fall back to autocommit. Non-page reads
+also use the view because they can emit a version token. Empty object/part inputs
+are rejected before starting the private session. In-memory views use detached
+state, not a shared mutable database.
+
+Verified so far: CLI 12, metadata 20, kb_ops 24 and read-view 3 unit tests;
+read-only live transaction/isolation/no-replay test on the verified disposable
+`KBTesteTimestamp_6e3640210e9b`; six current-debug SDK differential page cases
+(Source alias/default/full/out-of-range, Procedure Source slice, WebPanel Events,
+Transaction empty Rules). Captured page fields and tokens matched 6/6; SDK
+active version was KBTeste, connection file unchanged, Gateway exit 0.
+A negative control sharing the original in-memory storage failed as expected;
+a second negative control permitting failed-session recreation failed live
+because the follow-up query ran outside a transaction (count 0). Both guards
+were restored and their focused checks passed. Logs: C:/tmp/gxe-resume-20261022.
+
+Review found no P0/P1. Its non-page token, missing-session and empty-name notes
+were fixed. The parser refactor itself preserves the pre-integration admission
+contract; legacy cross-command filters remain tolerated, now explicitly tested.
+
+**Still not certified:** active-model selection occurs before the page view,
+external concurrent editing and read-to-edit token workflows, native persistence,
+broad part/object families, SDK-major/generator/database matrix and full tool
+coverage. Serializable name lookup reads the model catalog; range locks can
+block IDE/SDK writers until the reader closes. The ten-second lock timeout bounds
+the reader's waits, not the writer's. No database-wide isolation setting changes.
+MCP read routing remains SDK-backed. No Cloud, commit, push or release.
+
+Post-review Rust fmt/strict Clippy and full tests passed: 1,431 tests, zero
+failures, four ignored (the new explicit read-only SQL test was run separately
+and passed). Docs 8/8 and both tool-contract/inventory guards passed. Final
+`build.ps1` passed, followed by a separate packaged SDK differential: the same
+six selected page cases matched 6/6, active SDK version KBTeste, connection file
+unchanged, Gateway exit0. Packaged engine SHA-256:
+`0f496015cf2a57ee11cb59a635d06317d3e788c2458ecae2f9c069b5a64262ad`.
+Gateway DLL, Worker EXE and engine EXE hash-match the local extension backend.
+No builds or tests ran after final packaging; only packaged postchecks and docs.
+This validates the bounded increment, not independent MCP read admission.
+Ripwire edit checks passed (read_object needed path qualification). Static gates
+remain FAILED: quality 44 gating findings, test-gate 479 untested impacts. These
+include existing unpublished changes and new CLI-helper duplicate findings;
+no waiver or passing project-wide gate is claimed.
+
+The next two read-only persistence/coverage scouts did NOT launch: the named
+parallel workflow rejected per-task `thinking`. No workers started; do not assume
+there are pending results or silently switch agent launchers. Parent source
+inspection confirms `UdmClient` write primitives update in-memory storage only;
+`kb_ops::write_object_part` refuses live writes. Also, the operation inventory's
+`execution` column is not proof of SDK dependence: e.g. it labels `genexus_kb_diff`
+as worker while `Program.GatewayTools.HandleGatewayToolAsync` implements it at the
+Gateway. Reconcile real dispatch before using this inventory as replacement
+coverage. No full-coverage percentage is derivable from the existing action count.
