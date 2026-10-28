@@ -375,6 +375,11 @@ namespace GxMcp.Gateway
         /// <c>@</c> reference is quoted so a response file under a temp path containing
         /// spaces survives the child's command-line split - MSBuild itself takes the whole
         /// token as the path.
+        ///
+        /// Every <c>/p:</c> value is quoted the same way the response file quotes the password:
+        /// the template normally lives under <c>C:\Program Files (x86)\GeneXus\...</c>, and an
+        /// unquoted value is split at its first space, so MSBuild read the remainder as a second
+        /// project and failed with MSB1008 before the create task ran.
         /// </summary>
         internal static string BuildMsBuildArguments(
             string tempProj,
@@ -388,17 +393,17 @@ namespace GxMcp.Gateway
         {
             var builder = new StringBuilder();
             builder.Append("/nologo /v:minimal \"").Append(tempProj).Append('"');
-            builder.Append(" /p:KBDirectory=").Append(fullPath);
-            builder.Append(" /p:KBTemplate=").Append(templatePath);
-            builder.Append(" /p:KBDbServer=").Append(dbServer);
-            builder.Append(" /p:KBDbName=").Append(dbName);
+            builder.Append(" /p:KBDirectory=").Append(QuoteResponseValue(fullPath));
+            builder.Append(" /p:KBTemplate=").Append(QuoteResponseValue(templatePath));
+            builder.Append(" /p:KBDbServer=").Append(QuoteResponseValue(dbServer));
+            builder.Append(" /p:KBDbName=").Append(QuoteResponseValue(dbName));
             builder.Append(" /p:KBIntegratedSecurity=").Append(integrated ? "True" : "False");
 
             // The user is not a secret, so it stays inline where an operator reading a failing
             // invocation can see which login was attempted.
             if (!integrated)
             {
-                builder.Append(" /p:KBDbUser=").Append(dbUser);
+                builder.Append(" /p:KBDbUser=").Append(QuoteResponseValue(dbUser));
             }
 
             if (!integrated && !string.IsNullOrEmpty(passwordResponseFile))

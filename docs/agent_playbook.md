@@ -13,6 +13,15 @@ newline. Post-save verification invalidates caches, resolves the same object
 through the public-read route, and uses that same complete representation.
 A missing/freshness-unconfirmed read is unknown evidence, never a text mismatch.
 
+An omitted `verifyMode` on `WebForm`/`Layout` is `semantic`: the persisted XML
+is compared by layout equivalence, so SDK canonical forms (a Conditions /
+`ControlWhere` expression stored as a `TokenDataList`, dropped control ids)
+verify while lost content still fails. A layout write that leaves a control's
+`PATTERN_ELEMENT_CUSTOM_PROPERTIES` and `WebUserControlProperties` with
+different `ControlWhere` values is refused with `ControlConditionCarriersDiverge`
+before the save (issue #711); the custom-properties bag is the one the IDE's
+Conditions reads.
+
 `verifyMode=exact` compares ordinal text; EOL and module-qualification changes
 remain differences, with typed reasons and bounded expected/read line previews.
 The older patch exact contract still treats CRLF/LF as logically equivalent.

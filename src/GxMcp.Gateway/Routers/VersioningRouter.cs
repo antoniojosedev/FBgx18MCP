@@ -27,6 +27,18 @@ namespace GxMcp.Gateway.Routers
                     return new { module = "History", action = "list", target = name, part = RouterArgs.Part(args) };
                 case "history_get":
                     return new { module = "History", action = "get_source", target = name, versionId = RouterArgs.Int(args, "versionId"), part = RouterArgs.Part(args) };
+                case "history_diff":
+                    // Issue #710: read-only comparison of two native revisions (toVersionId omitted = current object).
+                    return new
+                    {
+                        module = "History",
+                        action = "diff",
+                        target = name,
+                        versionId = RouterArgs.Int(args, "versionId"),
+                        toVersionId = RouterArgs.Int(args, "toVersionId"),
+                        part = RouterArgs.Part(args),
+                        context = args?["context"]?.ToObject<int?>()
+                    };
                 case "history_save":
                     return new { module = "History", action = "save", target = name, part = RouterArgs.Part(args) };
                 case "history_restore":
@@ -97,7 +109,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_versioning: unknown action '{action}'. Valid: history_list|history_get|history_save|history_restore|undo|time_travel|blame|diff|diff_generated."
+                        error = $"genexus_versioning: unknown action '{action}'. Valid: history_list|history_get|history_diff|history_save|history_restore|undo|time_travel|blame|diff|diff_generated."
                     };
             }
         }
