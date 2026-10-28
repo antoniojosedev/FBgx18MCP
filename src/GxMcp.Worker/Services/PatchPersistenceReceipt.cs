@@ -160,7 +160,12 @@ namespace GxMcp.Worker.Services
                 : commentOnly
                     ? CommentOnlyPatch.CountActiveOccurrences(canonicalPersisted, canonicalOldContext)
                     : PatchTextEditor.CountOccurrences(canonicalPersisted, canonicalOldContext);
-            bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
+            // A visual part matched by XML layout equivalence persisted the whole requested
+            // document; the SDK's canonical form of the replacement (a TokenDataList for a
+            // ControlWhere expression, issue #711) need not contain it verbatim.
+            bool replacementPresent = canonicalReplacement.Length == 0
+                || replacementMatchCount > 0
+                || (verification.Matches && verification.XmlLayoutEquivalent);
             bool verified = verification.Matches && replacementPresent;
 
             JObject verificationJson = verification.ToJson(reReadConfirmed: verified);

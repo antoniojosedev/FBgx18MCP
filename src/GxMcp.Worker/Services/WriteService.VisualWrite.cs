@@ -185,6 +185,65 @@ namespace GxMcp.Worker.Services
             return Models.McpResponse.Ok(target: target, code: "Success", result: new JObject { ["part"] = "QueryStructure", ["persisted"] = true });
         }
 
+        /// <summary>
+        /// Issue #711: refuses a visual write that leaves a control's Conditions (ControlWhere)
+        /// different in its two property bags, before anything is saved. Null when the write may
+        /// proceed. See <see cref="ControlConditionCarriers"/> for which bag the IDE reads.
+        /// </summary>
+        internal static string RefuseDivergentConditionCarriers(
+            string target, string partName, string currentXml, string requestedXml, bool dryRun)
+        {
+            List<ControlConditionCarriers.Divergence> divergences;
+            try { divergences = ControlConditionCarriers.FindIntroduced(currentXml, requestedXml); }
+            catch (Exception ex)
+            {
+                Logger.Debug("[VisualWrite] condition-carrier check skipped: " + ex.Message);
+                return null;
+            }
+            if (divergences.Count == 0) return null;
+
+            var items = new JArray();
+            foreach (var d in divergences)
+            {
+                items.Add(new JObject
+                {
+                    ["element"] = d.Element,
+                    ["control"] = d.Control,
+                    ["property"] = d.Property,
+                    ["idePropertyName"] = "Conditions",
+                    [ControlConditionCarriers.WebUserControlPropertiesAttribute] = d.WebUserControlExpression,
+                    [CustomPropertiesPayload.AttributeName] = d.CustomPropertiesExpression,
+                    ["changedByRequest"] = new JArray(
+                        new[]
+                        {
+                            d.CustomPropertiesChanged ? CustomPropertiesPayload.AttributeName : null,
+                            d.WebUserControlChanged ? ControlConditionCarriers.WebUserControlPropertiesAttribute : null
+                        }.Where(x => x != null))
+                });
+            }
+            var first = divergences[0];
+            return Models.McpResponse.Err(
+                code: "ControlConditionCarriersDiverge",
+                message: "The request would leave " + first.Property + " (the IDE's Conditions) of control '" + first.Control
+                    + "' different in " + CustomPropertiesPayload.AttributeName + " and "
+                    + ControlConditionCarriers.WebUserControlPropertiesAttribute + "; nothing was written.",
+                hint: "For a built-in control type such as Dynamic Combo Box, the IDE's Conditions property and the control's SDK "
+                    + "property read " + first.Property + " from " + CustomPropertiesPayload.AttributeName + ". Write the expression there "
+                    + "(plain text such as 'Att = &Var;' is accepted; the SDK stores it as a TokenDataList), and in the same edit set "
+                    + ControlConditionCarriers.WebUserControlPropertiesAttribute + "'s " + first.Property
+                    + " to the same expression or remove that entry, so both bags agree.",
+                target: target,
+                extra: new JObject
+                {
+                    ["part"] = partName,
+                    ["divergences"] = items,
+                    ["canonicalCarrier"] = CustomPropertiesPayload.AttributeName,
+                    ["persisted"] = false,
+                    ["savePathExercised"] = false,
+                    ["dryRun"] = dryRun
+                });
+        }
+
         private string WriteVisualPart(
             global::Artech.Architecture.Common.Objects.KBObject obj,
             string target,
@@ -279,6 +338,7 @@ namespace GxMcp.Worker.Services
             }
 
             string currentXml = null;
+            bool conditionCarriersChecked = false;
             try
             {
                 currentXml = WebFormXmlHelper.ReadEditableXml(obj);
@@ -334,6 +394,9 @@ namespace GxMcp.Worker.Services
                     if (prospectiveGotchas != null) noChangeResp["layoutGotchas"] = prospectiveGotchas;
                     return Models.McpResponse.Ok(target: target, code: "WriteNoChange", result: noChangeResp);
                 }
+                conditionCarriersChecked = true;
+                string carrierRefusal = RefuseDivergentConditionCarriers(target, partName, currentXml, normalizedInput, dryRun);
+                if (carrierRefusal != null) return carrierRefusal;
                 if (dryRun)
                 {
                     // Run the same conservative descriptor projection on a detached
@@ -414,6 +477,13 @@ namespace GxMcp.Worker.Services
                         obj,
                         code: "VisualReadFailed");
                 }
+            }
+
+            if (!conditionCarriersChecked)
+            {
+                // The current XML could not be read, so every divergence counts as introduced.
+                string carrierRefusal = RefuseDivergentConditionCarriers(target, partName, currentXml, normalizedInput, dryRun);
+                if (carrierRefusal != null) return carrierRefusal;
             }
 
             var kb = _objectService.GetKbService().GetKB();
@@ -532,6 +602,10 @@ namespace GxMcp.Worker.Services
                     // already carries committed: true, so one mark after the commit covers
                     // the success and the committed-but-unverified exits alike.
                     NotePerTargetWrite(target);
+                    // Issue #711: a layout write can change a control's custom properties
+                    // (Conditions/ControlWhere), which genexus_properties serves from a
+                    // short-lived cache; drop it so the next typed read is the committed value.
+                    PropertyService.InvalidatePropertyCache(obj);
                     // Force synchronous flush so the data actually lands on disk before we re-read
                     // for verification. ScheduleFlush() default is timer-based and async — if the
                     // worker is killed before the timer fires (or before ProcessExit), unflushed
