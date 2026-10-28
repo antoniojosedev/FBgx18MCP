@@ -328,9 +328,37 @@ pub(crate) fn part_text<'a>(object: &'a KbObject, name: &str) -> Option<&'a str>
     part(object, name).map(|part| part.source.as_str())
 }
 
+pub(crate) fn has_non_comment_code(text: &str) -> bool {
+    let mut rest = text;
+    while !rest.is_empty() {
+        let trimmed = rest.trim_start();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if let Some(after_line_comment) = trimmed.strip_prefix("//") {
+            match after_line_comment.find('\n') {
+                Some(newline_idx) => {
+                    rest = &after_line_comment[newline_idx + 1..];
+                }
+                None => return false,
+            }
+        } else if let Some(after_block_start) = trimmed.strip_prefix("/*") {
+            match after_block_start.find("*/") {
+                Some(end_idx) => {
+                    rest = &after_block_start[end_idx + 2..];
+                }
+                None => return true,
+            }
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) fn check_no_code(object: &KbObject) -> Result<(), String> {
     for name in ["EVENTS", "RULES", "CONDITIONS"] {
-        if part_text(object, name).is_some_and(|text| !text.trim().is_empty()) {
+        if part_text(object, name).is_some_and(has_non_comment_code) {
             return Err(format!(
                 "it has {} code, which is not emitted yet",
                 name.to_ascii_lowercase()

@@ -698,3 +698,124 @@ fn only_the_verified_object_kinds_receive_an_sdk_text_token() {
         );
     }
 }
+
+#[test]
+fn scoped_reads_select_the_active_design_model_inside_the_read_view() {
+    let trunk = UdmClient::new_in_memory();
+    let branch = trunk.clone().with_design_model_id(4);
+    let trunk_id = UdmWriter::new(Arc::new(trunk.clone()))
+        .create_object(&object("PAlpha", &[("SOURCE", "// alpha")]))
+        .expect("create trunk PAlpha");
+    seed_metadata(&trunk, &trunk_id, None, None, None, Some(SAVED_TICKS), None);
+
+    let branch_id = UdmWriter::new(Arc::new(branch.clone()))
+        .create_object(&object("PAlpha", &[("SOURCE", "// branch")]))
+        .expect("create branch PAlpha");
+    seed_metadata(
+        &branch,
+        &branch_id,
+        None,
+        None,
+        None,
+        Some(637_847_356_281_230_000),
+        None,
+    );
+
+    let unnamed_read =
+        read_object_scoped(&trunk, None, "PAlpha", Some(&["Source".to_string()])).unwrap_err();
+    assert!(
+        matches!(&unnamed_read, KbReadError::VersionScope(msg) if msg.contains("active version must be named")),
+        "{unnamed_read:?}"
+    );
+    let unnamed_page = read_object_page_scoped(
+        &trunk,
+        None,
+        "PAlpha",
+        "Source",
+        None,
+        None,
+        ReadClient::Mcp,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&unnamed_page, KbReadError::VersionScope(msg) if msg.contains("active version must be named")),
+        "{unnamed_page:?}"
+    );
+
+    let active_branch = Some(ActiveVersion {
+        design_model_id: 4,
+        kb_version_id: 4,
+    });
+    let expected_branch =
+        read_object(&branch, "PAlpha", Some(&["Source".to_string()])).expect("direct branch read");
+    let scoped_read = read_object_scoped(
+        &trunk,
+        active_branch,
+        "PAlpha",
+        Some(&["Source".to_string()]),
+    )
+    .expect("scoped branch read from trunk client");
+    assert_eq!(scoped_read.parts[0].source, "// branch");
+    assert_eq!(scoped_read.version_token, expected_branch.version_token);
+
+    let scoped_page = read_object_page_scoped(
+        &trunk,
+        active_branch,
+        "PAlpha",
+        "Source",
+        None,
+        None,
+        ReadClient::Mcp,
+    )
+    .expect("scoped branch page read from trunk client");
+    assert_eq!(scoped_page.source, "// branch");
+    assert_eq!(
+        Some(scoped_page.version_token.as_str()),
+        expected_branch.version_token.as_deref()
+    );
+
+    let wrong_version = read_object_page_scoped(
+        &trunk,
+        Some(ActiveVersion {
+            design_model_id: 4,
+            kb_version_id: 99,
+        }),
+        "PAlpha",
+        "Source",
+        None,
+        None,
+        ReadClient::Mcp,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&wrong_version, KbReadError::VersionScope(msg) if msg.contains("not to the active version 99")),
+        "{wrong_version:?}"
+    );
+}
+
+#[test]
+fn scoped_reads_validate_inputs_before_selecting_version_scope() {
+    let trunk = UdmClient::new_in_memory();
+    let branch = trunk.clone().with_design_model_id(4);
+    UdmWriter::new(Arc::new(trunk.clone()))
+        .create_object(&object("PAlpha", &[("SOURCE", "// trunk")]))
+        .expect("create trunk PAlpha");
+    UdmWriter::new(Arc::new(branch))
+        .create_object(&object("PAlpha", &[("SOURCE", "// branch")]))
+        .expect("create branch PAlpha");
+
+    assert_eq!(
+        read_object_scoped(&trunk, None, "   ", None),
+        Err(KbReadError::Operation("object name is required".into()))
+    );
+    assert_eq!(
+        read_object_page_scoped(&trunk, None, "PAlpha", " ", None, None, ReadClient::Mcp),
+        Err(KbReadError::Operation(
+            "part is required for a single-part page read".into()
+        ))
+    );
+    assert_eq!(
+        read_object_page_scoped(&trunk, None, " ", "Source", None, None, ReadClient::Mcp),
+        Err(KbReadError::Operation("object name is required".into()))
+    );
+}

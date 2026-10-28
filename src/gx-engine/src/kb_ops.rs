@@ -22,10 +22,13 @@ use crate::catalog::{KbObject, ObjectId, ObjectKind, SourcePart};
 use crate::read_pagination::{ReadClient, apply_default};
 use crate::read_token::{ParentIdentity, UtcTicks, content_version_token};
 use crate::udm::reader::{LoadedObject, ObjectRow, UdmReader, VARIABLE_IDS_PART};
+#[cfg(test)]
+use crate::udm::version_scope::version_from_properties;
+use crate::udm::version_scope::{ActiveVersion, ModelTopologyRow, ScopeUse, select_design_model};
 use crate::udm::writer::UdmWriter;
 use crate::udm::{ObjectReadMetadata, UdmClient, UdmPartKind};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 /// Query page size when the caller does not select one.
@@ -268,6 +271,168 @@ fn shared_client(client: &UdmClient) -> Arc<UdmClient> {
     Arc::new(client.clone())
 }
 
+/// Error from a version-scoped KB read (`read_object_scoped` / `read_object_page_scoped`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KbReadError {
+    /// Active-version or model-topology refusal before any object is read (exit code 4).
+    VersionScope(String),
+    /// Input validation, connection, or object/part read failure.
+    Operation(String),
+}
+
+impl KbReadError {
+    pub fn into_message(self) -> String {
+        match self {
+            Self::VersionScope(message) | Self::Operation(message) => message,
+        }
+    }
+}
+
+impl std::fmt::Display for KbReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VersionScope(message) | Self::Operation(message) => f.write_str(message),
+        }
+    }
+}
+
+#[cfg(test)]
+fn model_topology_in_view(
+    view: &UdmClient,
+    _active: Option<ActiveVersion>,
+) -> Result<Vec<ModelTopologyRow>, String> {
+    if view.is_live() {
+        return view.model_topology();
+    }
+    let store = view
+        .storage_for_test()
+        .read()
+        .map_err(|error| format!("Storage lock poisoned: {error}"))?;
+    let mut model_ids: BTreeSet<i32> = store
+        .model_entity_versions
+        .iter()
+        .map(|record| record.model_id)
+        .collect();
+    model_ids.insert(view.design_model_id());
+    if model_ids.len() <= 1 {
+        drop(store);
+        return view.model_topology();
+    }
+    let model_entity_type = store
+        .entity_types
+        .iter()
+        .find(|record| record.name.eq_ignore_ascii_case("Udm.Types.Model"))
+        .map(|record| record.entity_type_id);
+    model_ids
+        .into_iter()
+        .map(|model_id| {
+            let stored_properties = model_entity_type.and_then(|entity_type_id| {
+                store
+                    .entity_versions
+                    .iter()
+                    .filter(|record| {
+                        record.entity_type_id == entity_type_id && record.entity_id == model_id
+                    })
+                    .max_by_key(|record| record.entity_version_id)
+                    .and_then(|record| record.properties.as_deref())
+            });
+            let kb_version = match stored_properties {
+                Some(raw) => version_from_properties(raw)
+                    .map_err(|error| format!("model {model_id}: {error}"))?,
+                None if model_id == crate::udm::DEFAULT_DESIGN_MODEL_ID => None,
+                None => Some(model_id),
+            };
+            Ok(ModelTopologyRow {
+                model_id,
+                parent_id: 0,
+                kb_version,
+            })
+        })
+        .collect()
+}
+
+#[cfg(not(test))]
+fn model_topology_in_view(
+    view: &UdmClient,
+    active: Option<ActiveVersion>,
+) -> Result<Vec<ModelTopologyRow>, String> {
+    if view.is_live() {
+        return view.model_topology();
+    }
+    let mut model_ids = BTreeSet::from([view.design_model_id()]);
+    if let Some(active) = active
+        && active.design_model_id > 0
+        && active.design_model_id != view.design_model_id()
+        && !view.get_active_objects(active.design_model_id)?.is_empty()
+    {
+        model_ids.insert(active.design_model_id);
+    }
+    if model_ids.len() <= 1 {
+        return view.model_topology();
+    }
+    Ok(model_ids
+        .into_iter()
+        .map(|model_id| ModelTopologyRow {
+            model_id,
+            parent_id: 0,
+            kb_version: if model_id == crate::udm::DEFAULT_DESIGN_MODEL_ID {
+                None
+            } else {
+                Some(model_id)
+            },
+        })
+        .collect())
+}
+
+fn with_scoped_read_view<T>(
+    client: &UdmClient,
+    active: Option<ActiveVersion>,
+    read: impl FnOnce(&UdmClient) -> Result<T, String>,
+) -> Result<T, KbReadError> {
+    let mut version_scope_error = false;
+    client
+        .with_read_view(|view| {
+            let topology = model_topology_in_view(view, active).map_err(|error| {
+                version_scope_error = true;
+                format!("the KB's model topology could not be read: {error}")
+            })?;
+            let model =
+                select_design_model(&topology, active, ScopeUse::Read).map_err(|refusal| {
+                    version_scope_error = true;
+                    refusal.0
+                })?;
+            let scoped = view.clone().with_design_model_id(model);
+            read(&scoped)
+        })
+        .map_err(|error| {
+            if version_scope_error {
+                KbReadError::VersionScope(error)
+            } else {
+                KbReadError::Operation(error)
+            }
+        })
+}
+
+/// Reads one existing object in a single serializable read view that also
+/// selects the active KB version's Design model before reading any object rows.
+pub fn read_object_scoped(
+    client: &UdmClient,
+    active: Option<ActiveVersion>,
+    name: &str,
+    parts: Option<&[String]>,
+) -> Result<ReadResult, KbReadError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(KbReadError::Operation(
+            "object name is required".to_string(),
+        ));
+    }
+
+    with_scoped_read_view(client, active, |scoped| {
+        read_object_in_view(scoped, trimmed, parts)
+    })
+}
+
 /// Reads one existing object, optionally restricted to requested part names
 /// (case-insensitive). Only the requested parts are decoded; a requested part
 /// the object does not have is reported in `missing_parts` instead of failing
@@ -399,6 +564,33 @@ fn read_sdk_page_part(client: &UdmClient, name: &str, part: &str) -> Result<Read
     Ok(alias)
 }
 
+fn validate_page_read_target(name: &str, part: &str) -> Result<(), String> {
+    if part.trim().is_empty() {
+        return Err("part is required for a single-part page read".into());
+    }
+    if name.trim().is_empty() {
+        return Err("object name is required".into());
+    }
+    Ok(())
+}
+
+/// Reads one SDK-text part page in a single serializable read view that also
+/// selects the active KB version's Design model before reading any object rows.
+pub fn read_object_page_scoped(
+    client: &UdmClient,
+    active: Option<ActiveVersion>,
+    name: &str,
+    part: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    client_kind: ReadClient,
+) -> Result<ReadPageResult, KbReadError> {
+    validate_page_read_target(name, part).map_err(KbReadError::Operation)?;
+    with_scoped_read_view(client, active, |scoped| {
+        read_object_page_in_view(scoped, name, part, offset, limit, client_kind)
+    })
+}
+
 /// Reads one SDK-text part and projects it into the flat single-part page
 /// envelope `genexus_read` returns.
 ///
@@ -416,12 +608,7 @@ pub fn read_object_page(
     limit: Option<usize>,
     client_kind: ReadClient,
 ) -> Result<ReadPageResult, String> {
-    if part.trim().is_empty() {
-        return Err("part is required for a single-part page read".into());
-    }
-    if name.trim().is_empty() {
-        return Err("object name is required".into());
-    }
+    validate_page_read_target(name, part)?;
     client.with_read_view(|view| {
         read_object_page_in_view(view, name, part, offset, limit, client_kind)
     })

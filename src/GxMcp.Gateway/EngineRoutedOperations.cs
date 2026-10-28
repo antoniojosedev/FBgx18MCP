@@ -268,7 +268,7 @@ namespace GxMcp.Gateway
         // Candidate genexus_read -> kb-read --page; not registered for production routing.
         // ------------------------------------------------------------------
 
-        private async Task<JObject?> DispatchEngineReadAsync(EngineRouteContext ctx)
+        internal async Task<JObject?> DispatchEngineReadAsync(EngineRouteContext ctx)
         {
             JObject args = ctx.Args ?? new JObject();
             string? argumentRefusal = RefusalForArguments(ctx, ReadSpace);
@@ -278,11 +278,11 @@ namespace GxMcp.Gateway
             if (planRefusal != null || plan == null)
                 return EngineOutsideResult(ctx, planRefusal ?? "the read could not be planned");
 
-            var (json, invocation, failure) = await InvokeEngineJsonAsync(
+            var (json, _, executable, failure) = await InvokeActiveScopeEngineJsonAsync(
                 ctx, EngineReadContract.ToEngineArguments(ctx.KbPath, plan), "kb-read").ConfigureAwait(false);
             if (json == null) return failure;
 
-            JObject engineInfo = EngineInfoBlock(ctx, invocation.Executable);
+            JObject engineInfo = EngineInfoBlock(ctx, executable);
             if (!EngineReadContract.TryShape(plan, json, engineInfo, out JObject? payload, out string? shapeRefusal)
                 || payload == null)
             {

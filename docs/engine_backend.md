@@ -127,7 +127,8 @@ certification, or a performance measurement.
 `typeFilter=Procedure`, an explicit integer `limit` from 1 to 100, an optional
 Int32 nonnegative `offset`, and explicit `fields` limited to `name` and/or `type`.
 The engine selects the Worker-reported Design model, lists active Procedure rows,
-and reads each page row's stored lifecycle timestamp in one fresh serializable
+and reads the page slice's stored lifecycle timestamps through one batched SQL
+query (`UdmClient::get_objects_lifecycle_ticks`) in one fresh serializable
 read-only view. It reproduces the Worker default order (.NET `OrdinalIgnoreCase`
 by name within one type bucket) only for nonempty, unique ASCII names: names
 that need Unicode case rules, case collisions (whose SDK tie-break is the GUID),

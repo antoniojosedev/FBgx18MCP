@@ -245,6 +245,21 @@ fn event_bearing_panels_are_refused_before_artifacts_are_written() {
         ("simple", "EVENTS", "Event Start\nMsg('hello')\nEndEvent"),
         ("rules", "RULES", "parm(in:&Value);"),
         ("conditions", "CONDITIONS", "1 = 1"),
+        (
+            "unterminated_events",
+            "EVENTS",
+            "/* unterminated event comment\nEvent Start\nEndEvent",
+        ),
+        (
+            "unterminated_rules",
+            "RULES",
+            "// header\n/* unterminated rule comment",
+        ),
+        (
+            "unterminated_conditions",
+            "CONDITIONS",
+            "/* closed */ /* unclosed",
+        ),
     ];
     for (tag, part_name, source) in cases {
         let mut panel = live_import();
@@ -294,6 +309,46 @@ fn event_bearing_panels_are_refused_before_artifacts_are_written() {
         );
         fs::remove_dir_all(&out).expect("temporary output removed");
     }
+}
+
+#[test]
+fn comment_only_events_rules_and_conditions_are_admitted_in_the_sdk_shape() {
+    let mut panel = live_import();
+    panel.source_parts.push(SourcePart {
+        name: "EVENTS".into(),
+        source: "  // Default event header\n  /* Multi-line\n     event comment */\n".into(),
+    });
+    panel.source_parts.push(SourcePart {
+        name: "RULES".into(),
+        source: "/* Default rules comment */\n// No active rules".into(),
+    });
+    panel.source_parts.push(SourcePart {
+        name: "CONDITIONS".into(),
+        source: "// No conditions\n/**/".into(),
+    });
+
+    let mut catalog = Catalog::empty();
+    catalog
+        .apply(0, &[Edit::Upsert(master()), Edit::Upsert(panel)])
+        .expect("catalog setup");
+    let out = temp_output("comment_only_parts");
+    let options = RebuildOptions::new("net8.0")
+        .with_clean(true)
+        .with_skip_compile(true)
+        .with_web_environment(configured());
+    let report = rebuild_all(&catalog, &out, &options).expect("rebuild completes");
+
+    assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+    assert_eq!(report.generated_count, 7);
+    let emitted = fs::read_to_string(out.join("liveimportwebpanel.cs"))
+        .expect("panel file written")
+        .replace('\r', "");
+    assert_eq!(
+        mask_stamp(&emitted),
+        mask_stamp(LIVEIMPORT_SDK),
+        "comment-only parts still emit the exact SDK shape"
+    );
+    fs::remove_dir_all(&out).expect("temporary output removed");
 }
 
 #[test]

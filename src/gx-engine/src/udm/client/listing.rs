@@ -47,25 +47,30 @@ impl UdmClient {
             if ordered.is_empty() {
                 return Err("an empty native Procedure catalog is not authoritative".into());
             }
-            let objects = ordered
+            let page: Vec<&ObjectRow> = ordered.iter().copied().skip(offset).take(limit).collect();
+            let entity_type_id = page
+                .first()
+                .map_or(ordered[0].entity_type_id, |row| row.entity_type_id);
+            if page.iter().any(|row| row.entity_type_id != entity_type_id) {
+                return Err("Procedure listing requires a single Procedure EntityTypeId".into());
+            }
+            let page_versions: Vec<(i32, i32)> = page
                 .iter()
-                .skip(offset)
-                .take(limit)
+                .map(|row| (row.entity_id, row.entity_version_id))
+                .collect();
+            let lifecycle_ticks =
+                client.get_objects_lifecycle_ticks(model, entity_type_id, &page_versions)?;
+            let objects = page
+                .into_iter()
                 .map(|row| {
-                    let metadata = client
-                        .get_object_read_metadata(
-                            model,
-                            row.entity_type_id,
-                            row.entity_id,
-                            row.entity_version_id,
-                        )?
+                    let last_update_ticks = lifecycle_ticks
+                        .get(&row.entity_id)
+                        .copied()
                         .ok_or_else(|| "Procedure lifecycle metadata is missing".to_string())?;
                     Ok(ProcedureListItem {
                         name: row.name.clone(),
                         object_type: "Procedure",
-                        last_update_ticks: metadata
-                            .object_saved_ticks
-                            .or(metadata.model_entity_version_ticks),
+                        last_update_ticks,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
