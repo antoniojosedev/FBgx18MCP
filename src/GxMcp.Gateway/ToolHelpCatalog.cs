@@ -975,7 +975,9 @@ namespace GxMcp.Gateway
                 "If the developer presses Ctrl+S (Save) in the GeneXus IDE, their in-memory tab state will silently overwrite the changes made out-of-process by MCP (Last-Write-Wins hazard).\n\n" +
                 "## Fix\n" +
                 "- In the GeneXus IDE, close the open object tab WITHOUT saving, or choose \"Reload\" when prompted.\n" +
-                "- Or use `concurrencyPolicy: 'fail_if_open'` in `genexus_edit` to prevent writes while the object is open in the IDE.\n",
+                "- Or use `concurrencyPolicy: 'fail_if_open'` in `genexus_edit` to prevent writes while the object is open in the IDE.\n" +
+                "\n## Reload prompts\n" +
+                "After each write MCP nudges the IDE message pump so it notices the change. Nudges are coalesced per object (at most one per 30 s), so a burst of writes to the same object raises at most one \"modified, reload?\" prompt from the MCP side instead of one per write. Answer it once with Reload.\n",
             ["GotchaIdeActiveOnKb"] =
                 "# GotchaIdeActiveOnKb\n\n" +
                 "**Severity:** Notice / Informational.\n\n" +
