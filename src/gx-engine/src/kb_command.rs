@@ -71,9 +71,16 @@ pub enum KbOperation {
     Inspect {
         kb_path: String,
         name: String,
+        kind: ObjectKind,
     },
     ProcedureList {
         kb_path: String,
+        offset: usize,
+        limit: usize,
+    },
+    ObjectList {
+        kb_path: String,
+        kind: ObjectKind,
         offset: usize,
         limit: usize,
     },
@@ -174,16 +181,52 @@ impl KbArgs {
             "kb-versions" => Ok(KbOperation::VersionList {
                 kb_path: self.admit_scope_only("kb-versions")?,
             }),
-            "kb-inspect" => {
-                let [kb_path, name] = self.admit_scope_only_positional(
-                    "kb-inspect",
-                    "kb-inspect requires <kb-path> <procedure-name>",
-                )?;
-                Ok(KbOperation::Inspect { kb_path, name })
-            }
+            "kb-inspect" => self.admit_inspect(),
             "kb-list-procedures" => self.admit_procedure_list(),
+            "kb-list-objects" => self.admit_object_list(),
             _ => unreachable!("kb_command is only used for native KB operations"),
         }
+    }
+
+    fn admit_inspect(mut self) -> Result<KbOperation, String> {
+        let object_type = self.object_type.take();
+        let kind = match object_type.as_deref() {
+            Some(t) => gx_engine::kb_ops::kind_from_type_name(t)
+                .ok_or_else(|| format!("unknown object type '{t}'"))?,
+            None => ObjectKind::Procedure,
+        };
+        let [kb_path, name] = self.admit_scope_only_positional(
+            "kb-inspect",
+            "kb-inspect requires <kb-path> <object-name>",
+        )?;
+        Ok(KbOperation::Inspect {
+            kb_path,
+            name,
+            kind,
+        })
+    }
+
+    fn admit_object_list(mut self) -> Result<KbOperation, String> {
+        let limit = self.limit.take().unwrap_or(200);
+        let offset = self.offset.take().unwrap_or(0);
+        if !(1..=200).contains(&limit) || offset > i32::MAX as usize {
+            return Err(
+                "kb-list-objects requires limit 1..200 and Int32 nonnegative offset".into(),
+            );
+        }
+        let object_type = self.object_type.take();
+        let kind = match object_type.as_deref() {
+            Some(t) => gx_engine::kb_ops::kind_from_type_name(t)
+                .ok_or_else(|| format!("unknown object type '{t}'"))?,
+            None => ObjectKind::Procedure,
+        };
+        let kb_path = self.admit_scope_only("kb-list-objects")?;
+        Ok(KbOperation::ObjectList {
+            kb_path,
+            kind,
+            offset,
+            limit,
+        })
     }
 
     fn admit_read(self) -> Result<KbOperation, String> {
@@ -419,11 +462,15 @@ mod tests {
     fn inspect_admits_path_name_and_explicit_scope_flags_only() {
         assert!(
             matches!(admitted("kb-inspect", &["kb", "Proc", "--design-model", "1", "--kb-version", "0"]).unwrap(),
-            KbOperation::Inspect { kb_path, name } if kb_path == "kb" && name == "Proc")
+            KbOperation::Inspect { kb_path, name, kind } if kb_path == "kb" && name == "Proc" && kind == ObjectKind::Procedure)
+        );
+        assert!(
+            matches!(admitted("kb-inspect", &["kb", "TrnCustomer", "--type", "Transaction"]).unwrap(),
+            KbOperation::Inspect { kb_path, name, kind } if kb_path == "kb" && name == "TrnCustomer" && kind == ObjectKind::Transaction)
         );
         for flag in VALUE_FLAGS
             .into_iter()
-            .filter(|flag| !matches!(*flag, "--design-model" | "--kb-version"))
+            .filter(|flag| !matches!(*flag, "--design-model" | "--kb-version" | "--type"))
         {
             assert!(
                 admitted("kb-inspect", &["kb", "Proc", flag, "1"]).is_err(),
@@ -432,6 +479,14 @@ mod tests {
         }
         assert!(admitted("kb-inspect", &["kb"]).is_err());
         assert!(admitted("kb-inspect", &["kb", "Proc", "extra"]).is_err());
+    }
+
+    #[test]
+    fn list_objects_admits_types_and_pagination() {
+        assert!(
+            matches!(admitted("kb-list-objects", &["kb", "--type", "Transaction", "--offset", "10", "--limit", "5"]).unwrap(),
+            KbOperation::ObjectList { kb_path, kind, offset, limit } if kb_path == "kb" && kind == ObjectKind::Transaction && offset == 10 && limit == 5)
+        );
     }
 
     #[test]

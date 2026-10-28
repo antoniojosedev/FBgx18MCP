@@ -8,6 +8,8 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
 {
+    internal readonly record struct InspectTypeInfo(string CanonicalType, string TypeGuid);
+
     /// <summary>
     /// The `genexus_inspect type=Procedure projection=minimal` answer gx-engine may serve, shaped like
     /// Worker <c>AnalyzeService.GetConversionContext</c> for the minimal projection.
@@ -18,18 +20,31 @@ namespace GxMcp.Gateway
         internal const string ProcedureTypeGuid = "84a12160-f59b-4ad7-a683-ea4481ac23e9";
         internal const string Hint = "Minimal projection. Pass projection=standard for variables+signature+source heads, or projection=verbose for full detail.";
 
+        private static readonly Dictionary<string, InspectTypeInfo> AdmittedInspectTypes =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Procedure"] = new("Procedure", "84a12160-f59b-4ad7-a683-ea4481ac23e9"),
+                ["Proc"] = new("Procedure", "84a12160-f59b-4ad7-a683-ea4481ac23e9"),
+                ["Transaction"] = new("Transaction", "1db606f2-af09-4cf9-a3b5-b481519d28f6"),
+                ["Trn"] = new("Transaction", "1db606f2-af09-4cf9-a3b5-b481519d28f6"),
+                ["WebPanel"] = new("WebPanel", "c9584656-94b6-4ccd-890f-332d11fc2c25"),
+                ["WP"] = new("WebPanel", "c9584656-94b6-4ccd-890f-332d11fc2c25"),
+            };
+
         private static readonly string[] EngineKeys =
         {
             "availableParts", "description", "entityId", "guid", "lastUpdateTicks", "name", "path", "userName",
         };
 
-        internal static string? TryPlan(JObject args, string kbPath, out string name)
+        internal static string? TryPlan(JObject args, string kbPath, out string name, out InspectTypeInfo typeInfo)
         {
             name = args["name"]?.Type == JTokenType.String ? args["name"]!.ToString() : string.Empty;
+            typeInfo = new("Procedure", ProcedureTypeGuid);
             if (name.Length == 0 || name.Any(c => c > 0x7f || char.IsControl(c)))
                 return "native inspect requires a nonempty ASCII `name`";
-            if (args["type"]?.Type != JTokenType.String || !string.Equals(args["type"]!.ToString(), "Procedure", StringComparison.OrdinalIgnoreCase))
-                return "native inspect admits only an explicit type=Procedure";
+            string? rawType = args["type"]?.Type == JTokenType.String ? args["type"]!.ToString().Trim() : null;
+            if (string.IsNullOrWhiteSpace(rawType) || !AdmittedInspectTypes.TryGetValue(rawType, out typeInfo))
+                return "native inspect admits only an explicit type in (Procedure, Transaction, WebPanel)";
             if (args["projection"]?.Type != JTokenType.String || !string.Equals(args["projection"]!.ToString().Trim(), "minimal", StringComparison.OrdinalIgnoreCase))
                 return "native inspect admits only projection=minimal";
             // The Worker attaches per-KB memories to inspections; that store is not reproduced.
@@ -38,12 +53,22 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        internal static List<string> ToEngineArguments(string kbPath, string name) => new()
-        {
-            "--diagnostics=json", "kb-inspect", kbPath, name,
-        };
+        internal static string? TryPlan(JObject args, string kbPath, out string name) =>
+            TryPlan(args, kbPath, out name, out _);
 
-        internal static bool TryShape(JObject json, string requestedName, out JObject? payload, out string? refusal)
+        internal static List<string> ToEngineArguments(string kbPath, string name, string objectType) =>
+            string.Equals(objectType, "Procedure", StringComparison.OrdinalIgnoreCase)
+                ? new() { "--diagnostics=json", "kb-inspect", kbPath, name }
+                : new() { "--diagnostics=json", "kb-inspect", kbPath, name, "--type", objectType };
+
+        internal static List<string> ToEngineArguments(string kbPath, string name) =>
+            ToEngineArguments(kbPath, name, "Procedure");
+
+        internal static bool TryShapeInspectResponse(JObject json, string requestedName, out JObject? payload, out string? refusal) =>
+            TryShapeInspectResponse(json, requestedName, new InspectTypeInfo("Procedure", ProcedureTypeGuid), out payload, out refusal);
+
+        internal static bool TryShapeInspectResponse(
+            JObject json, string requestedName, InspectTypeInfo typeInfo, out JObject? payload, out string? refusal)
         {
             payload = null;
             refusal = "kb-inspect returned an unexpected inspection";
@@ -71,12 +96,12 @@ namespace GxMcp.Gateway
             payload = new JObject
             {
                 ["name"] = name,
-                ["type"] = "Procedure",
+                ["type"] = typeInfo.CanonicalType,
                 ["identity"] = new JObject
                 {
                     ["guid"] = guid,
-                    ["entityKey"] = ProcedureTypeGuid + "-" + entityId.ToString(CultureInfo.InvariantCulture),
-                    ["entityTypeGuid"] = ProcedureTypeGuid,
+                    ["entityKey"] = typeInfo.TypeGuid + "-" + entityId.ToString(CultureInfo.InvariantCulture),
+                    ["entityTypeGuid"] = typeInfo.TypeGuid,
                     ["entityId"] = entityId,
                     ["path"] = path,
                 },

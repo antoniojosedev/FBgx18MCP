@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -30,14 +31,9 @@ namespace GxMcp.Gateway.Tests
 
         private const string QueryFields = ", \"fields\": [\"name\", \"type\"]";
 
-        // --------------------------------------------------------- reads: never native
+        // --------------------------------------------------------- reads: admitted and unadmitted spaces
 
         [Theory]
-        // Whatever the shape - single part (the versioned read), parts[], full object, with or
-        // without `fields`, `refresh`, `type`, any part kind - the SDK answers: it alone returns
-        // identity, readFreshness and the versionToken, and it ignores `fields` on a read.
-        [InlineData(@"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
-        [InlineData(@"{ ""name"": ""Alpha"", ""part"": ""Source"", ""fields"": [""name"", ""type"", ""parts""] }")]
         [InlineData(@"{ ""name"": ""Alpha"", ""parts"": [""Source"", ""rules""] }")]
         [InlineData(@"{ ""name"": ""Alpha"", ""parts"": [""Source"", ""rules""], ""fields"": [""name"", ""type"", ""parts""] }")]
         [InlineData(@"{ ""name"": ""Alpha"", ""parts"": [""Source""], ""fields"": ""parts"" }")]
@@ -50,20 +46,51 @@ namespace GxMcp.Gateway.Tests
         [InlineData(@"{ ""name"": ""Alpha"" }")]
         [InlineData(@"{ ""name"": ""Alpha"", ""part"": ""all"", ""fields"": [""parts""] }")]
         [InlineData(@"{ ""objectName"": ""Alpha"", ""parts"": [""Source""], ""fields"": [""parts""] }")]
-        public async Task EveryReadShape_IsDeferredUnderSdkFallbackAndRefusedUnderErrorFallback(string args)
+        public async Task UnadmittedReadShapes_AreDeferredUnderSdkFallbackAndRefusedUnderErrorFallback(string args)
         {
-            var deferred = await RunAsync("gxengine", "sdk", "genexus_read", args, TwoPartRead);
-            Assert.Null(deferred.Result);
-            Assert.False(deferred.EngineStarted);
-            Assert.Contains(deferred.Log, line => line.Contains("genexus_read deferred to the SDK") && line.Contains("versionToken"));
+            var runSdk = await RunAsync("gxengine", "sdk", "genexus_read", args, TwoPartRead);
+            Assert.True(runSdk.Result == null && !runSdk.EngineStarted && runSdk.Log.Any(l => l.Contains("genexus_read deferred to the SDK")));
 
-            var refused = await RunAsync("gxengine", "error", "genexus_read", args, TwoPartRead);
-            Assert.NotNull(refused.Result);
-            Assert.True(refused.Result!.Value<bool>("isError"));
-            var payload = PayloadOf(refused.Result);
-            Assert.Equal("EngineOperationOutsideAdmittedSpace", payload["error"]?.ToString());
-            Assert.Contains("identity, readFreshness and versionToken", payload["message"]!.ToString());
-            Assert.False(refused.EngineStarted);
+            var runError = await RunAsync("gxengine", "error", "genexus_read", args, TwoPartRead);
+            Assert.True(runError.Result != null && runError.Result.Value<bool>("isError") && !runError.EngineStarted);
+            Assert.Equal("EngineOperationOutsideAdmittedSpace", PayloadOf(runError.Result)["error"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData(@"{ ""name"": ""Alpha"", ""part"": ""Source"" }")]
+        [InlineData(@"{ ""name"": ""Alpha"", ""part"": ""Source"", ""fields"": [""name"", ""type"", ""parts""] }")]
+        [InlineData(@"{ ""objectName"": ""Alpha"", ""part"": ""Source"" }")]
+        public async Task AdmittedSinglePartRead_ReachesTheEngineAndReturnsShapedResponse(string args)
+        {
+            const string page = "{\"part\":\"Source\",\"source\":\"one\\r\\ntwo\",\"isBase64\":false,\"isEmpty\":false,\"truncated\":false,\"isTruncatedByWorker\":false,\"offset\":0,\"limit\":2,\"totalLines\":2,\"totalBytes\":8,\"versionToken\":\"636911179160000000:root:aaaaaaaa\"}";
+            var run = await RunAsync("gxengine", "error", "genexus_read", args, page);
+            Assert.True(run.EngineStarted && run.Result != null && !run.Result.Value<bool>("isError"));
+            Assert.Contains("kb-read", run.EngineArguments);
+            var payload = PayloadOf(run.Result);
+            Assert.Equal("Source", payload["part"]?.ToString());
+            Assert.Equal("one\r\ntwo", payload["source"]?.ToString());
+            Assert.Equal("engine-object-state", payload["readFreshness"]?["origin"]?.ToString());
+            Assert.Contains("aaaaaaaa", payload["versionToken"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("sdk", false)]
+        [InlineData("auto", false)]
+        [InlineData("gxengine", true)]
+        public async Task SinglePartRead_RespectsBackendPolicy(string backend, bool native)
+        {
+            const string completePage = "{\"part\":\"Source\",\"source\":\"one\\r\\ntwo\",\"isBase64\":false,\"isEmpty\":false,\"truncated\":false,\"isTruncatedByWorker\":false,\"offset\":0,\"limit\":2,\"totalLines\":2,\"totalBytes\":8,\"versionToken\":\"636911179160000000:root:aaaaaaaa\"}";
+            var run = await RunAsync(backend, "error", "genexus_read", @"{ ""name"": ""Alpha"", ""part"": ""Source"" }", completePage);
+            Assert.Equal(native, run.EngineStarted);
+            if (!native)
+            {
+                Assert.Null(run.Result);
+            }
+            else
+            {
+                Assert.NotNull(run.Result);
+                Assert.False(run.Result.Value<bool>("isError"));
+            }
         }
 
         // ------------------------------------------------- admitted native query space
@@ -210,7 +237,8 @@ namespace GxMcp.Gateway.Tests
                     {
                         ["isError"] = isError,
                         ["content"] = new JArray(new JObject { ["type"] = "text", ["text"] = payload.ToString() }),
-                    });
+                    },
+                    (kb, _) => Task.FromResult<EngineActiveModel?>(new EngineActiveModel(kb, 4, 2, "branch")));
                 JObject? result = await operations.TryDispatchAsync(
                     tool, null, JObject.Parse(argsJson), tempDir, "kb-alias", CancellationToken.None);
 

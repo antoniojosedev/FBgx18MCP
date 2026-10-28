@@ -226,8 +226,7 @@ namespace GxMcp.Gateway
                 switch (operationKey)
                 {
                     case "genexus_read":
-                        return EngineOutsideResult(context,
-                            "an SDK read returns identity, readFreshness and versionToken (and ignores `fields`); native full-envelope and workflow parity is not yet verified, so the SDK path must serve `genexus_read`");
+                        return await DispatchEngineReadAsync(context).ConfigureAwait(false);
                     case "genexus_query":
                         return await DispatchEngineQueryAsync(context).ConfigureAwait(false);
                     case "genexus_kb.get_environment":
