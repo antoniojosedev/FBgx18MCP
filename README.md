@@ -977,7 +977,7 @@ contribution has helped shape it.
 A special thank-you to **[Chip On Sistemas de Informática](https://www.chipon.com.br/)**
 and **Luiz E. B. R.** for their support.
 
-Thanks also to **Roberto G. A. J.** and **Msinfor**.
+Thanks also to **Roberto G. A. J.**, **Msinfor**, and **Leonardo M. M.**
 
 ---
 
