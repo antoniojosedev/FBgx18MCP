@@ -46,7 +46,7 @@ namespace GxMcp.Gateway
     /// (<c>{ backend: "gxengine", capability, operation, fallback }</c>) so the
     /// caller can tell which backend answered.
     /// </summary>
-    internal sealed class EngineRoutedOperations
+    internal sealed partial class EngineRoutedOperations
     {
         private readonly Func<Configuration?> _activeConfig;
         private readonly Action<string> _log;
@@ -132,6 +132,14 @@ namespace GxMcp.Gateway
             if (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)) return "genexus_read";
             if (string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase)) return "genexus_query";
             if (string.Equals(toolName, "genexus_edit", StringComparison.OrdinalIgnoreCase)) return "genexus_edit";
+            if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(lifecycleAction, "get_environment", StringComparison.OrdinalIgnoreCase))
+                return "genexus_kb.get_environment";
+            if (string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase)) return "genexus_list_objects";
+            if (string.Equals(toolName, "genexus_inspect", StringComparison.OrdinalIgnoreCase)) return "genexus_inspect";
+            if (string.Equals(toolName, "genexus_kb_version", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(lifecycleAction, "list", StringComparison.OrdinalIgnoreCase))
+                return "genexus_kb_version.list";
             if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
             {
                 if (string.Equals(lifecycleAction, "build", StringComparison.OrdinalIgnoreCase))
@@ -222,6 +230,14 @@ namespace GxMcp.Gateway
                             "an SDK read returns identity, readFreshness and versionToken (and ignores `fields`); native full-envelope and workflow parity is not yet verified, so the SDK path must serve `genexus_read`");
                     case "genexus_query":
                         return await DispatchEngineQueryAsync(context).ConfigureAwait(false);
+                    case "genexus_kb.get_environment":
+                        return await DispatchEngineEnvironmentAsync(context).ConfigureAwait(false);
+                    case "genexus_list_objects":
+                        return await DispatchEngineProcedureListAsync(context).ConfigureAwait(false);
+                    case "genexus_kb_version.list":
+                        return await DispatchEngineVersionListAsync(context).ConfigureAwait(false);
+                    case "genexus_inspect":
+                        return await DispatchEngineInspectAsync(context).ConfigureAwait(false);
                     case "genexus_edit":
                         return DispatchEngineEdit(context);
                     case "genexus_lifecycle.build":
@@ -298,9 +314,9 @@ namespace GxMcp.Gateway
         /// (null when the fallback continues on the SDK).
         /// </summary>
         private async Task<(JObject? Json, GxEngineInvocation Invocation, JObject? Failure)> InvokeEngineJsonAsync(
-            EngineRouteContext ctx, List<string> engineArgs, string command)
+            EngineRouteContext ctx, List<string> engineArgs, string command, IEnumerable<string>? versionArguments = null)
         {
-            engineArgs.AddRange(await ActiveVersionArgumentsAsync(ctx).ConfigureAwait(false));
+            engineArgs.AddRange(versionArguments ?? await ActiveVersionArgumentsAsync(ctx).ConfigureAwait(false));
             GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(
                 ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
             string? versionScope = EngineActiveModel.VersionScopeRefusal(invocation);

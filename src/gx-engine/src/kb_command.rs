@@ -62,6 +62,21 @@ pub enum KbOperation {
         used_by: Option<String>,
         limit: usize,
     },
+    Environment {
+        kb_path: String,
+    },
+    VersionList {
+        kb_path: String,
+    },
+    Inspect {
+        kb_path: String,
+        name: String,
+    },
+    ProcedureList {
+        kb_path: String,
+        offset: usize,
+        limit: usize,
+    },
     Write {
         kb_path: String,
         object: String,
@@ -153,7 +168,21 @@ impl KbArgs {
             "kb-read" => self.admit_read(),
             "kb-query" => self.admit_query(),
             "kb-write" => self.admit_write(),
-            _ => unreachable!("kb_command is only used for kb-read/kb-query/kb-write"),
+            "kb-environment" => Ok(KbOperation::Environment {
+                kb_path: self.admit_scope_only("kb-environment")?,
+            }),
+            "kb-versions" => Ok(KbOperation::VersionList {
+                kb_path: self.admit_scope_only("kb-versions")?,
+            }),
+            "kb-inspect" => {
+                let [kb_path, name] = self.admit_scope_only_positional(
+                    "kb-inspect",
+                    "kb-inspect requires <kb-path> <procedure-name>",
+                )?;
+                Ok(KbOperation::Inspect { kb_path, name })
+            }
+            "kb-list-procedures" => self.admit_procedure_list(),
+            _ => unreachable!("kb_command is only used for native KB operations"),
         }
     }
 
@@ -196,6 +225,54 @@ impl KbArgs {
             used_by: self.used_by,
             limit: self.limit.unwrap_or(0),
         })
+    }
+
+    fn admit_procedure_list(mut self) -> Result<KbOperation, String> {
+        let limit = self.limit.take().unwrap_or(200);
+        let offset = self.offset.take().unwrap_or(0);
+        if !(1..=200).contains(&limit) || offset > i32::MAX as usize {
+            return Err(
+                "kb-list-procedures requires limit 1..200 and Int32 nonnegative offset".into(),
+            );
+        }
+        // The remaining admission is intentionally as narrow as environment reads.
+        let kb_path = self.admit_scope_only("kb-list-procedures")?;
+        Ok(KbOperation::ProcedureList {
+            kb_path,
+            offset,
+            limit,
+        })
+    }
+
+    /// The `<kb-path>` of a command that accepts nothing but the active-scope flags.
+    fn admit_scope_only(self, command: &str) -> Result<String, String> {
+        let [kb_path] =
+            self.admit_scope_only_positional(command, &format!("{command} requires <kb-path>"))?;
+        Ok(kb_path)
+    }
+
+    /// The `N` positional arguments of a command that accepts no flag but the active-scope ones.
+    fn admit_scope_only_positional<const N: usize>(
+        self,
+        command: &str,
+        usage: &str,
+    ) -> Result<[String; N], String> {
+        if self.parts.is_some()
+            || self.name.is_some()
+            || self.object_type.is_some()
+            || self.used_by.is_some()
+            || self.limit.is_some()
+            || self.offset.is_some()
+            || self.page
+            || self.read_client.is_some()
+            || self.part.is_some()
+            || self.content_file.is_some()
+        {
+            return Err(format!(
+                "{command} accepts only --design-model and --kb-version"
+            ));
+        }
+        take_positional(self.positional, usage)
     }
 
     fn admit_write(self) -> Result<KbOperation, String> {
@@ -292,6 +369,89 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    fn procedure_listing_cli_admits_only_bounded_paging_and_scope() {
+        assert!(matches!(
+            admitted(
+                "kb-list-procedures",
+                &["kb", "--limit", "3", "--offset", "6"]
+            )
+            .unwrap(),
+            KbOperation::ProcedureList {
+                limit: 3,
+                offset: 6,
+                ..
+            }
+        ));
+        for args in [
+            vec!["kb", "--limit", "0"],
+            vec!["kb", "--offset", "2147483648"],
+            vec!["kb", "--name", "foo"],
+            vec!["kb", "--type", "Transaction"],
+        ] {
+            assert!(admitted("kb-list-procedures", &args).is_err());
+        }
+    }
+
+    #[test]
+    fn environment_admits_only_path_and_explicit_scope_flags() {
+        assert!(
+            matches!(admitted("kb-environment", &["kb", "--design-model", "4", "--kb-version", "2"]).unwrap(),
+            KbOperation::Environment { kb_path } if kb_path == "kb")
+        );
+        for flag in VALUE_FLAGS
+            .into_iter()
+            .filter(|flag| !matches!(*flag, "--design-model" | "--kb-version"))
+        {
+            assert!(
+                admitted("kb-environment", &["kb", flag, "1"]).is_err(),
+                "{flag}"
+            );
+        }
+        assert!(admitted("kb-environment", &["kb", "--page"]).is_err());
+        assert!(admitted("kb-environment", &["kb", "extra"]).is_err());
+        assert!(admitted("kb-environment", &[]).is_err());
+    }
+
+    #[test]
+    fn inspect_admits_path_name_and_explicit_scope_flags_only() {
+        assert!(
+            matches!(admitted("kb-inspect", &["kb", "Proc", "--design-model", "1", "--kb-version", "0"]).unwrap(),
+            KbOperation::Inspect { kb_path, name } if kb_path == "kb" && name == "Proc")
+        );
+        for flag in VALUE_FLAGS
+            .into_iter()
+            .filter(|flag| !matches!(*flag, "--design-model" | "--kb-version"))
+        {
+            assert!(
+                admitted("kb-inspect", &["kb", "Proc", flag, "1"]).is_err(),
+                "{flag}"
+            );
+        }
+        assert!(admitted("kb-inspect", &["kb"]).is_err());
+        assert!(admitted("kb-inspect", &["kb", "Proc", "extra"]).is_err());
+    }
+
+    #[test]
+    fn version_list_admits_only_path_and_explicit_scope_flags() {
+        assert!(
+            matches!(admitted("kb-versions", &["kb", "--design-model", "1", "--kb-version", "0"]).unwrap(),
+            KbOperation::VersionList { kb_path } if kb_path == "kb")
+        );
+        for flag in VALUE_FLAGS
+            .into_iter()
+            .filter(|flag| !matches!(*flag, "--design-model" | "--kb-version"))
+        {
+            assert!(
+                admitted("kb-versions", &["kb", flag, "1"]).is_err(),
+                "{flag}"
+            );
+        }
+        assert!(admitted("kb-versions", &["kb", "--page"]).is_err());
+        assert!(admitted("kb-versions", &["kb", "extra"]).is_err());
+        assert!(admitted("kb-versions", &[]).is_err());
     }
 
     #[test]

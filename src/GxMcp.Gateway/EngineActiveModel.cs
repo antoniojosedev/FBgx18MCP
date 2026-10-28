@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
@@ -68,11 +69,8 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>The engine arguments naming this active version.</summary>
-        internal IEnumerable<string> EngineArguments() => new[]
-        {
-            "--design-model", DesignModelId.ToString(CultureInfo.InvariantCulture),
-            "--kb-version", KbVersionId.ToString(CultureInfo.InvariantCulture),
-        };
+        internal IEnumerable<string> EngineArguments() =>
+            EngineIntFlag.Tokens("--design-model", DesignModelId).Concat(EngineIntFlag.Tokens("--kb-version", KbVersionId));
 
         /// <summary>
         /// The engine's version-scope refusal message (category <c>version_scope</c> with exit code 4), or

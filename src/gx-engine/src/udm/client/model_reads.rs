@@ -169,18 +169,14 @@ impl UdmClient {
         let sql = format!(
             "SET NOCOUNT ON; SELECT EntityTypeId, EntityId, ModelParentEntityTypeId, ModelParentEntityId FROM ModelEntityVersion WHERE ModelId = {model_id}"
         );
-        let raw = self.execute_live_sql(&sql)?;
-        parse_live_rows(&raw, 4)?
-            .iter()
-            .map(|row| {
-                Ok(ModelParentRecord {
-                    entity_type_id: parse_live_int(row[0], "EntityTypeId")?,
-                    entity_id: parse_live_int(row[1], "EntityId")?,
-                    parent_entity_type_id: parse_live_int(row[2], "ModelParentEntityTypeId")?,
-                    parent_entity_id: parse_live_int(row[3], "ModelParentEntityId")?,
-                })
+        self.live_records(&sql, 4, |row| {
+            Ok(ModelParentRecord {
+                entity_type_id: parse_live_int(row[0], "EntityTypeId")?,
+                entity_id: parse_live_int(row[1], "EntityId")?,
+                parent_entity_type_id: parse_live_int(row[2], "ModelParentEntityTypeId")?,
+                parent_entity_id: parse_live_int(row[3], "ModelParentEntityId")?,
             })
-            .collect()
+        })
     }
 
     /// The stored identity and last-update inputs of one exact active object version.

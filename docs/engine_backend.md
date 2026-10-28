@@ -10,8 +10,11 @@ parity.
 **Default policy.** `Engine.Backend=gxengine` (also when the section is absent)
 uses gx-engine for every call inside the admitted space: blocking
 `genexus_lifecycle` `build`/`rebuild` requests (through `parallel_rebuild_all` /
-`rebuild-all`) and field-limited type-only `genexus_query` requests (through
-`kb-query`). Reads stay on SDK fallback until response parity is verified. A blocking directed `build` is also admitted for
+`rebuild-all`), field-limited type-only `genexus_query` requests (through
+`kb-query`), bounded `genexus_kb.get_environment` reads (through
+`kb-environment`), and nonempty bounded Procedure pages of `genexus_list_objects`
+(through `kb-list-procedures`). Object reads stay on SDK fallback until response
+parity is verified. A blocking directed `build` is also admitted for
 `mode=compile_check`, explicit `callers=false`, and transitive callees, using a
 simple or module-qualified object name. Edits, async builds, and unsupported
 request shapes fall back to the SDK (`Engine.Fallback=sdk`). This selects the
@@ -46,11 +49,22 @@ verified. The physical storage facts behind the read path are recorded in
 
 ## Coverage accounting
 
-The MCP contract inventory contains **60 tools and 309 operation rows**. Current
-production routing admits a restricted subset of **2 tools (3.3%)**:
-`genexus_query` and `genexus_lifecycle` (`build` / `rebuild`). Those are **3 of
-309 operation rows (1.0%)**, each still subject to the argument and capability
-gates below. These figures count routing breadth, not complete implementation,
+The MCP contract inventory contains **60 tools and 309 operation rows**. Locally
+MCP-verified routing admits a restricted subset of **6 tools (10%)**:
+`genexus_query`, `genexus_lifecycle` (`build` / `rebuild`), `genexus_kb`
+(`get_environment`), `genexus_list_objects` (bounded Procedure pages),
+`genexus_kb_version` (`list`) and `genexus_inspect` (minimal Procedure
+inspection). Those are **7 of 309 operation rows (2.3%)**, each still subject to
+the argument and capability gates below.
+
+| Tool | Natively routed request (`Backend=gxengine` only, except builds) | Everything else |
+| :--- | :--- | :--- |
+| `genexus_query` | field-limited, type-only queries | SDK |
+| `genexus_lifecycle` | admitted blocking `build` / `rebuild` | SDK or refusal |
+| `genexus_kb` | `get_environment` with exactly one stored environment | SDK |
+| `genexus_list_objects` | nonempty `typeFilter=Procedure` pages, explicit `limit` 1..100, fields name/type | SDK |
+| `genexus_kb_version` | explicit `action=list` | SDK (absent action, `changed_objects`, mutations) |
+| `genexus_inspect` | exact-case ASCII name, `type=Procedure`, `projection=minimal` | SDK (other projections/types/selectors) | These figures count routing breadth, not complete implementation,
 engineering effort, or independently verified SDK replacement.
 
 **0 of 60 tools are certified fully SDK-independent across their complete
@@ -61,9 +75,154 @@ reads stay deferred. Native live writes, read-to-edit concurrency, and broad too
 families remain incomplete or unverified. Gateway-only tools are not gx-engine
 implementations and are not counted as native engine coverage.
 
+The local `genexus_kb.get_environment` increment passed packaged MCP comparisons
+under `sdk`, `auto`, and `gxengine` on the disposable timestamp clone. The engine
+policy served two actual native reads with matching visible values and no SDK
+deferrals; other policies stayed SDK-only. With Procedure listing this reaches
+four tool families; the KB version list and minimal Procedure inspection below
+bring it to the six verified families the current goal sought. Each family
+counts one bounded request shape on one disposable fixture, not complete tool
+parity. Static gates remain nonzero; these unpublished changes are not a
+release certification.
+
 Do not derive a completion percentage from unit-test totals, internal capability
 labels, or the inventory's `execution` labels: the latter are dispatch metadata,
 not a certified per-action SDK-dependency audit.
+
+## Current environment
+
+`genexus_kb action=get_environment` has a bounded native candidate under
+`Backend=gxengine`, using `kb-environment`. It requires a ready, matching Worker
+active-version snapshot, and the same model/version still observed after the
+native read. The engine selects the named Design model and reads its sole child
+environment's persisted name within one private serializable read-only
+transaction. Zero or multiple environments refuse instead of guessing which one
+the SDK session has selected. Missing, duplicate, malformed or wrong-model names
+also refuse. Names preserve Unicode and stored spacing.
+
+Only `action=get_environment` and `kb` (plus existing Gateway response/context
+arguments) are admitted. `list_environments`, environment mutation, startup
+selection, and every other KB action keep their existing SDK/Gateway path.
+`Backend=sdk|auto` stays SDK-only; unsupported arguments and native errors obey
+`Fallback=sdk|error`. An unknown or changed active scope never returns a native
+success. The result is `{environment: <stored name>, engine: <provenance>}` before
+normal Gateway enrichment/projection. This creates no authoritative write token
+and does not promote `genexus_read`, persistent writes or build scope.
+
+Evidence so far: on the independently isolated disposable timestamp clone, the
+SDK current environment and the real native CLI both returned `.NET` for trunk
+model 1/version 0; the SDK version inventory remained unchanged. Five pure Rust
+metadata tests, strict CLI admission and fallback/policy tests cover negative
+cases; the multiple-environment regression has a failing guard-removal mutation.
+Raw local receipts stay under `C:/tmp/gxe-goal-10pct/`, outside Git. Packaged MCP
+comparisons under all three policies passed; repeated calls matched and the
+SDK-reported version inventory plus connection-file bytes remained unchanged.
+All three harnesses confirmed clean Gateway/Worker exit and zero logged errors.
+This single-fixture evidence is not full SDK parity, live concurrent-version-switch
+certification, or a performance measurement.
+
+## Procedure listing
+
+`genexus_list_objects` has a bounded native candidate for nonempty pages with
+`typeFilter=Procedure`, an explicit integer `limit` from 1 to 100, an optional
+Int32 nonnegative `offset`, and explicit `fields` limited to `name` and/or `type`.
+The engine selects the Worker-reported Design model, lists active Procedure rows,
+and reads each page row's stored lifecycle timestamp in one fresh serializable
+read-only view. It reproduces the Worker default order (.NET `OrdinalIgnoreCase`
+by name within one type bucket) only for nonempty, unique ASCII names: names
+that need Unicode case rules, case collisions (whose SDK tie-break is the GUID),
+an empty catalog, malformed rows or a short page are refused.
+
+The Gateway emits the Worker page envelope before normal projection: counts,
+`nextOffset`, `pagination`, `_meta.aggregates` (`by_type`, `lastUpdate` bounds,
+`modified_last_7d`), `suggested_next` and `alternative_views`. Empty pages stay on
+the SDK, because their `typesAvailable` hint describes the whole SDK index. Other
+types, comma lists, filters, parents/paths, `sort`, `since`, cursors, `verbose`,
+`inline_read_top`, implicit/default fields and changed/unknown Worker scope stay
+on the SDK or fail closed with `Fallback=error`. Unlike the SDK path, an admitted
+native page does not wait for the Worker search index. This is not a concurrency,
+freshness-during-index-rebuild or performance claim.
+
+Evidence so far: on the same isolated clone, the native CLI matched the retained
+SDK pages at offsets 0 and 3 with `limit=3` (total 201, names/order and stored
+`lastUpdate` aggregate bounds), and the beyond-end page's total and empty result.
+Unit/routing tests cover ordering, ambiguity, paging bounds, admission, malformed
+or short pages and changed scope; the ordering, short-page and empty-page guards
+failed under mutation. Packaged MCP comparisons under `sdk`, `auto` and `gxengine`
+then passed against the retained SDK pages. Comparison ignored only correlation,
+Worker telemetry, backend provenance and the response-size counter
+`_meta.tokens.used`. The engine policy served both nonempty pages natively and
+cleanly deferred the beyond-end page to the SDK. The version inventory and
+connection bytes were unchanged, cleanup passed, and zero errors were logged.
+The native response carries no Worker `_meta.telemetry` block. A first packaged
+run exposed that the beyond-end page reached the SDK only through an exception
+(which `Fallback=error` would report as an invocation failure). It is now an
+explicit refusal, and a regression covers it.
+
+## KB version list
+
+`genexus_kb_version action=list` (explicit action only) has a native candidate
+using `kb-versions`. In one fresh serializable read view the engine checks the
+Worker-reported active scope against the model topology, then reads the latest
+stored `Udm.Types.KnowledgeBaseVersions` entities (verifying none is missing a
+latest entity version), their users and the Knowledge Base name, which names
+the trunk. Like the SDK's `KBVersion.GetAll`, the list excludes the trunk.
+Every listed version must be stored as visible, agree on name and description
+between its row and its properties, have `IsFrozen` True/False, resolve its
+parent and user, and own exactly the Design model its data names; every
+versioned Design model must belong to a listed version. Anything else refuses.
+
+The Gateway emits the Worker `KbVersionListRetrieved` envelope: `isBranch` is
+`!isFrozen` (every listed version is a frozen version or a development branch),
+`isTrunk` false, `isActive` from the Worker's active version id, `lastUpdate`
+from the stored UTC `EntityVersionTimestamp`, and no `createdAt` key (the
+SDK-visible list carries none). Provenance labels intentionally differ:
+`source` is `udm:KnowledgeBaseVersions`, `lastUpdateSource` is
+`udm:EntityVersion.EntityVersionTimestamp`, and `createdAtSource`/`createdAtNote`
+name the stored entity. Order is stored id order, matched on one fixture only.
+
+Behavioral difference: the SDK `list` also re-captures the Worker's active-model
+snapshot as a side effect; the native route only reads that snapshot (before and
+after). If a Worker-side path changed the session's active version without
+recapturing it, the native list would report the snapshot's active version; that
+path is not known to exist but is not ruled out.
+
+Evidence: on the isolated clone (trunk `KBTeste`, frozen
+`TimestampAuthorityFreeze`, branch `TimestampAuthorityBranch`), the native CLI
+matched the retained SDK list for the trunk and refused wrong or missing scope.
+Packaged comparisons under `sdk`, `auto` and `gxengine` passed, ignoring only
+correlation, telemetry, backend provenance, `_meta.tokens.used` and the four
+provenance labels (whose exact per-backend values are asserted). A first packaged
+run failed because the native answer carried `createdAt: null`; that is fixed
+with a regression. Guard mutations (active-version id, visibility, `createdAt`)
+failed their tests.
+
+## Procedure inspection
+
+`genexus_inspect` with an exact-case ASCII `name`, explicit `type=Procedure` and
+`projection=minimal` has a native candidate using `kb-inspect`. The engine
+selects the only Procedure with that name and refuses when any other model
+entity shares the name (the SDK would disclose such objects from its index).
+It returns the GUID, entity id, module path (`Root Module/.../<name>`; folders or
+any non-module holder refuse), description, lifecycle timestamp (the same
+`ObjectSaved` source the Procedure listing uses), user, and the SDK display
+names of the stored parts: `Procedure`, `Rules` and `Conditions` parts display
+as `Source`, `Rules` is also listed by name, and `Variables`, `Documentation`,
+`Help` and `Layout` keep their names, ordered like `OrdinalIgnoreCase`. Unknown
+part types, disagreeing model/entity user or description, and missing GUID,
+timestamp or user refuse. The Gateway composes the entity key from the Procedure
+type GUID and keeps requests on the SDK when the KB has a `genexus_memory` store
+(the Worker attaches its notes to inspections) or when the engine resolves a
+differently cased name.
+
+Evidence: six retained SDK minimal inspections on the isolated clone (two
+GeneXus library Procedures with three stored parts and four user Procedures with
+seven) matched the native CLI field by field, and packaged comparisons under
+`sdk`, `auto` and `gxengine` passed (eight native reads under `gxengine`,
+including the version lists around them). Mutations removing the `Rules` alias,
+the name-collision check, the memory-store check or the case check failed their
+tests. Standard/verbose projections, `include`, GUID/entity-key/path selectors and
+other types remain SDK-backed.
 
 ## Enabling it
 
@@ -71,7 +230,7 @@ not a certified per-action SDK-dependency audit.
 
 | Key | Values | Default | Meaning |
 | :--- | :--- | :--- | :--- |
-| `Engine.Backend` | `gxengine`, `auto`, `sdk` | `gxengine` | `gxengine`: admitted builds and field-limited type-only queries use the engine; reads/edits and the rest use SDK fallback. `auto`: only admitted builds use the engine. `sdk`: SDK only, the engine is never invoked. |
+| `Engine.Backend` | `gxengine`, `auto`, `sdk` | `gxengine` | `gxengine`: admitted builds, field-limited type-only queries and sole-environment reads use the engine; object reads/edits and the rest use SDK fallback. `auto`: only admitted builds use the engine. `sdk`: SDK only, the engine is never invoked. |
 | `Engine.Fallback` | `sdk`, `error` | `sdk` | What happens when a routed capability is not at parity: keep the GeneXus SDK, or refuse the call. `error` is the verification mode. |
 | `Engine.Executable` | path | unset | Explicit `gx-engine.exe`. Authoritative: when the path is missing the probe reports `EngineNotFound` instead of running a different binary. |
 | `Engine.TimeoutSeconds` | positive integer | `120` | Wall-clock budget for one engine invocation (matches the engine's native-compilation deadline). |
@@ -139,17 +298,19 @@ engine invocation entirely. Unsupported/failed SDK builds remain SDK errors.
 
 ## What changes today
 
-With default `Backend=gxengine`, admitted builds and field-limited type-only
-queries can be served natively. Reads and edits are not engine candidates: an
+With default `Backend=gxengine`, admitted builds, field-limited type-only
+queries, sole-environment reads, bounded Procedure pages, the KB version list and
+minimal Procedure inspections can be served natively. Object reads and edits
+are not engine candidates: an
 explicit deferral policy (not a capability claim) always hands them to the SDK or
 refuses them under `Fallback=error`, pending response parity and persistent writes.
 `Backend=auto` keeps only the builds.
-Every other tool is untouched. `genexus_doctor` result gains an `engine` block:
+Every other tool/action is untouched. `genexus_doctor` result gains an `engine` block:
 
 - always: `backend`, `fallback`, and `capabilities` — the `parity` / `partial` /
   `unsupported` counts plus `routedOperations`, the operations the selected policy
-  lets the engine actually serve (argument gates still apply: builds and the
-  type-only query), and `deferredOperations`, the read/edit operations held
+  lets the engine actually serve (argument gates still apply: builds, the
+  type-only query and the sole-environment read), and `deferredOperations`, the read/edit operations held
   outside the engine by explicit policy (`genexus_read`, `genexus_edit` under
   `Backend=gxengine`; empty under `auto` and `sdk`). A deferred operation is never
   counted as parity or listed as routed;

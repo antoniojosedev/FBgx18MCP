@@ -95,6 +95,13 @@ Source of truth: `config/gx-versions.json`.
   access can change KB state; record/restore temporary database settings and
   reconcile uncertain effects before replay. Keep Cloud off and use local
   SDK/MSBuild stages as the oracle; preserve licensing and existing SDK routing.
+- Before querying UDM SQL tables, read [`docs/udm_storage_notes.md`](docs/udm_storage_notes.md)
+  and the SELECTs in `src/gx-engine/src/udm/client/model_reads.rs`; take column
+  names from them, never from a guess.
+- A native route that replaces an SDK path reproduces that path's side effects
+  (caches, `ActiveModelSnapshot`, invalidation) or documents each one it skips.
+  Every refusal guard in a native contract has a test that fails when the guard
+  is removed.
 - Validate the affected reader/compiler/runtime path, including actual runnable
   output when behavior changes. Preserve the final `build.ps1` ordering below;
   identify the exact packaged binary in postchecks rather than borrowing timings
@@ -117,7 +124,9 @@ Source of truth: `config/gx-versions.json`.
 
 ## Source of truth and tool changes
 
-- Tool schemas: `src/GxMcp.Gateway/tool_definitions.json`.
+- Tool schemas: `src/GxMcp.Gateway/tool_definitions.json`. It is the tool-list source of
+  truth that `scripts/generate-operation-contract-inventory.py` reads; copies under
+  `src/*/bin/**` are build outputs, so read the tracked file.
 - Discovery golden fixture: `src/GxMcp.Gateway.Tests/Fixtures/Contract/Discovery/tools-list.response.json`; keep it alphabetically sorted. Regenerate automatically after intentional schema changes: `$env:GXMCP_UPDATE_GOLDEN='1'; dotnet test src\GxMcp.Gateway.Tests --filter McpDiscoveryContractTests; Remove-Item Env:\GXMCP_UPDATE_GOLDEN`.
 - Tool dispatch path: gateway router → `src/GxMcp.Worker/Services/CommandDispatcher.cs` → service method. A tool change requires schema (`tool_definitions.json`), router, dispatcher, service, help catalog (`src/GxMcp.Gateway/ToolHelpCatalog.cs`), and fixture updates.
 - Tool schema budget bumps require a `CHANGELOG.md` explanation.
@@ -137,6 +146,19 @@ for the complete check matrix and evidence rules. Start with the narrowest
 behavior test; an authorized release uses the canonical preflight described in
 [`docs/release_protocol.md`](docs/release_protocol.md), not repeated manual suites.
 Run `.\build.ps1` **last** to preserve the published Worker/x86 fingerprint.
+Named checks live in `.pi/checks.json` (`project_checks` tool; each is capped at
+10 minutes, so `build.ps1` stays a shell step). The live
+native-vs-SDK parity runner is `scripts/run-native-live-parity.ps1`; it touches a
+KB, so it is not a named check.
+
+`ripwire . --quality-delta` (pass: `gating="0"`) is the gating ripwire check;
+acknowledge a justified false positive per file with a written reason
+(`--scope=<file> --ack-only=gating --quality-ack="<reason>"`) into
+`.ripwire_quality_acks`. `ripwire . --test-gate` is informational here: it exits 4
+whenever a test reaches the change or an impacted symbol has no indexed test, and
+Cargo/xUnit tests have no derivable runner (`run_unknown=1`). Use it to list the
+tests to run, then run the real lanes; never record its exit 4 as a failure or
+exit 0 as proof.
 
 SDK compatibility changes require a Worker build, focused tests and live smoke
 for each installed major, with `GX_PATH` selecting that major's installation.
@@ -261,7 +283,7 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   the trigger above is the whole obligation.
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
-- Edit tracked text with the file-editing tool, not by piping it through a shell:
+- Edit tracked text with the native edit tools (keep LF line endings), not by piping it through a shell or text-mode script:
   fixed line indices truncate long files, shell round-trips re-encode UTF-8, and
   index arithmetic with shifting bounds deletes code. Use the shell to read and
   to run commands. See [`CODING_STANDARDS.md`](CODING_STANDARDS.md) § Text edits.

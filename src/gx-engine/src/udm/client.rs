@@ -19,11 +19,15 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+mod environment;
+mod inspect;
 mod kb_facts;
+mod listing;
 mod live_rows;
 mod model_reads;
 mod prefetch;
 mod read_view;
+mod versions;
 mod writes;
 
 pub use kb_facts::AttributeFacts;

@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>] [--page --offset <n> --limit <n> --client mcp] [--design-model <id> --kb-version <id>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>] [--design-model <id> --kb-version <id>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]... [--design-model <id> --kb-version <id>]\n  gx-engine --version\n\n--design-model/--kb-version: the Design model and KB version the GeneXus session has active. Without them only a KB with a single Design model (no versions) is served. A read serves the named version's Design model; a build covers only the trunk Design model 1 with every environment under it. Anything else is refused before any read or write, with exit code 4.\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
+const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>] [--page --offset <n> --limit <n> --client mcp] [--design-model <id> --kb-version <id>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-environment <kb-path> [--design-model <id> --kb-version <id>]\n  gx-engine kb-list-procedures <kb-path> [--offset <n> --limit <1..200>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-versions <kb-path> [--design-model <id> --kb-version <id>]\n  gx-engine kb-inspect <kb-path> <procedure-name> [--design-model <id> --kb-version <id>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>] [--design-model <id> --kb-version <id>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]... [--design-model <id> --kb-version <id>]\n  gx-engine --version\n\n--design-model/--kb-version: the Design model and KB version the GeneXus session has active. Without them only a KB with a single Design model (no versions) is served. A read serves the named version's Design model; a build covers only the trunk Design model 1 with every environment under it. Anything else is refused before any read or write, with exit code 4.\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
 
 fn load(path: &str) -> Result<Project, String> {
     let file = File::open(path).map_err(|e| format!("cannot open project: {e}"))?;
@@ -81,7 +81,16 @@ fn execute(
         return Ok(());
     }
     let raw_command = args[0].as_str();
-    if matches!(raw_command, "kb-read" | "kb-query" | "kb-write") {
+    if matches!(
+        raw_command,
+        "kb-read"
+            | "kb-query"
+            | "kb-write"
+            | "kb-environment"
+            | "kb-list-procedures"
+            | "kb-versions"
+            | "kb-inspect"
+    ) {
         return execute_kb_ops(raw_command, &args[1..], category);
     }
     let from_xml = raw_command.starts_with("xml-");
@@ -375,6 +384,38 @@ fn run_kb_operation(
             print_json(&gx_engine::kb_ops::write_object_part(
                 &client, &object, &part, &content, None, expected,
             )?)
+        }
+        scoped_read => run_scoped_read(scoped_read, active),
+    }
+}
+
+/// The native reads that select the active version inside the read itself, on a client opened
+/// without `connect_selected_kb`.
+fn run_scoped_read(
+    operation: kb_command::KbOperation,
+    active: Option<gx_engine::udm::version_scope::ActiveVersion>,
+) -> Result<(), String> {
+    use kb_command::KbOperation;
+    match operation {
+        KbOperation::ProcedureList {
+            kb_path,
+            offset,
+            limit,
+        } => print_json(&connect_udm_kb(&kb_path)?.procedure_list_page(active, offset, limit)?),
+        KbOperation::Environment { kb_path } => print_json(&serde_json::json!({
+            "environment": connect_udm_kb(&kb_path)?.sole_environment_name(active)?
+        })),
+        KbOperation::Inspect { kb_path, name } => {
+            print_json(&connect_udm_kb(&kb_path)?.procedure_inspect_minimal(active, &name)?)
+        }
+        KbOperation::VersionList { kb_path } => {
+            print_json(&connect_udm_kb(&kb_path)?.kb_version_list(active)?)
+        }
+        KbOperation::Read { .. }
+        | KbOperation::ReadPage { .. }
+        | KbOperation::Query { .. }
+        | KbOperation::Write { .. } => {
+            unreachable!("run_kb_operation serves the category-selecting operations")
         }
     }
 }
