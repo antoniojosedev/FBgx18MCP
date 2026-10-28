@@ -721,6 +721,13 @@ namespace GxMcp.Worker.Services
                         string validation = _writeService.WriteObject(target, partName, updatedSource, typeFilter, dryRun: true);
                         if (JObject.Parse(validation)["status"]?.ToString() == "error") return validation;
                     }
+                    // Issue #711: the preview must refuse what the write would refuse.
+                    if (WebFormXmlHelper.IsVisualPart(partName))
+                    {
+                        string carrierRefusal = WriteService.RefuseDivergentConditionCarriers(
+                            target, partName, workSource, updatedSource, dryRun: true);
+                        if (carrierRefusal != null) return carrierRefusal;
+                    }
                     string dryRunResult = BuildPatchResult("Applied", partName, normalizedOperation, expectedCount, matchCount, "Dry-run succeeded. Write skipped.");
                     try
                     {
