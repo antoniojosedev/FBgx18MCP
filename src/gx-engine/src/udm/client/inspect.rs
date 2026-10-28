@@ -517,12 +517,30 @@ mod tests {
                 .entity_id,
             1
         );
-        assert!(select_object_of_kind(&objects, &entities, ObjectKind::Procedure, "Missing").is_err());
+        assert!(
+            select_object_of_kind(&objects, &entities, ObjectKind::Procedure, "Missing").is_err()
+        );
         let twin = object("PROC", ObjectKind::Procedure, 3);
         let twins = [proc_row.clone(), twin.clone()];
-        assert!(select_object_of_kind(&twins, &[entity(&proc_row), entity(&twin)], ObjectKind::Procedure, "Proc").is_err());
+        assert!(
+            select_object_of_kind(
+                &twins,
+                &[entity(&proc_row), entity(&twin)],
+                ObjectKind::Procedure,
+                "Proc"
+            )
+            .is_err()
+        );
         let table = object("proc", ObjectKind::Transaction, 4);
-        assert!(select_object_of_kind(&objects, &[entity(&proc_row), entity(&table)], ObjectKind::Procedure, "Proc").is_err());
+        assert!(
+            select_object_of_kind(
+                &objects,
+                &[entity(&proc_row), entity(&table)],
+                ObjectKind::Procedure,
+                "Proc"
+            )
+            .is_err()
+        );
     }
 
     #[test]

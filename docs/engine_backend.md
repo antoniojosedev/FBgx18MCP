@@ -570,7 +570,8 @@ in sub-5ms without waking the 32-bit STA Worker COM process.
 
 Outside: multi-part reads (`parts[]`), non-text parts (`Variables`, `Structure`,
 `Layout`, `WebForm`), objects other than Procedure/WebPanel/Transaction, or
-requests without an active Worker model snapshot. These fall back transparently to
+requests without an active Worker model snapshot. No read shape is currently admitted
+for these non-text or multi-part requests; they fall back transparently to
 the SDK (or fail closed under `Engine.Fallback=error`).
 
 The standalone `kb-read` CLI is also available for direct command-line inspection;

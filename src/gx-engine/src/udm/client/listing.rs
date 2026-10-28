@@ -165,7 +165,11 @@ mod tests {
     fn listing_refuses_names_whose_sdk_order_is_not_proven() {
         for name in ["alpha", "ALPHA", "", "a\nb", "Produ\u{e7}\u{e3}o"] {
             assert!(
-                ordered_objects_of_kind(&[procedure("alpha", 1), procedure(name, 2)], ObjectKind::Procedure).is_err(),
+                ordered_objects_of_kind(
+                    &[procedure("alpha", 1), procedure(name, 2)],
+                    ObjectKind::Procedure
+                )
+                .is_err(),
                 "{name:?}"
             );
         }
