@@ -1,15 +1,14 @@
 //! Product-facing Knowledge Base operations served directly from UDM storage.
 //!
 //! This is the library backing the `kb-read` / `kb-query` / `kb-write` CLI
-//! commands. The MCP Gateway's engine backend (`Engine.Backend=gxengine`)
-//! invokes those commands for the `udm_storage_access` parity capability, which
-//! registers `genexus_read`, `genexus_query` and `genexus_edit` as consumers
+//! commands. MCP queries use a narrower admitted subset; native MCP reads and
+//! edits remain deferred to the SDK until their public contracts are verified
 //! (`src/GxMcp.Gateway/EngineCapabilityRegistry.cs`).
 //!
 //! The admitted space is deliberately narrow and fail-closed: reads serve
 //! existing objects and their stored parts, queries filter by exact object name,
-//! object type, and recorded references, and writes replace one known part of an
-//! existing object. Anything outside that space is an error the caller must
+//! object type, and recorded references. In-memory writes replace a known part;
+//! live writes are refused. Anything outside that space is an error the caller must
 //! handle explicitly - never an approximation.
 //!
 //! Writes are refused outright against a live Knowledge Base database: the
@@ -20,9 +19,11 @@
 #![forbid(unsafe_code)]
 
 use crate::catalog::{KbObject, ObjectId, ObjectKind, SourcePart};
-use crate::udm::reader::{ObjectRow, UdmReader};
+use crate::read_pagination::{ReadClient, apply_default};
+use crate::read_token::{ParentIdentity, UtcTicks, content_version_token};
+use crate::udm::reader::{LoadedObject, ObjectRow, UdmReader, VARIABLE_IDS_PART};
 use crate::udm::writer::UdmWriter;
-use crate::udm::{UdmClient, UdmPartKind};
+use crate::udm::{ObjectReadMetadata, UdmClient, UdmPartKind};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -51,7 +52,53 @@ pub struct ReadResult {
     /// Every stored part name of the object, so a caller can recover from a
     /// missing part without a second invocation.
     pub available_parts: Vec<String>,
+    /// The SDK's `versionToken` for a single-part read, composed from the exact
+    /// active-version timestamp, the parent identity and the full unpaginated
+    /// projected source. Absent for a full or multi-part read, for objects
+    /// outside the verified kinds (Procedure, WebPanel, Transaction), for parts
+    /// whose payload is not SDK text, and for an in-memory store that holds no
+    /// identity metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_token: Option<String>,
 }
+
+/// One SDK-compatible page of a single stored part.
+///
+/// This is the flat shape `genexus_read` returns for a single-part read. It is
+/// deliberately separate from [`ReadResult`]: a full or multi-part read is not
+/// this envelope and must not borrow its `versionToken`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadPageResult {
+    pub part: String,
+    pub source: String,
+    pub is_base64: bool,
+    pub is_empty: bool,
+    pub offset: usize,
+    /// Lines returned in `source`, which is the SDK's `limit` field.
+    pub limit: usize,
+    pub total_lines: usize,
+    pub total_bytes: usize,
+    pub truncated: bool,
+    pub is_truncated_by_worker: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_next_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_next_limit: Option<usize>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub explicit_full_read: bool,
+    /// Exact SDK token over the full unpaginated projected part.
+    pub version_token: String,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// The marker the Worker appends to a truncated page. The token is over the
+/// unmarked full text, so this marker is presentation only.
+const TRUNCATION_MARKER: &str =
+    "\n\n// ... [CONTENT TRUNCATED. USE PAGINATION (offset/limit) TO READ FURTHER] ... //\n";
 
 /// One object row of a query result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -235,6 +282,14 @@ pub fn read_object(
         return Err("object name is required".to_string());
     }
 
+    client.with_read_view(|view| read_object_in_view(view, trimmed, parts))
+}
+
+fn read_object_in_view(
+    client: &UdmClient,
+    trimmed: &str,
+    parts: Option<&[String]>,
+) -> Result<ReadResult, String> {
     let reader = UdmReader::new(shared_client(client));
     let Some(loaded) = reader.load_object_by_name(trimmed, parts)? else {
         return Err(format!(
@@ -249,10 +304,14 @@ pub fn read_object(
         ));
     }
 
+    // `VARIABLE_IDS` is a code-generator input, not an SDK part: it is absent from
+    // `available_parts`, and exposing it would make a `Variables` read return two
+    // payloads where the SDK returns one.
     let selected: Vec<PartPayload> = loaded
         .object
         .source_parts
         .iter()
+        .filter(|part| part.name != VARIABLE_IDS_PART)
         .map(|part| PartPayload {
             name: part.name.clone(),
             source: project_sdk_source(&part.name, &part.source),
@@ -277,13 +336,269 @@ pub fn read_object(
         }
     }
 
+    // The token belongs to the flat SDK single-part read envelope. A full read
+    // of an object that happens to store one part is not that envelope, so it
+    // must not borrow the token.
+    let requested_single_part = parts
+        .map(|requested| {
+            requested
+                .iter()
+                .filter(|part| !part.trim().is_empty())
+                .count()
+                == 1
+        })
+        .unwrap_or(false);
+    let version_token = if requested_single_part
+        && selected.len() == 1
+        && sdk_text_token_eligible(loaded.object.kind, &selected[0].name)
+    {
+        single_part_version_token(client, &loaded, &selected[0].source)?
+    } else {
+        None
+    };
+
     Ok(ReadResult {
         name: loaded.object.name.clone(),
         object_type: type_name(loaded.object.kind).to_string(),
         parts: selected,
         missing_parts: missing,
         available_parts: loaded.stored_parts,
+        version_token,
     })
+}
+
+/// Resolves the captured SDK Source alias for a non-generated Procedure whose
+/// only text part is Rules. Other aliases need their own ordering/projection evidence.
+fn read_sdk_page_part(client: &UdmClient, name: &str, part: &str) -> Result<ReadResult, String> {
+    let read = read_object(client, name, Some(&[part.to_string()]))?;
+    let rules_only = read
+        .available_parts
+        .iter()
+        .filter(|p| p.as_str() == "RULES")
+        .count()
+        == 1
+        && read
+            .available_parts
+            .iter()
+            .all(|p| matches!(p.as_str(), "RULES" | "VARIABLES"));
+    if !part.eq_ignore_ascii_case("Source")
+        || read.object_type != "Procedure"
+        || read.missing_parts.len() != 1
+        || !read.parts.is_empty()
+        || !rules_only
+    {
+        return Ok(read);
+    }
+    let alias = read_object(client, name, Some(&["Rules".to_string()]))?;
+    if alias.name != read.name
+        || alias.object_type != read.object_type
+        || alias.available_parts != read.available_parts
+    {
+        return Err("object changed while resolving the SDK Source alias".into());
+    }
+    Ok(alias)
+}
+
+/// Reads one SDK-text part and projects it into the flat single-part page
+/// envelope `genexus_read` returns.
+///
+/// The token covers the complete unpaginated projected text, exactly as the
+/// Worker computes it. Pagination and truncation never change the token. This
+/// function serves only the text parts of Procedure, WebPanel and Transaction
+/// objects, whose stored text is the SDK text verbatim; other object kinds and
+/// the `Variables`, `Structure` and `WebForm` projections must stay on the SDK
+/// until each has its own verified token.
+pub fn read_object_page(
+    client: &UdmClient,
+    name: &str,
+    part: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    client_kind: ReadClient,
+) -> Result<ReadPageResult, String> {
+    if part.trim().is_empty() {
+        return Err("part is required for a single-part page read".into());
+    }
+    if name.trim().is_empty() {
+        return Err("object name is required".into());
+    }
+    client.with_read_view(|view| {
+        read_object_page_in_view(view, name, part, offset, limit, client_kind)
+    })
+}
+
+fn read_object_page_in_view(
+    client: &UdmClient,
+    name: &str,
+    part: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    client_kind: ReadClient,
+) -> Result<ReadPageResult, String> {
+    let requested_part = part.trim();
+    let read = read_sdk_page_part(client, name, requested_part)?;
+    if !read.missing_parts.is_empty() {
+        return Err(format!(
+            "object '{}' does not have part '{}'",
+            read.name, read.missing_parts[0]
+        ));
+    }
+    if read.parts.len() != 1 {
+        return Err(format!(
+            "object '{}' part '{}' did not resolve to one stored part",
+            read.name, requested_part
+        ));
+    }
+
+    // A part name alone is insufficient: some SDK object kinds synthesize their
+    // text. Only kinds verified for this envelope may claim an SDK-text token.
+    if !kind_from_type_name(&read.object_type).is_some_and(sdk_text_object_kind) {
+        return Err(format!(
+            "object '{}' of type '{}' is not served by the native SDK-text read route",
+            read.name, read.object_type
+        ));
+    }
+    let selected = &read.parts[0];
+    let kind = UdmPartKind::from_name(&selected.name);
+    if !sdk_text_part(&selected.name) {
+        return Err(format!(
+            "part '{}' is not served by the native SDK-text read route",
+            selected.name
+        ));
+    }
+    let token = read.version_token.ok_or_else(|| {
+        format!(
+            "object '{}' part '{}' has no exact SDK versionToken",
+            read.name, selected.name
+        )
+    })?;
+
+    let page = apply_default(&selected.source, offset, limit, client_kind);
+    let mut source = page.content;
+    if page.truncated {
+        source.push_str(TRUNCATION_MARKER);
+    }
+
+    Ok(ReadPageResult {
+        part: if requested_part.eq_ignore_ascii_case("Source") {
+            "Source".to_string()
+        } else {
+            part_friendly_name(&kind).to_string()
+        },
+        is_base64: false,
+        is_empty: source.is_empty(),
+        source,
+        offset: page.offset,
+        limit: page.lines_returned,
+        total_lines: page.total_lines,
+        total_bytes: page.total_bytes,
+        truncated: page.truncated,
+        is_truncated_by_worker: page.truncated,
+        suggested_next_offset: page.suggested_next_offset,
+        suggested_next_limit: page.suggested_next_limit,
+        explicit_full_read: page.explicit_full_read,
+        version_token: token,
+    })
+}
+
+/// Parts whose SDK `ISource.Source` is the decoded stored text verbatim. The
+/// engine still serves `VARIABLES`, `STRUCTURE` and `WEBFORM` as its own
+/// projections, so a token hashed over those bytes would not be the SDK token
+/// for the same read; it is withheld until each projection is verified.
+fn sdk_text_part(name: &str) -> bool {
+    matches!(name, "SOURCE" | "EVENTS" | "RULES" | "CONDITIONS")
+}
+
+/// Object kinds verified to expose their stored text parts as the SDK `ISource.Source`.
+/// The match is exhaustive on purpose: a new `ObjectKind` must be classified here before
+/// it can receive a native token. Other kinds are not verified for this envelope;
+/// some (DataSelector, DesignSystem) have special SDK text projections.
+fn sdk_text_object_kind(kind: ObjectKind) -> bool {
+    match kind {
+        ObjectKind::Procedure | ObjectKind::WebPanel | ObjectKind::Transaction => true,
+        ObjectKind::Attribute
+        | ObjectKind::DataProvider
+        | ObjectKind::DataSelector
+        | ObjectKind::DataView
+        | ObjectKind::DesignSystem
+        | ObjectKind::Domain
+        | ObjectKind::Module
+        | ObjectKind::StructuredDataType
+        | ObjectKind::Table => false,
+    }
+}
+
+fn sdk_text_token_eligible(kind: ObjectKind, part_name: &str) -> bool {
+    sdk_text_object_kind(kind) && sdk_text_part(part_name)
+}
+
+/// Composes the Worker's `ComputeContentVersionToken` for one part of a live
+/// object. A live object whose stored identity or last update cannot be
+/// established is an error: omitting the token would silently turn a
+/// version-conditional edit into last-writer-wins.
+fn single_part_version_token(
+    client: &UdmClient,
+    loaded: &LoadedObject,
+    content: &str,
+) -> Result<Option<String>, String> {
+    let metadata = client.get_object_read_metadata(
+        client.design_model_id(),
+        loaded.entity_type_id,
+        loaded.entity_id,
+        loaded.entity_version_id,
+    )?;
+    let Some(metadata) = metadata else {
+        if client.is_live() {
+            return Err(format!(
+                "object '{}' has no stored identity metadata; its SDK versionToken cannot be established",
+                loaded.object.name
+            ));
+        }
+        return Ok(None);
+    };
+    let parent = parent_identity(&metadata).map_err(|reason| {
+        format!(
+            "object '{}' versionToken parent cannot be established: {reason}",
+            loaded.object.name
+        )
+    })?;
+    let ticks = metadata
+        .object_saved_ticks
+        .or(metadata.model_entity_version_ticks)
+        .ok_or_else(|| {
+            format!(
+                "object '{}' has no stored last-update timestamp; its SDK versionToken cannot be established",
+                loaded.object.name
+            )
+        })?;
+    let ticks = UtcTicks::new(ticks).map_err(|error| {
+        format!(
+            "object '{}' last-update timestamp is invalid: {error}",
+            loaded.object.name
+        )
+    })?;
+    Ok(Some(content_version_token(ticks, &parent, content)))
+}
+
+fn parent_identity(metadata: &ObjectReadMetadata) -> Result<ParentIdentity, String> {
+    if metadata.parent.is_none() {
+        return Ok(ParentIdentity::root());
+    }
+    if let Some(guid) = metadata
+        .parent_guid
+        .as_deref()
+        .filter(|guid| !guid.trim().is_empty())
+    {
+        return ParentIdentity::guid(guid).map_err(|error| error.to_string());
+    }
+    if let Some(name) = metadata
+        .parent_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+    {
+        return ParentIdentity::name(name).map_err(|error| error.to_string());
+    }
+    Err("the parent row has neither a GUID nor a name".to_string())
 }
 
 mod query_classification;
@@ -496,3 +811,6 @@ pub fn write_object_part(
         bytes: content.len(),
     })
 }
+
+#[cfg(test)]
+mod tests;
