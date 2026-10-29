@@ -177,10 +177,14 @@ namespace GxMcp.Gateway
 
         // Copied only when present. The .dll entry is forward-compat for the day the Worker
         // becomes a library; it does not exist today and its absence is not an error.
+        // The Events audit manifests (config/events-*-audit.json) travel with the Worker: it refuses the isolated
+        // Events save when the copy beside it is missing or differs from the embedded one, so a swapped Worker needs them.
         private static readonly string[] OptionalWorkerSwapFiles =
         {
             "GxMcp.Worker.pdb",
             "GxMcp.Worker.dll",
+            "events-u16-wwp16.2-audit.json",
+            "events-u11-wwp16.1-audit.json",
         };
 
         /// <summary>
