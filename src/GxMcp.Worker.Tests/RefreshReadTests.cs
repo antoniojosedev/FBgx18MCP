@@ -112,7 +112,8 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("ObjectReader.InvalidateAll();", src);
             Assert.Contains("DescribeReadFreshness(cachedPayload, false, \"worker-object-service-cache\")", src);
             Assert.Contains("fresh.Guid != seed.Guid || object.ReferenceEquals(fresh, seed)", src);
-            Assert.Contains("RemoveFromCaches(seed)", src);
+            Assert.Contains("EvictRetainedInstance(seed);", src);
+            Assert.Contains("RemoveFromCaches(obj)", src);
             Assert.Contains("if (!InvalidateCache(seed))", src);
             Assert.Contains("code: \"FreshReadUnavailable\"", src);
             Assert.Contains("FreshReadUnsupportedResponse", src);

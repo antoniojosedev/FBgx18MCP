@@ -432,6 +432,50 @@ SDPanels are WorkWithDevices projections, not self-contained ordinary parts.
 an empty result does not mean the panel is empty. Layout and variables are
 authored in the GeneXus IDE.
 
+### User Control properties and parts
+
+A `UserControl` keeps two kinds of state, and they use different tools:
+
+- **Object properties** (`DataTypeFilter`, `BaseControlType`,
+  `IncludeInControlInformation`, `FileReferences`, `BaseStyle`, ...) are not a
+  part. Read them with `genexus_properties action=get` and change them with
+  `action=set`, passing the `versionToken` of that read as `expectedVersion` and
+  `rollbackOnFailure=true`. A real write is read back from an independent
+  instance of the object, every part is compared with the snapshot taken before
+  the write (`preservedParts`), and `implicitOperations` stays empty: no
+  Specify, Generate, Build, reorganization, execution or tests.
+- **Parts** are `Documentation`, `UserControlScreenTemplate` and
+  `UserControlProperties`, read with `genexus_read part=<name>` and written with
+  `genexus_edit part=<name> baseVersion=<token>`. `Source` is an alias of
+  `UserControlScreenTemplate`. `availableParts` lists only `Documentation` and
+  `Source`, so name the other two explicitly. A part write takes `baseVersion`
+  from that part's own read (a stale one answers `StaleObject`; a property write
+  answers `VersionConflict`). `UserControlProperties` holds the `<Definition>`
+  XML; with `auto="true"` (the default of a new control) the SDK re-derives it
+  from the template's bindings every time the template is saved and replaces any
+  explicit nodes, so write the template first and `UserControlProperties` after
+  it, then read both back (the SDK stores line breaks as CRLF).
+
+The SDK keeps `UserControl`, `Image`, `ThemeClass` and `DesignSystem` resident in
+the model: invalidating the cache entry alone hands back the same instance. The
+independent read behind `genexus_properties` `set`, `dryRun` and
+`reconcileTimedOutWrite` (`ObjectService.FindObjectFreshByIdentity`, issue #733)
+therefore evicts that instance before it looks the object up again, and refuses
+a result that is still the instance it started from. When no independent
+instance can be obtained the call fails with `FreshReadUnavailable` and a
+`reason` (`SameInstanceRetained`, `IdentityNotResolved`, `IdentityMismatch` or
+`InvalidationUnavailable`) before anything is written. A `dryRun` takes the same
+read and reports `independentReadVerified: true`, so it cannot promise a write
+that the transaction would refuse.
+
+`FreshReadUnavailable` never implies a recovery fence. Fences are records in the
+Gateway's mutation journal, created only by a write that timed out or was
+cancelled (or a stalled asynchronous operation) and listed by
+`genexus_connection_recover action=journal_status`; a fence is cleared only by a
+complete authoritative read (`genexus_properties action=get
+reconcileTimedOutWrite=true` with every affected `propertyNames` for a property
+write), never by `journal_repair`.
+
 ### Inspection and property conventions
 
 Metadata and property-reading tools (`genexus_properties`, `genexus_variable`, etc.) should follow these conventions:
