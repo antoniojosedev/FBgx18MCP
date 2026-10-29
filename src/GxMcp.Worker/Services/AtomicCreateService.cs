@@ -347,6 +347,7 @@ namespace GxMcp.Worker.Services
             // Keep orchestration state outside the try: both returned error envelopes
             // and thrown SDK exceptions must compensate the same writes.
             ParsedSpec spec = null;
+            PlacementPlan placement = null;
             bool exists = false;
             bool createdFreshObject = false;
             string currentField = null;
@@ -369,6 +370,44 @@ namespace GxMcp.Worker.Services
                 }
 
                 bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+
+                // Where the caller wants the object (folder, module or parentPath). Resolved BEFORE
+                // anything is created, by the resolver genexus_properties action=move uses, and for
+                // dryRun too: a path that does not exist, is ambiguous or names the wrong kind is
+                // refused here with nothing written.
+                var placementRequest = PlacementRequest.FromCreateArgs(args, out string placementConflict);
+                if (placementConflict != null)
+                {
+                    return McpResponse.Err(
+                        code: "DestinationInvalid",
+                        message: placementConflict,
+                        hint: "Pass only one of folder, module or parentPath, or make them name the same place.",
+                        target: spec.Name,
+                        errorExtra: new JObject
+                        {
+                            ["reasonCode"] = "DestinationInvalid", ["phase"] = "destination-resolution",
+                            ["persisted"] = false, ["implicitOperations"] = new JArray()
+                        });
+                }
+                if (placementRequest != null)
+                {
+                    var resolution = _objectService.ResolvePlacement(placementRequest.Raw, placementRequest.Kind, out PlacementCatalog catalog);
+                    if (!resolution.Ok) return ObjectService.PlacementRefused(resolution, spec.Name, "destination-resolution");
+                    string importedPath = _objectService.ImportedDestinationPath(resolution);
+                    if (importedPath != null)
+                    {
+                        var blocker = MovePreflight.DestinationReadOnly(importedPath);
+                        return McpResponse.Err(
+                            code: blocker.Code, message: blocker.Message, hint: blocker.Remedy, target: spec.Name,
+                            errorExtra: new JObject
+                            {
+                                ["reasonCode"] = blocker.Code, ["phase"] = "preflight",
+                                ["placement"] = resolution.Describe(),
+                                ["persisted"] = false, ["implicitOperations"] = new JArray()
+                            });
+                    }
+                    placement = new PlacementPlan { Request = placementRequest, Resolution = resolution, Catalog = catalog };
+                }
 
                 var existing = _objectService.FindObject(spec.Name, spec.Type);
                 exists = existing != null;
@@ -400,6 +439,52 @@ namespace GxMcp.Worker.Services
                             args: new JObject { ["type"] = spec.Type, ["name"] = spec.Name, ["mode"] = "auto" },
                             why: "Creates the missing object atomically instead of updating a non-existent one.")),
                         target: spec.Name);
+                }
+
+                if (placement != null)
+                {
+                    if (exists)
+                    {
+                        // object_atomic updates an existing object where it is; it never moves one. A
+                        // placement that differs from where the object is would otherwise be dropped silently.
+                        Guid? actualParent = ObjectService.ContainerGuidOf(existing);
+                        Guid? wanted = placement.Resolution.IsRoot ? (Guid?)null : placement.Resolution.Container.Guid;
+                        if (actualParent != wanted)
+                        {
+                            string actualPath = ObjectService.ContainerPathOf(existing.Parent);
+                            return McpResponse.Err(
+                                code: "ObjectExistsElsewhere",
+                                message: spec.Type + " '" + spec.Name + "' already exists in '" + actualPath + "'; object_atomic does not move an existing object to '"
+                                    + placement.Resolution.ResolvedPath + "'.",
+                                hint: "Drop folder/module/parentPath to update it where it is, or move it first with genexus_properties action=move (dryRun=true shows the plan).",
+                                target: spec.Name,
+                                errorExtra: new JObject
+                                {
+                                    ["reasonCode"] = "ObjectExistsElsewhere", ["phase"] = "preflight",
+                                    ["placement"] = placement.Resolution.Describe(),
+                                    ["actualParent"] = new JObject { ["guid"] = actualParent?.ToString(), ["path"] = actualPath },
+                                    ["persisted"] = false, ["implicitOperations"] = new JArray()
+                                });
+                        }
+                    }
+                    else
+                    {
+                        var nameConflict = _objectService.FindCreateNameConflict(spec.Type, spec.Name, placement.Resolution);
+                        if (nameConflict != null)
+                        {
+                            return McpResponse.Err(
+                                code: MovePreflight.NameConflictCode,
+                                message: "'" + (nameConflict.QualifiedName ?? spec.Name) + "' already exists in the destination (" + nameConflict.Path + "); the SDK refuses two objects with one name in a module.",
+                                hint: "Choose another name or another destination.",
+                                target: spec.Name,
+                                errorExtra: new JObject
+                                {
+                                    ["reasonCode"] = MovePreflight.NameConflictCode, ["phase"] = "preflight",
+                                    ["placement"] = placement.Resolution.Describe(),
+                                    ["persisted"] = false, ["implicitOperations"] = new JArray()
+                                });
+                        }
+                    }
                 }
 
                 // Optimistic version control — only meaningful for an existing object.
@@ -452,6 +537,16 @@ namespace GxMcp.Worker.Services
                         ["note"] = "dryRun=true: full field validation passed; nothing was saved."
                     };
                     if (!string.IsNullOrWhiteSpace(spec.Description)) preview["description"] = spec.Description;
+                    if (placement != null)
+                    {
+                        var placementPreview = placement.Resolution.Describe();
+                        placementPreview["wouldCreateAt"] = placement.Resolution.ResolvedPath + "/" + spec.Name;
+                        placementPreview["persisted"] = false;
+                        placementPreview["verified"] = false;
+                        placementPreview["note"] = "The destination resolved to one Folder/Module with the same resolver the write uses; the write re-reads the created object freshly and deletes it again (confirmed by a fresh lookup) if it is not at this path.";
+                        preview["placement"] = placementPreview;
+                    }
+                    preview["implicitOperations"] = new JArray();
                     return McpResponse.Ok(target: spec.Name, code: "DryRun", result: preview);
                 }
 
@@ -474,6 +569,22 @@ namespace GxMcp.Worker.Services
                         ["name"] = spec.Name,
                         ["seededDescription"] = seededDesc
                     };
+                    if (placement != null)
+                    {
+                        // Give the new object its parent before the first save, as the IDE does when it
+                        // creates inside a Folder: the object is then born in place. Whether the SDK
+                        // honoured it is proved after the save by a fresh read, not assumed here.
+                        string parentRefused = placement.Resolution.IsRoot
+                            ? null
+                            : ObjectMover.TrySetParent(obj, _objectService.LoadContainer(placement.Resolution));
+                        steps["placement"] = new JObject
+                        {
+                            ["requested"] = placement.Request.Raw,
+                            ["resolvedPath"] = placement.Resolution.ResolvedPath,
+                            ["parentSetBeforeSave"] = !placement.Resolution.IsRoot && parentRefused == null,
+                            ["parentSetRefusedBecause"] = parentRefused
+                        };
+                    }
                 }
                 else
                 {
@@ -588,14 +699,36 @@ namespace GxMcp.Worker.Services
                 }
                 catch { }
 
-                if (!exists && (args?["folder"] != null || args?["module"] != null || args?["parentPath"] != null))
+                // Position proof: a fresh read of the saved object must find it in the requested
+                // Folder/Module. If the SDK left it elsewhere it is moved with the genexus_properties
+                // move pipeline; if that fails too the object is deleted again and its absence confirmed,
+                // so a failed placement never leaves an object in the Root Module behind.
+                JObject placementReceipt = null;
+                JObject persistedIdentity = null;
+                if (!exists && placement != null)
                 {
-                    string reqPlacement = args?["folder"]?.ToString() ?? args?["module"]?.ToString() ?? args?["parentPath"]?.ToString();
-                    string reqKind = args?["module"] != null ? "Module" : args?["folder"] != null ? "Folder" : null;
-                    if (!string.IsNullOrWhiteSpace(reqPlacement))
+                    currentField = "placement";
+                    var outcome = AtomicPlacementFlow.Verify(placement.Resolution, BuildPlacementPorts(obj, spec, placement));
+                    if (!outcome.Ok) return PlacementFailure(spec, placement, outcome);
+
+                    var freshForIdentity = _objectService.FindObjectFreshByIdentity(obj) ?? obj;
+                    try
                     {
-                        _objectService.MoveObject(spec.Name, reqPlacement, typeFilter: spec.Type, destKind: reqKind);
+                        var idx = _objectService.GetKbService()?.GetIndexCache();
+                        if (idx != null)
+                        {
+                            idx.InvalidateHierarchy(freshForIdentity.Guid);
+                            idx.UpdateEntry(freshForIdentity);
+                        }
                     }
+                    catch { }
+                    persistedIdentity = _objectService.DescribePersistedIdentity(freshForIdentity);
+                    placementReceipt = placement.Resolution.Describe();
+                    placementReceipt["persisted"] = true;
+                    placementReceipt["verified"] = true;
+                    placementReceipt["freshRead"] = true;
+                    placementReceipt["strategy"] = outcome.Strategy;
+                    placementReceipt["path"] = persistedIdentity["path"];
                 }
 
                 string newVersion = ReadFingerprint(spec.Name, spec.Type);
@@ -607,6 +740,12 @@ namespace GxMcp.Worker.Services
                     ["steps"] = steps,
                     ["version"] = newVersion
                 };
+                if (placementReceipt != null)
+                {
+                    result["identity"] = persistedIdentity;
+                    result["placement"] = placementReceipt;
+                }
+                result["implicitOperations"] = new JArray();
 
                 string response = McpResponse.Ok(target: spec.Name,
                     code: exists ? "ObjectUpdatedAtomic" : "ObjectCreatedAtomic", result: result);
@@ -720,6 +859,15 @@ namespace GxMcp.Worker.Services
                 }
                 var exExtra = new JObject();
                 if (compensation != null) exExtra["compensation"] = compensation;
+                if (placement != null && string.Equals(currentField, "save", StringComparison.Ordinal))
+                {
+                    // The new object was given its parent before this save: the SDK's own message follows.
+                    exExtra["reasonCode"] = "PlacementSaveRefused";
+                    exExtra["phase"] = "save";
+                    exExtra["placement"] = placement.Resolution.Describe();
+                    exExtra["persisted"] = false;
+                    exExtra["implicitOperations"] = new JArray();
+                }
                 return McpResponse.Err(
                     code: "AtomicCreateFailed",
                     message: ex.Message,
@@ -727,6 +875,90 @@ namespace GxMcp.Worker.Services
                     target: args?["name"]?.ToString(),
                     errorExtra: exExtra);
             }
+        }
+
+        // The destination of this call, resolved once (see Run) and used by the preview and the write.
+        private sealed class PlacementPlan
+        {
+            public PlacementRequest Request;
+            public PlacementResolution Resolution;
+            public PlacementCatalog Catalog;
+        }
+
+        // The SDK-facing side of AtomicPlacementFlow: a fresh read, the move pipeline of
+        // genexus_properties action=move, and a delete that proves the object is gone.
+        private AtomicPlacementFlow.Ports BuildPlacementPorts(Artech.Architecture.Common.Objects.KBObject created,
+            ParsedSpec spec, PlacementPlan placement)
+        {
+            return new AtomicPlacementFlow.Ports
+            {
+                FreshProbe = () => _objectService.ProbeFresh(created),
+                MoveIntoContainer = () =>
+                {
+                    var kb = _objectService.GetKbService().GetKB();
+                    string json = _objectService.MoveResolved(kb, created, spec.Name, placement.Resolution, placement.Catalog,
+                        dryRun: false, baseVersion: WriteService.ComputeVersionToken(created), rollbackOnFailure: true);
+                    var parsed = SafeParse(json);
+                    if (IsOk(parsed))
+                        return new AtomicPlacementFlow.MoveAttempt { Ok = true, Strategy = parsed["result"]?["strategy"]?.ToString() };
+                    var error = parsed["error"] as JObject;
+                    return new AtomicPlacementFlow.MoveAttempt
+                    {
+                        Ok = false,
+                        Code = error?["code"]?.ToString(),
+                        Error = error?["message"]?.ToString() ?? json
+                    };
+                },
+                DeleteCreated = () =>
+                {
+                    // By GUID: a name could resolve to a same-named object elsewhere in the KB.
+                    string deleteJson = _objectService.DeleteObject(created.Guid.ToString("D"), spec.Type, true);
+                    var deleted = SafeParse(deleteJson);
+                    bool ok = IsOk(deleted);
+                    bool absent = false;
+                    try
+                    {
+                        ObjectService.InvalidateAllReadCaches();
+                        absent = _objectService.IsAbsentFromModel(created);
+                    }
+                    catch { }
+                    return new AtomicPlacementFlow.DeleteAttempt
+                    {
+                        Deleted = ok,
+                        AbsentVerified = ok && absent,
+                        Error = ok ? null : (deleted["error"]?["message"]?.ToString() ?? deleteJson)
+                    };
+                }
+            };
+        }
+
+        private string PlacementFailure(ParsedSpec spec, PlacementPlan placement, AtomicPlacementFlow.Outcome outcome)
+        {
+            bool rolledBack = outcome.Compensation?["rolledBack"]?.ToObject<bool>() ?? false;
+            var placementJson = placement.Resolution.Describe();
+            placementJson["attempt"] = outcome.Attempt;
+            var errorExtra = new JObject
+            {
+                ["reasonCode"] = outcome.ReasonCode,
+                ["phase"] = "placement",
+                ["placement"] = placementJson,
+                ["compensation"] = outcome.Compensation,
+                ["rolledBack"] = rolledBack,
+                ["rollbackVerified"] = rolledBack,
+                ["implicitOperations"] = new JArray()
+            };
+            if (rolledBack) errorExtra["persisted"] = false;
+            else errorExtra["persistenceUncertain"] = true;
+            return McpResponse.Err(
+                code: "AtomicCreatePlacementFailed",
+                message: outcome.Message + (rolledBack
+                    ? " The new object was deleted again and a fresh lookup confirmed it is gone, so nothing was left behind."
+                    : " The new object may still exist; see compensation."),
+                hint: rolledBack
+                    ? "Nothing was left behind. Check the destination with genexus_query type:Folder|Module, then retry; dryRun=true previews the placement."
+                    : "Compensation did not fully complete: find the object with genexus_query and remove it with genexus_delete_object before retrying.",
+                target: spec.Name,
+                errorExtra: errorExtra);
         }
 
         // Capture pre-write EditSnapshotStore snapshots for every part this update

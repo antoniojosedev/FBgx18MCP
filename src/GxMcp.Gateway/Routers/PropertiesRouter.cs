@@ -69,7 +69,8 @@ namespace GxMcp.Gateway.Routers
                             : string.IsNullOrWhiteSpace(explicitDestination)
                             && !string.IsNullOrWhiteSpace(targetModule) ? "Module" : null),
                     dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                    baseVersion = args?["baseVersion"]?.ToString(),
+                    // expectedVersion is the version token of action=set; a move takes either spelling.
+                    baseVersion = args?["baseVersion"]?.ToString() ?? args?["expectedVersion"]?.ToString(),
                     rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                     type = args?["type"]?.ToString()
                 };

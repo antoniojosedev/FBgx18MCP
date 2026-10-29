@@ -2015,7 +2015,12 @@ namespace GxMcp.Gateway
                 "currentVersion", "expectedVersion",
                 // genexus_wwp regenerate_derived: which objects were stale or missing a token, the
                 // paste-ready token map, and the evidence of the unit's rollback.
-                "staleObjects", "expectedVersions", "missing"
+                "staleObjects", "expectedVersions", "missing",
+                // Folder/Module placement (genexus_properties move, genexus_create object_atomic): where the
+                // destination resolved or stopped, the parent the SDK actually left, the persist path it
+                // answered to, what changed, and the compensation that proves nothing was left behind.
+                "placement", "expectedParent", "actualParent", "strategy", "strategyDetail",
+                "changedParts", "propertyDifferences", "compensation"
             };
             foreach (var k in diagnosticKeys)
             {
