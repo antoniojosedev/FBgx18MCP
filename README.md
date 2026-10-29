@@ -974,11 +974,22 @@ Thank you to everyone who has contributed to this project — with code, issue
 reports, testing on real Knowledge Bases, ideas, and financial support. Every
 contribution has helped shape it.
 
-A special thank-you to **[Chip On Sistemas de Informática](https://www.chipon.com.br/)**
-and **Luiz E. B. R.** for their support.
+### 🌟 Special Sponsors
 
-Thanks also to **Roberto G. A. J.**, **Msinfor**, **Leonardo M. M.**, **Leoncio G. L.**,
-and **Saul G. B.**
+A massive thank-you to our key supporters for their generous backing:
+
+- **[Chip On Sistemas de Informática](https://www.chipon.com.br/)**
+- **Luiz E. B. R.**
+
+### Supporters & Backers
+
+- **Roberto G. A. J.**
+- **Msinfor**
+- **Leonardo M. M.**
+- **Leoncio G. L.**
+- **Saul G. B.**
+- **Prex Chile**
+- **Kp Serviços Digitais**
 
 ---
 
