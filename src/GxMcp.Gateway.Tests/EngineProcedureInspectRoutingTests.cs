@@ -47,10 +47,29 @@ public sealed class EngineProcedureInspectRoutingTests : EngineRoutingTestBase
     }
 
     [Theory]
+    [InlineData("Transaction", "1db606f2-af09-4cf9-a3b5-b481519d28f6")]
+    [InlineData("WebPanel", "c9584656-94b6-4ccd-890f-332d11fc2c25")]
+    public async Task ExpandedTypes_InspectMinimalStartsNative(string type, string expectedGuid)
+    {
+        string args = $"{{\"name\":\"Customer\",\"type\":\"{type}\",\"projection\":\"minimal\"}}";
+        string canned = $"{{\"availableParts\":[\"Structure\"],\"description\":\"Customer TRN\",\"entityId\":10,\"guid\":\"{expectedGuid}\",\"lastUpdateTicks\":639276684890000000,\"name\":\"Customer\",\"path\":\"Root Module/Customer\",\"userName\":\"Admin\"}}";
+        var run = await RunAsync("gxengine", "error", args, canned);
+        Assert.True(run.Invoked);
+        Assert.False(run.Result!["isError"]!.Value<bool>());
+        JObject payload = PayloadOf(run.Result!);
+        Assert.Equal("Customer", payload["name"]?.ToString());
+        Assert.Equal(type, payload["type"]?.ToString());
+        Assert.Equal(expectedGuid, payload["identity"]?["entityTypeGuid"]?.ToString());
+        Assert.Equal("minimal", payload["projection"]?.ToString());
+        Assert.Contains("kb-inspect", run.Arguments);
+        Assert.Contains($"--type {type}", run.Arguments);
+    }
+
+    [Theory]
     [InlineData("{\"name\":\"AddDeviceGroups\",\"type\":\"Procedure\"}")]                                  // default projection
     [InlineData("{\"name\":\"AddDeviceGroups\",\"type\":\"Procedure\",\"projection\":\"standard\"}")]
     [InlineData("{\"name\":\"AddDeviceGroups\",\"projection\":\"minimal\"}")]                               // no type
-    [InlineData("{\"name\":\"AddDeviceGroups\",\"type\":\"Transaction\",\"projection\":\"minimal\"}")]
+    [InlineData("{\"name\":\"AddDeviceGroups\",\"type\":\"Folder\",\"projection\":\"minimal\"}")]
     [InlineData("{\"name\":\"Ação\",\"type\":\"Procedure\",\"projection\":\"minimal\"}")]                    // non-ASCII
     [InlineData("{\"name\":\"AddDeviceGroups\",\"type\":\"Procedure\",\"projection\":\"minimal\",\"include\":[\"source\"]}")]
     [InlineData("{\"name\":\"AddDeviceGroups\",\"type\":\"Procedure\",\"projection\":\"minimal\",\"guid\":\"x\"}")]

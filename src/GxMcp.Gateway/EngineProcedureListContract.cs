@@ -7,8 +7,10 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
 {
+    internal readonly record struct EngineListPageWindow(string ExpectedType, int Offset, int Limit);
+
     /// <summary>
-    /// The bounded `genexus_list_objects typeFilter=Procedure` page gx-engine may answer, shaped like
+    /// The bounded `genexus_list_objects` page gx-engine may answer, shaped like
     /// Worker <c>ListService.BuildPagedResponseInternal</c>. Empty pages remain on the SDK: their
     /// `typesAvailable` hint describes the whole SDK index, which this route does not read.
     /// </summary>
@@ -17,13 +19,24 @@ namespace GxMcp.Gateway
         internal const int MaxLimit = 100;
         internal static readonly string[] SuppliedFields = { "name", "type" };
 
-        internal static string? TryPlan(JObject args, out int offset, out int limit)
+        private static readonly Dictionary<string, string> AdmittedTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            offset = 0;
-            limit = 0;
+            ["Procedure"] = "Procedure",
+            ["Proc"] = "Procedure",
+            ["Transaction"] = "Transaction",
+            ["Trn"] = "Transaction",
+            ["WebPanel"] = "WebPanel",
+            ["WP"] = "WebPanel",
+            ["Table"] = "Table",
+            ["DataProvider"] = "DataProvider",
+        };
+
+        internal static string? TryPlan(JObject args, out EngineListPageWindow window)
+        {
+            window = default;
             string? type = args["typeFilter"]?.Type == JTokenType.String ? args["typeFilter"]!.ToString() : null;
-            if (!string.Equals(type?.Trim(), "Procedure", StringComparison.OrdinalIgnoreCase))
-                return "native list_objects admits only typeFilter=Procedure";
+            if (string.IsNullOrWhiteSpace(type) || !AdmittedTypes.TryGetValue(type.Trim(), out string? canonicalType))
+                return "native list_objects admits only typeFilter in (Procedure, Transaction, WebPanel, Table, DataProvider)";
             if (args["limit"]?.Type != JTokenType.Integer)
                 return "native list_objects requires an explicit integer `limit`";
             long requested = args["limit"]!.Value<long>();
@@ -38,63 +51,71 @@ namespace GxMcp.Gateway
             }
             if (requestedOffset < 0 || requestedOffset > int.MaxValue)
                 return "native list_objects requires an Int32 nonnegative `offset`";
-            offset = (int)requestedOffset;
-            limit = (int)requested;
+            window = new EngineListPageWindow(canonicalType!, (int)requestedOffset, (int)requested);
             return null;
         }
 
-        internal static List<string> ToEngineArguments(string kbPath, int offset, int limit) =>
-            new[] { "--diagnostics=json", "kb-list-procedures", kbPath }
-                .Concat(EngineIntFlag.Tokens("--offset", offset))
-                .Concat(EngineIntFlag.Tokens("--limit", limit))
+        internal static List<string> ToEngineArguments(string kbPath, EngineListPageWindow window)
+        {
+            if (string.Equals(window.ExpectedType, "Procedure", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[] { "--diagnostics=json", "kb-list-procedures", kbPath }
+                    .Concat(EngineIntFlag.Tokens("--offset", window.Offset))
+                    .Concat(EngineIntFlag.Tokens("--limit", window.Limit))
+                    .ToList();
+            }
+            return new[] { "--diagnostics=json", "kb-list-objects", kbPath, "--type", window.ExpectedType }
+                .Concat(EngineIntFlag.Tokens("--offset", window.Offset))
+                .Concat(EngineIntFlag.Tokens("--limit", window.Limit))
                 .ToList();
+        }
 
-        internal static bool TryShape(
-            JObject json, int offset, int limit, DateTime utcNow, out JObject? payload, out string? refusal)
+        internal static bool TryShapeListResponse(
+            JObject json, EngineListPageWindow window, DateTime utcNow, out JObject? payload, out string? refusal)
         {
             payload = null;
             refusal = null;
             if (json.Count != 4 || json["objects"] is not JArray objects
-                || json["total"]?.Type != JTokenType.Integer || json["offset"]?.Value<long?>() != offset
-                || json["limit"]?.Value<long?>() != limit)
+                || json["total"]?.Type != JTokenType.Integer || json["offset"]?.Value<long?>() != window.Offset
+                || json["limit"]?.Value<long?>() != window.Limit)
             {
-                refusal = "kb-list-procedures returned an unexpected page envelope";
+                refusal = "kb-list-objects returned an unexpected page envelope";
                 return false;
             }
             long total = json["total"]!.Value<long>();
-            long expected = Math.Max(0, Math.Min(limit, total - offset));
+            long expected = Math.Max(0, Math.Min(window.Limit, total - window.Offset));
             if (total <= 0 || total > int.MaxValue || objects.Count == 0 || objects.Count != expected)
             {
                 // An empty page (including offset past the end) keeps the SDK's index-wide typesAvailable hint.
-                refusal = "native Procedure pages must be nonempty and match the requested window";
+                refusal = $"native {window.ExpectedType} pages must be nonempty and match the requested window";
                 return false;
             }
 
             var results = new JArray();
             foreach (JToken token in objects)
             {
-                if (!TryItem(token, out JObject? item))
+                if (!TryItem(token, window.ExpectedType, out JObject? item))
                 {
-                    refusal = "kb-list-procedures returned a malformed Procedure row";
+                    refusal = $"kb-list-objects returned a malformed {window.ExpectedType} row";
                     return false;
                 }
                 results.Add(item!);
             }
-            payload = Page(results, (int)total, offset, limit, utcNow);
+            payload = Page(results, window.ExpectedType, (int)total, window.Offset, window.Limit, utcNow);
             // Emulate the Worker JSON hop, so dates take the same Gateway representation.
             payload = JObject.Parse(payload.ToString(Formatting.None));
             return true;
         }
 
-        private static bool TryItem(JToken token, out JObject? item)
+        private static bool TryItem(JToken token, string expectedType, out JObject? item)
         {
             item = null;
             if (token is not JObject row || row.Count != 3 || row["name"]?.Type != JTokenType.String
-                || !string.Equals(row["type"]?.ToString(), "Procedure", StringComparison.Ordinal))
+                || !string.Equals(row["type"]?.ToString(), expectedType, StringComparison.OrdinalIgnoreCase))
                 return false;
             string name = row["name"]!.ToString();
             if (name.Length == 0 || name.Any(char.IsControl)) return false;
-            item = new JObject { ["name"] = name, ["type"] = "Procedure" };
+            item = new JObject { ["name"] = name, ["type"] = expectedType };
             JToken? ticks = row["last_update_ticks"];
             if (ticks?.Type == JTokenType.Null) return true;
             if (ticks?.Type != JTokenType.Integer) return false;
@@ -105,7 +126,7 @@ namespace GxMcp.Gateway
             return true;
         }
 
-        private static JObject Page(JArray results, int total, int offset, int limit, DateTime utcNow)
+        private static JObject Page(JArray results, string expectedType, int total, int offset, int limit, DateTime utcNow)
         {
             int consumed = offset + results.Count;
             bool hasMore = consumed < total;
@@ -123,12 +144,12 @@ namespace GxMcp.Gateway
                 ["offset"] = offset, ["limit"] = limit, ["returned"] = results.Count, ["total"] = total,
                 ["hasMore"] = hasMore, ["nextOffset"] = hasMore ? consumed : JValue.CreateNull(),
             };
-            var meta = new JObject { ["aggregates"] = Aggregates(results, utcNow) };
+            var meta = new JObject { ["aggregates"] = Aggregates(results, expectedType, utcNow) };
             var top = (JObject)results[0];
             meta["suggested_next"] = new JObject
             {
                 ["tool"] = "genexus_read",
-                ["args"] = new JObject { ["name"] = top["name"]!.ToString(), ["type"] = "Procedure" },
+                ["args"] = new JObject { ["name"] = top["name"]!.ToString(), ["type"] = expectedType },
             };
             if (results.Any(row => row["lastUpdate"] != null))
             {
@@ -145,12 +166,12 @@ namespace GxMcp.Gateway
             return response;
         }
 
-        private static JObject Aggregates(JArray results, DateTime utcNow)
+        private static JObject Aggregates(JArray results, string expectedType, DateTime utcNow)
         {
             var aggregates = new JObject
             {
                 ["total"] = results.Count,
-                ["by_type"] = new JObject { ["Procedure"] = results.Count },
+                ["by_type"] = new JObject { [expectedType] = results.Count },
             };
             DateTime[] updates = results
                 .Select(row => row["lastUpdate"]?.ToString())

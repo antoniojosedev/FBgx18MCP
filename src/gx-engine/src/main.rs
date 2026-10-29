@@ -88,6 +88,7 @@ fn execute(
             | "kb-write"
             | "kb-environment"
             | "kb-list-procedures"
+            | "kb-list-objects"
             | "kb-versions"
             | "kb-inspect"
     ) {
@@ -432,11 +433,27 @@ fn run_scoped_read(
             offset,
             limit,
         } => print_json(&connect_udm_kb(&kb_path)?.procedure_list_page(active, offset, limit)?),
+        KbOperation::ObjectList {
+            kb_path,
+            kind,
+            offset,
+            limit,
+        } => print_json(&connect_udm_kb(&kb_path)?.object_list_page(active, kind, offset, limit)?),
         KbOperation::Environment { kb_path } => print_json(&serde_json::json!({
             "environment": connect_udm_kb(&kb_path)?.sole_environment_name(active)?
         })),
-        KbOperation::Inspect { kb_path, name } => {
-            print_json(&connect_udm_kb(&kb_path)?.procedure_inspect_minimal(active, &name)?)
+        KbOperation::Inspect {
+            kb_path,
+            name,
+            kind,
+        } => {
+            let client = connect_udm_kb(&kb_path)?;
+            let json = if kind == gx_engine::catalog::ObjectKind::Procedure {
+                client.procedure_inspect_minimal(active, &name)?
+            } else {
+                client.object_inspect_minimal(active, kind, &name)?
+            };
+            print_json(&json)
         }
         KbOperation::VersionList { kb_path } => {
             print_json(&connect_udm_kb(&kb_path)?.kb_version_list(active)?)

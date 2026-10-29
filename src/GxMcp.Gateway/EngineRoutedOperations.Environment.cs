@@ -53,30 +53,37 @@ internal sealed partial class EngineRoutedOperations
         string? refusal = RefusalForArguments(ctx, ProcedureListSpace)
             ?? EngineFieldSelection.TryRead(args, "list_objects", EngineProcedureListContract.SuppliedFields, out _);
         if (refusal != null) return EngineOutsideResult(ctx, refusal);
-        refusal = EngineProcedureListContract.TryPlan(args, out int offset, out int limit);
+        refusal = EngineProcedureListContract.TryPlan(args, out EngineListPageWindow window);
         if (refusal != null) return EngineOutsideResult(ctx, refusal);
 
         return await ServeActiveScopeReadAsync(
-            ctx, EngineProcedureListContract.ToEngineArguments(ctx.KbPath, offset, limit), "kb-list-procedures", (json, _) =>
-                EngineProcedureListContract.TryShape(json, offset, limit, DateTime.UtcNow, out JObject? payload, out string? shapeRefusal)
+            ctx, EngineProcedureListContract.ToEngineArguments(ctx.KbPath, window), "kb-list-objects", (json, _) =>
+                EngineProcedureListContract.TryShapeListResponse(json, window, DateTime.UtcNow, out JObject? payload, out string? shapeRefusal)
                     ? (payload, null)
                     : (null, shapeRefusal),
-            payload => $"genexus_list_objects served by gx-engine: Procedure offset={offset} count={payload["count"]}/{payload["total"]}").ConfigureAwait(false);
+            payload => $"genexus_list_objects served by gx-engine: {window.ExpectedType} offset={window.Offset} count={payload["count"]}/{payload["total"]}").ConfigureAwait(false);
     }
 
     private async Task<JObject?> DispatchEngineInspectAsync(EngineRouteContext ctx)
     {
-        string? refusal = RefusalForArguments(ctx, InspectSpace)
-            ?? EngineProcedureInspectContract.TryPlan(ctx.Args ?? new JObject(), ctx.KbPath, out _);
-        if (refusal != null) return EngineOutsideResult(ctx, refusal);
-        string name = ctx.Args!["name"]!.ToString();
+        JObject arguments = ctx.Args ?? new JObject();
+        string? spaceRefusal = InspectSpace.RefusalFor(arguments);
+        if (spaceRefusal != null) return EngineOutsideResult(ctx, spaceRefusal);
+        if (!EngineKbArgMatches(ctx, arguments))
+            return EngineOutsideResult(ctx, $"`kb` selects a different Knowledge Base than the session's ('{ctx.KbAlias ?? ctx.KbPath}')");
 
+        string? planError = EngineProcedureInspectContract.TryPlan(arguments, ctx.KbPath, out string name, out InspectTypeInfo typeInfo);
+        if (planError != null) return EngineOutsideResult(ctx, planError);
+
+        (JObject? output, string? err) ShapeResult(JObject raw) =>
+            EngineProcedureInspectContract.TryShapeInspectResponse(raw, name, typeInfo, out JObject? p, out string? r)
+                ? (p, null)
+                : (null, r);
+
+        var cliTokens = EngineProcedureInspectContract.ToEngineArguments(ctx.KbPath, name, typeInfo.CanonicalType);
         return await ServeActiveScopeReadAsync(
-            ctx, EngineProcedureInspectContract.ToEngineArguments(ctx.KbPath, name), "kb-inspect", (json, _) =>
-                EngineProcedureInspectContract.TryShape(json, name, out JObject? payload, out string? shapeRefusal)
-                    ? (payload, null)
-                    : (null, shapeRefusal),
-            _ => $"genexus_inspect served by gx-engine: Procedure {name} (minimal)").ConfigureAwait(false);
+            ctx, cliTokens, "kb-inspect", (raw, _) => ShapeResult(raw),
+            _ => $"genexus_inspect served by gx-engine: {typeInfo.CanonicalType} {name} (minimal)").ConfigureAwait(false);
     }
 
     /// <summary>
