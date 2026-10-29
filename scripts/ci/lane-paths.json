@@ -24,13 +24,13 @@
       ]
     },
     {
-      "reason": "the gx-engine README is read by cli/docs.test.js and the Gateway engine tests",
-      "lanes": ["rust-engine", "dotnet", "toolchain"],
+      "reason": "the gx-engine README is read by the Gateway engine tests",
+      "lanes": ["rust-engine", "dotnet"],
       "patterns": ["src/gx-engine/README.md"]
     },
     {
-      "reason": "the artifact diff script is named by cli/docs.test.js",
-      "lanes": ["rust-engine", "dotnet", "toolchain"],
+      "reason": "the artifact diff script is in gx-engine",
+      "lanes": ["rust-engine", "dotnet"],
       "patterns": ["src/gx-engine/scripts/artifact_diff.py"]
     },
     {
@@ -96,23 +96,16 @@
       ]
     },
     {
-      "reason": "top-level documents asserted by Gateway contract tests and cli/docs.test.js",
+      "reason": "CLI playbook read by the axi command and Gateway tool profile tests",
       "lanes": ["dotnet", "toolchain"],
       "patterns": [
-        "README.md",
-        "AGENTS.md",
-        "CHANGELOG.md",
-        "GEMINI.md",
-        "CODING_STANDARDS.md",
-        "CONTRIBUTING.md",
-        "LICENSE"
+        "docs/llm_cli_mcp_playbook.md"
       ]
     },
     {
-      "reason": "documents the Gateway/Worker tests or sources name; every top-level docs/*.md is also indexed by cli/docs.test.js",
-      "lanes": ["dotnet", "toolchain"],
+      "reason": "engine and worker implementation documents named by Gateway/Worker sources or tests",
+      "lanes": ["dotnet"],
       "patterns": [
-        "docs/README.md",
         "docs/benchmarks/2026-09-20-live-rounds.md",
         "docs/engine_backend.md",
         "docs/envelope.md",
@@ -120,7 +113,6 @@
         "docs/events-object-save-isolation.md",
         "docs/events-save-u16-candidate.md",
         "docs/kb-isolation-contract.md",
-        "docs/llm_cli_mcp_playbook.md",
         "docs/mcp-improvements-2026-05-22.md",
         "docs/mcp-roadmap-ide-parity.md",
         "docs/mcp_capabilities_inventory.md",
@@ -130,11 +122,6 @@
         "docs/sdk_coverage_gap_matrix.md",
         "docs/udm_storage_notes.md"
       ]
-    },
-    {
-      "reason": "cli/docs.test.js indexes every top-level document and resolves docs/README.md links",
-      "lanes": ["toolchain"],
-      "patterns": ["docs/*"]
     },
     {
       "reason": "plans and skills the Gateway/Worker tests or sources name; GxMcp.Gateway.csproj embeds .gemini/skills/nexa/** as MCP resources",
@@ -159,9 +146,17 @@
       ]
     },
     {
-      "reason": "read by no skippable lane; contracts still validates plans/v3-*.json, tests/agent-evals and line endings",
+      "reason": "read by no skippable lane; contracts validates line endings and docs",
       "lanes": [],
       "patterns": [
+        "README.md",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "GEMINI.md",
+        "CODING_STANDARDS.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "docs/*",
         "plans/*",
         ".gemini/*",
         ".agents/*",

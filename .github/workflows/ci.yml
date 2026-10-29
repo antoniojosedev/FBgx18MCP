@@ -333,7 +333,34 @@ jobs:
         with:
           node-version: 24
 
+      - name: Detect change scope
+        id: scope
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and $env:BASE_SHA -and $env:HEAD_SHA) {
+            $changed = @(& git diff --name-only "$env:BASE_SHA...$env:HEAD_SHA")
+            $nonDocs = @($changed | Where-Object { $_ -and $_ -notmatch '^(.*\.md|docs/.*|plans/.*|LICENSE)$' })
+            if ($nonDocs.Count -eq 0) {
+              Write-Host "Docs-only change ($($changed.Count) files) - skipping heavy script suites."
+              "docs_only=true" >> $env:GITHUB_OUTPUT
+              exit 0
+            }
+          }
+          "docs_only=false" >> $env:GITHUB_OUTPUT
+
+      - name: Line endings
+        shell: pwsh
+        run: ./scripts/ci/check-line-endings.ps1
+
+      - name: Documentation contract tests
+        shell: pwsh
+        run: node scripts/tests/docs.test.js
+
       - name: Verify release metadata synchronization
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         shell: pwsh
         run: |
           $version = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
@@ -341,6 +368,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Release-facing metadata is out of sync. Run python scripts/sync-release-metadata.py --version <package-version> --write.' }
 
       - name: Validate quality gate manifests and scripts
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         shell: pwsh
         run: |
           $scriptPaths = @(
@@ -380,18 +408,16 @@ jobs:
           python scripts/validate-tool-contracts.py
           if ($LASTEXITCODE -ne 0) { throw 'tool contract validation failed.' }
 
-      - name: Line endings
-        shell: pwsh
-        run: ./scripts/ci/check-line-endings.ps1
-
       # Includes test-ci-workflow-policy, install-contract, test-live-matrix and
       # test-integration-preflight, which the step above used to run a second time.
       # The scripts run in parallel; each one is held to the per-script time budget.
       - name: Release script suite
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         shell: pwsh
         run: ./scripts/tests/run-release-script-tests.ps1
 
       - name: Benchmark gate regression tests
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         shell: pwsh
         run: |
           python --version
@@ -408,6 +434,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'release manifest verifier tests failed.' }
 
       - name: LLM contract smoke
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         shell: pwsh
         run: ./scripts/mcp_llm_contract_smoke.ps1
 
