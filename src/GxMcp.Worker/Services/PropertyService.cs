@@ -149,9 +149,10 @@ namespace GxMcp.Worker.Services
                 {
                     obj = _objectService.FindObjectFreshByIdentity(obj);
                     if (obj == null)
-                        return Models.McpResponse.Err(code: "FreshReadUnavailable",
-                            message: "The persisted object could not be read independently; the timeout recovery fence remains in place.",
-                            target: target);
+                        return FreshReadUnavailableEnvelope(target,
+                            "The persisted object could not be read independently, so no pending timeout recovery fence was cleared"
+                            + " (this read cannot tell whether the Gateway holds one; genexus_connection_recover action=journal_status lists them).",
+                            _objectService.GetLastResolutionDiagnostic());
                 }
 
                 string ck = CacheKey(obj, controlName);
@@ -1029,12 +1030,15 @@ namespace GxMcp.Worker.Services
                 var obj = _objectService.FindObject(target, typeFilter);
                 if (obj == null) return Models.McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", hint: "Check the target name and that the KB is open.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")), target: target);
 
-                if (!string.IsNullOrWhiteSpace(expectedVersion))
+                // The write reads the persisted object independently inside its transaction. A preview
+                // needs the same read, or it would promise a write that cannot be verified.
+                if (dryRun || !string.IsNullOrWhiteSpace(expectedVersion))
                 {
                     obj = _objectService.FindObjectFreshByIdentity(obj);
                     if (obj == null)
-                        return Models.McpResponse.Err(code: "FreshReadUnavailable", target: target,
-                            message: "The current persisted version could not be read; no property write was attempted.");
+                        return FreshReadUnavailableEnvelope(target,
+                            "The current persisted version could not be read; no property write was attempted.",
+                            _objectService.GetLastResolutionDiagnostic());
                 }
 
                 dynamic container = obj;
@@ -1107,6 +1111,7 @@ namespace GxMcp.Worker.Services
                         ["versionToken"] = beforeVersion,
                         ["preservedParts"] = snapshot.PreservedParts,
                         ["persisted"] = false,
+                        ["independentReadVerified"] = true,
                         ["implicitOperations"] = new JArray()
                     });
                 using (var trans = obj.Model.KB.BeginTransaction())
@@ -1116,8 +1121,9 @@ namespace GxMcp.Worker.Services
                     {
                         var transactionObject = _objectService.FindObjectFreshByIdentity(obj);
                         if (transactionObject == null)
-                            return Models.McpResponse.Err(code: "FreshReadUnavailable", target: target,
-                                message: "The object could not be refreshed inside the property transaction; no write was committed.");
+                            return FreshReadUnavailableEnvelope(target,
+                                "The object could not be refreshed inside the property transaction; no write was committed.",
+                                _objectService.GetLastResolutionDiagnostic());
                         obj = transactionObject;
                         if (!string.IsNullOrEmpty(controlName))
                         {
@@ -1245,6 +1251,22 @@ namespace GxMcp.Worker.Services
             {
                 return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
+        }
+
+        /// <summary>
+        /// The error for a property call that needs an independent read of the persisted object and
+        /// could not get one. The diagnostic's reason goes into the message itself: the terse error
+        /// format drops everything but the first line of <c>message</c>, <c>code</c> and <c>hint</c>.
+        /// </summary>
+        internal static string FreshReadUnavailableEnvelope(string target, string headline, JObject diagnostic)
+        {
+            string reason = diagnostic?["message"]?.ToString();
+            return Models.McpResponse.Err(
+                code: FreshObjectReload.DiagnosticCode,
+                message: string.IsNullOrWhiteSpace(reason) ? headline : headline + " " + reason,
+                hint: diagnostic?["hint"]?.ToString(),
+                target: target,
+                errorExtra: diagnostic);
         }
 
         private string RollbackPropertySnapshot(string target, KBObject written, ObjectMoveSnapshot snapshot, string reason)
