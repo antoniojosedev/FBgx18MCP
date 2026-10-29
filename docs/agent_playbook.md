@@ -399,17 +399,27 @@ GeneXus 18 grammar. Expose multiple verbs with per-Procedure REST instead.
 
 - Move an existing object with
   `genexus_properties action=move name=<obj> destination=<Folder-or-Module>`.
-  Use `targetModule` or `destKind=Folder|Module` only when needed.
-- Use `dryRun=true` to preview the destination. For writes, pass the prior
-  `versionToken` as `baseVersion`; the service snapshots parts and authored
-  properties, verifies the committed parent/content, and rolls back on failure
-  by default.
+  `destination` is a name, a path (`Root Module/<Module>/<Folder>`, prefix
+  optional) or a container GUID. A name shared by several containers returns
+  `DestinationAmbiguous` with each candidate's path and GUID; use the path, the
+  GUID, `destKind=Folder|Module` or `targetModule` to choose.
+- Use `dryRun=true` to preview the move: it resolves the destination and runs the
+  same preflight as the write (name already used in the destination module,
+  destination inside the object, imported module, SDK persist path), so it
+  refuses with the same code the write would, and it returns the `versionToken`.
+  A real move needs that token as `baseVersion`; the service snapshots parts and
+  authored properties, verifies the committed parent/content with a fresh read,
+  and rolls back on failure by default (`rollback.verified` says whether a fresh
+  read confirmed the restore).
 - Move performs no Specify, Generate, Build, Rebuild, reorganization,
   execution, or tests.
-- Create directly in a container with `folder=<name>` or `module=<name>`;
-  placement is reported in the response.
-- Placement properties passed to `action=set` are routed to the move service.
-- After a move, `list`/`inspect` invalidate hierarchy caches immediately.
+- Create directly in a container with `folder=<name>`, `module=<name>` or
+  `parentPath=<path>`. `genexus_create action=object_atomic` resolves the
+  destination before creating anything, proves the position with a fresh read
+  (`identity.path`, `placement.verified`) and deletes the object again, with the
+  absence confirmed, if it cannot be placed (`AtomicCreatePlacementFailed`).
+  Plain `action=object` creates in the Root Module and moves afterwards,
+  reporting the move under `placement`.
 
 The containers themselves are created with `genexus_create type=Folder|Module`.
 The facade's empty `KBObject.Parent`/`Module` setters are misleading; runtime
@@ -431,6 +441,50 @@ SDPanels are WorkWithDevices projections, not self-contained ordinary parts.
 `SDConditions` are non-source projections and may serialize as empty properties;
 an empty result does not mean the panel is empty. Layout and variables are
 authored in the GeneXus IDE.
+
+### User Control properties and parts
+
+A `UserControl` keeps two kinds of state, and they use different tools:
+
+- **Object properties** (`DataTypeFilter`, `BaseControlType`,
+  `IncludeInControlInformation`, `FileReferences`, `BaseStyle`, ...) are not a
+  part. Read them with `genexus_properties action=get` and change them with
+  `action=set`, passing the `versionToken` of that read as `expectedVersion` and
+  `rollbackOnFailure=true`. A real write is read back from an independent
+  instance of the object, every part is compared with the snapshot taken before
+  the write (`preservedParts`), and `implicitOperations` stays empty: no
+  Specify, Generate, Build, reorganization, execution or tests.
+- **Parts** are `Documentation`, `UserControlScreenTemplate` and
+  `UserControlProperties`, read with `genexus_read part=<name>` and written with
+  `genexus_edit part=<name> baseVersion=<token>`. `Source` is an alias of
+  `UserControlScreenTemplate`. `availableParts` lists only `Documentation` and
+  `Source`, so name the other two explicitly. A part write takes `baseVersion`
+  from that part's own read (a stale one answers `StaleObject`; a property write
+  answers `VersionConflict`). `UserControlProperties` holds the `<Definition>`
+  XML; with `auto="true"` (the default of a new control) the SDK re-derives it
+  from the template's bindings every time the template is saved and replaces any
+  explicit nodes, so write the template first and `UserControlProperties` after
+  it, then read both back (the SDK stores line breaks as CRLF).
+
+The SDK keeps `UserControl`, `Image`, `ThemeClass` and `DesignSystem` resident in
+the model: invalidating the cache entry alone hands back the same instance. The
+independent read behind `genexus_properties` `set`, `dryRun` and
+`reconcileTimedOutWrite` (`ObjectService.FindObjectFreshByIdentity`, issue #733)
+therefore evicts that instance before it looks the object up again, and refuses
+a result that is still the instance it started from. When no independent
+instance can be obtained the call fails with `FreshReadUnavailable` and a
+`reason` (`SameInstanceRetained`, `IdentityNotResolved`, `IdentityMismatch` or
+`InvalidationUnavailable`) before anything is written. A `dryRun` takes the same
+read and reports `independentReadVerified: true`, so it cannot promise a write
+that the transaction would refuse.
+
+`FreshReadUnavailable` never implies a recovery fence. Fences are records in the
+Gateway's mutation journal, created only by a write that timed out or was
+cancelled (or a stalled asynchronous operation) and listed by
+`genexus_connection_recover action=journal_status`; a fence is cleared only by a
+complete authoritative read (`genexus_properties action=get
+reconcileTimedOutWrite=true` with every affected `propertyNames` for a property
+write), never by `journal_repair`.
 
 ### Inspection and property conventions
 

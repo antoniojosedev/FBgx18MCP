@@ -39,7 +39,7 @@ $failed = @()
 if ($gatewayRate -lt $MinLineRatePercent) { $failed += "gateway=$gatewayRate%" }
 
 # collect.ps1 branches on GeneXus-SDK presence: it emits worker.skipped.txt when
-# the SDK isn't installed (every GitHub-hosted runner — see CONTRIBUTING.md) and
+# the SDK isn't installed (every GitHub-hosted runner — see contributing guide) and
 # worker.failed.txt when the Worker tests threw. Honor those markers instead of
 # unconditionally reading worker.cobertura.xml and dying with a misleading
 # "Coverage file not found" that hides the real cause.

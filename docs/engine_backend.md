@@ -54,8 +54,8 @@ MCP-verified routing admits a restricted subset of **6 tools (10%)**:
 `genexus_query`, `genexus_lifecycle` (`build` / `rebuild`), `genexus_kb`
 (`get_environment`), `genexus_list_objects` (bounded Procedure, Transaction, WebPanel,
 Table and DataProvider pages), `genexus_kb_version` (`list`), and `genexus_inspect`
-(minimal Procedure, Transaction and WebPanel inspection). Those are
-**7 of 311 operation rows (2.3%)**, each still subject to the argument and capability gates below.
+(minimal Procedure, Transaction and WebPanel inspection). Those are **7 of 311 operation rows (2.3%)**,
+each still subject to the argument and capability gates below.
 In addition, `genexus_read` routes single-part reads (`Source`, `Events`, `Rules`, `Conditions`)
 under `Engine.Backend=gxengine` directly to `kb-read` while retaining SDK fallback for all other shapes.
 

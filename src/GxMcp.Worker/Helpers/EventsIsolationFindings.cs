@@ -93,6 +93,12 @@ namespace GxMcp.Worker.Helpers
             + "bundle that was audited as a whole (docs/events-object-save-isolation.md), and there is no allowlist by version "
             + "number. Until this exact bundle is audited the save stays refused; do not retry it or use another write mode to bypass it.";
 
+        private const string ScopeRemediation =
+            "The native proof of this bundle covers only Knowledge Bases that have no pattern instances (WorkWithPlus or any other "
+            + "pattern). The save stays refused for a Knowledge Base that has them, or whose instances cannot be counted, because that "
+            + "scenario was not proven. Do not retry it or use another write mode to bypass it; a proof that covers pattern instances "
+            + "is needed first (docs/events-object-save-isolation.md).";
+
         /// <summary>Zero findings when the pins and the opened destination agree; otherwise exactly one.</summary>
         internal static IReadOnlyList<EventsIsolationFinding> EvaluateDestination(
             string expectedPath, string expectedVersion, string actualPath, string actualVersion, bool? frozen)
@@ -187,7 +193,7 @@ namespace GxMcp.Worker.Helpers
             }
             return new EventsIsolationFinding(
                 "SdkBundleNotAudited", BundleLayer,
-                "Unverified SDK implementation bundle; isolated Events save requires a complete audited U16 build.",
+                "Unverified SDK implementation bundle; isolated Events save requires a complete audited SDK bundle (evidence.auditedBundles lists them).",
                 BundleRemediation,
                 new JObject
                 {
@@ -195,6 +201,18 @@ namespace GxMcp.Worker.Helpers
                     ["auditedBundles"] = new JArray((auditedBundleIds ?? Array.Empty<string>()).ToArray())
                 });
         }
+
+        internal static EventsIsolationFinding BundleAuditFailed(string message)
+            => new EventsIsolationFinding(
+                "SdkBundleAuditFailed", BundleLayer,
+                string.IsNullOrWhiteSpace(message) ? "The complete SDK bundle audit failed." : IsolatedEventsSaveDiagnostics.Sanitize(message),
+                BundleRemediation);
+
+        internal static EventsIsolationFinding BundleScopeNotCovered(string message)
+            => new EventsIsolationFinding(
+                "PatternInstancesNotVerified", BundleLayer,
+                string.IsNullOrWhiteSpace(message) ? "The audited bundle is not verified for this Knowledge Base." : IsolatedEventsSaveDiagnostics.Sanitize(message),
+                ScopeRemediation);
 
         internal static EventsIsolationFinding UnverifiedParts(string message)
             => new EventsIsolationFinding(
@@ -274,11 +292,26 @@ namespace GxMcp.Worker.Helpers
                     hashes[name] = probe.HashFile(locations[0]);
                     versions[name] = probe.FileVersion(locations[0]);
                 }
-                // An incomplete or ambiguous bundle is not matched against the audited ones: a partial set is
-                // reported as what is missing, never as a near match.
+                // An incomplete or ambiguous bundle is neither audited as a whole nor matched against the audited ones: a
+                // partial set is reported as what is missing, never as a near match.
+                EventsIsolationFinding bundleFinding = null;
                 bool complete = missing.Count == 0 && ambiguous.Count == 0;
-                result.AuditedBuild = complete ? probe.MatchAuditedBuild(hashes) : null;
-                EventsIsolationFinding bundleFinding = EvaluateBundle(
+                var triggers = probe.CompleteBundleTriggerHashes;
+                if (complete && triggers != null && hashes.TryGetValue(probe.OptionalAssembly, out string optionalHash) && triggers.Contains(optionalHash))
+                {
+                    try { result.BundleAudit = probe.VerifyCompleteBundle(hashes); }
+                    catch (EventsBundleScopeException ex) { bundleFinding = BundleScopeNotCovered(ex.Message); }
+                    catch (InvalidOperationException ex) { bundleFinding = BundleAuditFailed(ex.Message); }
+                    catch (Exception ex)
+                    {
+                        bundleFinding = new EventsIsolationFinding(
+                            "IsolationPreflightFailed", BundleLayer,
+                            "SDK bundle verification failed (" + ex.GetType().Name + "): " + IsolatedEventsSaveDiagnostics.Sanitize(ex.Message),
+                            BundleRemediation);
+                    }
+                }
+                result.AuditedBuild = complete && bundleFinding == null ? probe.MatchAuditedBuild(hashes) : null;
+                bundleFinding = bundleFinding ?? EvaluateBundle(
                     hashes, versions, missing, ambiguous, result.AuditedBuild, probe.AuditedBundleIds);
                 if (bundleFinding != null) result.Findings.Add(bundleFinding);
             }
@@ -328,6 +361,9 @@ namespace GxMcp.Worker.Helpers
         internal Func<string, IReadOnlyList<string>> LoadedLocations { get; set; }
         internal Func<string, string> HashFile { get; set; }
         internal Func<string, string> FileVersion { get; set; }
+        /// <summary>The hashes of the optional assembly that make a complete-bundle audit mandatory; null when there is none.</summary>
+        internal IReadOnlyCollection<string> CompleteBundleTriggerHashes { get; set; }
+        internal Func<IDictionary<string, string>, JObject> VerifyCompleteBundle { get; set; }
         internal Func<IDictionary<string, string>, string> MatchAuditedBuild { get; set; }
         internal IEnumerable<string> AuditedBundleIds { get; set; }
         internal Func<IReadOnlyList<Type>> PartTypes { get; set; }
@@ -342,6 +378,7 @@ namespace GxMcp.Worker.Helpers
         internal List<EventsIsolationFinding> Findings { get; } = new List<EventsIsolationFinding>();
         internal IsolationDestination Destination { get; set; } = new IsolationDestination();
         internal string AuditedBuild { get; set; }
+        internal JObject BundleAudit { get; set; }
         internal IReadOnlyList<Type> PartTypes { get; set; } = Array.Empty<Type>();
     }
 }

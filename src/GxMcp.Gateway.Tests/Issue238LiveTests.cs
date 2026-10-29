@@ -46,15 +46,30 @@ namespace GxMcp.Gateway.Tests
             string probe = "McpIssue238" + DateTime.UtcNow.Ticks.ToString("X").Substring(8);
             try
             {
+                // Created in the Root Module so the move below really moves it (an object already in
+                // the destination answers ObjectAlreadyInDestination and writes nothing).
                 var create = await _harness.CallToolAsync("genexus_create", new JObject
                 {
                     ["action"] = "object",
                     ["type"] = "Procedure",
-                    ["name"] = probe,
-                    ["folder"] = folder
+                    ["name"] = probe
                 }, 120_000);
                 Assert.False(LiveGatewayHarness.IsToolError(create),
-                    "create with folder failed: " + create.ToString(Newtonsoft.Json.Formatting.None));
+                    "create failed: " + create.ToString(Newtonsoft.Json.Formatting.None));
+
+                // A real move needs the object's version token; the preview hands it out.
+                var preview = await _harness.CallToolAsync("genexus_properties", new JObject
+                {
+                    ["action"] = "move",
+                    ["name"] = probe,
+                    ["type"] = "Procedure",
+                    ["folder"] = folder,
+                    ["dryRun"] = true
+                }, 120_000);
+                Assert.False(LiveGatewayHarness.IsToolError(preview),
+                    "folder move preview failed: " + preview.ToString(Newtonsoft.Json.Formatting.None));
+                string? token = LiveGatewayHarness.ParseToolPayload(preview)?["result"]?["versionToken"]?.ToString();
+                Assert.False(string.IsNullOrWhiteSpace(token), "the move preview returned no versionToken");
 
                 var move = await _harness.CallToolAsync("genexus_properties", new JObject
                 {
@@ -62,6 +77,7 @@ namespace GxMcp.Gateway.Tests
                     ["name"] = probe,
                     ["type"] = "Procedure",
                     ["folder"] = folder,
+                    ["baseVersion"] = token,
                     ["rollbackOnFailure"] = true
                 }, 120_000);
                 Assert.False(LiveGatewayHarness.IsToolError(move),

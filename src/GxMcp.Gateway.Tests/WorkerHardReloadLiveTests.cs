@@ -179,7 +179,7 @@ namespace GxMcp.Gateway.Tests
             DirectoryInfo? directory = new DirectoryInfo(AppContext.BaseDirectory);
             while (directory != null)
             {
-                if (File.Exists(Path.Combine(directory.FullName, "AGENTS.md"))) return directory.FullName;
+                if (File.Exists(Path.Combine(directory.FullName, "Genexus18MCP.sln"))) return directory.FullName;
                 directory = directory.Parent;
             }
 

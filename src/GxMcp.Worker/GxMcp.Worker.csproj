@@ -11,10 +11,10 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
-    <Version>4.0.4</Version>
-    <AssemblyVersion>4.0.4.0</AssemblyVersion>
-    <FileVersion>4.0.4.0</FileVersion>
-    <InformationalVersion>4.0.4</InformationalVersion>
+    <Version>4.1.0</Version>
+    <AssemblyVersion>4.1.0.0</AssemblyVersion>
+    <FileVersion>4.1.0.0</FileVersion>
+    <InformationalVersion>4.1.0</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -32,6 +32,10 @@
 
   <ItemGroup>
     <None Include="$(GxMcpSdkManifest)" Link="sdk-compatibility.json" TargetPath="sdk-compatibility.json" CopyToOutputDirectory="Always" />
+    <EmbeddedResource Include="..\..\config\events-u16-wwp16.2-audit.json" LogicalName="events-u16-wwp16.2-audit.json" />
+    <None Include="..\..\config\events-u16-wwp16.2-audit.json" Link="events-u16-wwp16.2-audit.json" TargetPath="events-u16-wwp16.2-audit.json" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+    <EmbeddedResource Include="..\..\config\events-u11-wwp16.1-audit.json" LogicalName="events-u11-wwp16.1-audit.json" />
+    <None Include="..\..\config\events-u11-wwp16.1-audit.json" Link="events-u11-wwp16.1-audit.json" TargetPath="events-u11-wwp16.1-audit.json" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
   </ItemGroup>
 
   <PropertyGroup Condition="Exists('$(GX_PATH)\GeneXus.SecurityScanner.Common.dll')">

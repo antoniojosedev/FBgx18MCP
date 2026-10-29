@@ -56,6 +56,39 @@ namespace GxMcp.Gateway.Tests
             Program.ValidateWorkerBinarySwapSource(source);
         }
 
+        [Theory]
+        [InlineData("events-u16-wwp16.2-audit.json")]
+        [InlineData("events-u11-wwp16.1-audit.json")]
+        public void HardReload_CopiesTheImmutableEventsAuditManifestsWhenPresent(string manifest)
+        {
+            var source = CreateRealisticWorkerOutput();
+            var target = Path.Combine(_root, "target");
+            Directory.CreateDirectory(target);
+            File.WriteAllText(Path.Combine(source, manifest), "immutable audit bytes");
+
+            typeof(Program).GetMethod("CopyWorkerBinaries", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(null, new object[] { source, target });
+
+            Assert.Equal("immutable audit bytes", File.ReadAllText(Path.Combine(target, manifest)));
+        }
+
+        [Fact]
+        public void EveryEventsAuditManifestOfTheRepositoryIsCopiedByAHardReload()
+        {
+            // A manifest added to config/ without a place in the swap list would make the swapped Worker refuse the
+            // isolated Events save (distributed copy missing), which only a live hard reload would show.
+            string config = Path.Combine(FindRepositoryRoot(), "config");
+            var manifests = Directory.GetFiles(config, "events-*-audit.json").Select(path => Path.GetFileName(path)!).ToArray();
+            Assert.NotEmpty(manifests);
+
+            var swapList = (string[])typeof(Program)
+                .GetField("OptionalWorkerSwapFiles", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(null)!;
+
+            foreach (string manifest in manifests)
+                Assert.Contains(manifest, swapList);
+        }
+
         [Fact]
         public void RejectsADirectoryMissingTheAssembly()
         {
@@ -138,7 +171,7 @@ namespace GxMcp.Gateway.Tests
             DirectoryInfo? directory = new DirectoryInfo(AppContext.BaseDirectory);
             while (directory != null)
             {
-                if (File.Exists(Path.Combine(directory.FullName, "AGENTS.md"))) return directory.FullName;
+                if (File.Exists(Path.Combine(directory.FullName, "Genexus18MCP.sln"))) return directory.FullName;
                 directory = directory.Parent;
             }
 

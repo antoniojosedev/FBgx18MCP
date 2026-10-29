@@ -45,9 +45,12 @@ namespace GxMcp.Worker.Helpers
 
         internal static JObject Preflight(KBObject obj)
         {
-            CheckTarget(obj);
+            // Both checks share one count: it walks the whole model, and only a bundle scoped to Knowledge Bases without pattern
+            // instances asks for it. The lambda reads obj only when asked, after CheckTarget has refused a null target.
+            var count = Memoize(() => CountPatternInstances(obj.KB));
+            CheckTarget(obj, count);
             var fresh = Fresh(obj.KB, obj.Guid);
-            var report = CheckTarget(fresh);
+            var report = CheckTarget(fresh, count);
             report["brokers"] = SdkEventSuppressionScope.VerifyBroker(fresh.KB);
             report["freshInstanceVerified"] = true;
             report["verified"] = true;
@@ -57,13 +60,41 @@ namespace GxMcp.Worker.Helpers
         // The ids MatchAuditedBuild can return. A refusal lists them so the bundle that is loaded can be
         // compared with the ones that were audited, without a version-number allowlist.
         internal static IEnumerable<string> AuditedBundleIds
-            => new[] { "18.0.16.189550", "18.0.16.189595" };
+            => new[] { "18.0.16.189550", "18.0.16.189595" }.Concat(EventsBundleAudits.All.Select(audit => audit.BundleId));
 
-        internal static JObject CheckTarget(KBObject obj)
+        // The pattern instances of a model: the objects the save hooks of the pattern packages apply anything to. A bundle whose proof
+        // is scoped to Knowledge Bases without them is valid only while this is zero; the whole model is counted, never a sample.
+        internal static int CountPatternInstances(KnowledgeBase kb)
+            => CountPatternInstances(kb.DesignModel.Objects.Cast<KBObject>());
+
+        // An instance is recognized by its class and, independently, by its type name: either is enough, so a model whose objects
+        // materialize as another class (or a type an SDK renamed) is still counted and never trusted to have none.
+        internal static int CountPatternInstances(IEnumerable<KBObject> objects, Func<KBObject, string> typeName = null)
+        {
+            typeName = typeName ?? (o => o?.TypeDescriptor?.Name);
+            return (objects ?? Enumerable.Empty<KBObject>())
+                .Count(o => o != null && (o is PatternInstance || string.Equals(typeName(o), PatternInstanceTypeName, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private const string PatternInstanceTypeName = "PatternInstance";
+
+        private static Func<int> Memoize(Func<int> compute)
+        {
+            bool done = false;
+            int value = 0;
+            return () =>
+            {
+                if (!done) { value = compute(); done = true; }
+                return value;
+            };
+        }
+
+        internal static JObject CheckTarget(KBObject obj, Func<int> patternInstanceCount = null)
         {
             if (obj == null || obj.GetType() != typeof(WebPanel))
                 throw new EventsIsolationRefusalException(EventsIsolationFindings.TargetTypeUnsupported(obj?.GetType().FullName));
             var kb = obj.KB;
+            var countInstances = patternInstanceCount ?? (() => CountPatternInstances(kb));
             var callbacks = new JArray();
             // Independent prerequisites are all evaluated before refusing, each phase guarded, so fixing the pins is not
             // how the next blocker (the SDK bundle) is first discovered and an I/O failure cannot hide the pins finding.
@@ -86,6 +117,8 @@ namespace GxMcp.Worker.Helpers
                     .Where(a => a.GetName().Name == name).Select(a => a.Location).ToArray(),
                 HashFile = path => Hash(File.ReadAllBytes(path)),
                 FileVersion = FileVersion,
+                CompleteBundleTriggerHashes = EventsBundleAudits.TriggerHashes,
+                VerifyCompleteBundle = hashes => EventsBundleAudits.Verify(obj.Name, hashes, countInstances),
                 MatchAuditedBuild = MatchAuditedBuild,
                 AuditedBundleIds = AuditedBundleIds,
                 PartTypes = () => obj.Parts.Cast<KBObjectPart>().Select(p => p.GetType()).ToArray(),
@@ -105,6 +138,7 @@ namespace GxMcp.Worker.Helpers
             report["directCallbacks"] = callbacks;
             report["sdkFingerprintVerified"] = true;
             report["auditedSdkBuild"] = auditedBuild;
+            if (evaluation.BundleAudit != null) report["completeBundleAudit"] = evaluation.BundleAudit;
             report["destinationPinsVerified"] = true;
             AppendPinEvidence(report);
             report["effectiveVersion"] = version.VersionName;
@@ -122,6 +156,10 @@ namespace GxMcp.Worker.Helpers
         internal static bool IsAllowedPartType(Type type) => Parts.Contains(type);
         internal static string MatchAuditedBuild(IDictionary<string, string> hashes)
         {
+            // The extra critical assemblies are added to the hashes only by a complete-bundle verification, so their
+            // presence selects the complete path; a mixture of two audited bundles matches none of them.
+            if (hashes != null && EventsBundleAudits.CriticalNames.Except(AuditedAssemblies.Keys).Any(hashes.ContainsKey))
+                return EventsBundleAudits.MatchComplete(hashes);
             if (Matches(AuditedAssemblies, hashes)) return "18.0.16.189550";
             if (Matches(UpdatedU16Assemblies, hashes)) return "18.0.16.189595";
             return null;

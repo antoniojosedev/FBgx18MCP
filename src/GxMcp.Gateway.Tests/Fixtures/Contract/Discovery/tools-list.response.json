@@ -721,7 +721,7 @@
             "type": "string"
           },
           "folder": {
-            "description": "object: Folder destination (created in…",
+            "description": "object|object_atomic: Folder name, path…",
             "type": "string"
           },
           "imagePath": {
@@ -754,7 +754,7 @@
             "type": "string"
           },
           "module": {
-            "description": "object: Module destination (created in…",
+            "description": "object|object_atomic: Module name, path…",
             "type": "string"
           },
           "name": {
@@ -774,7 +774,7 @@
             "type": "boolean"
           },
           "parentPath": {
-            "description": "object: folder/module destination…",
+            "description": "object|object_atomic: destination path…",
             "type": "string"
           },
           "parms": {
@@ -3626,7 +3626,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Properties API. get can reconcile a timed-out property write by a fresh typed read. set supports dryRun, expectedVersion, post-save verification and rollback; move is transactional. Full guidance: genexus://kb/tool-help/genexus_properties",
+      "description": "Properties API. get can reconcile a timed-out property write by a fresh typed read. set supports dryRun, expectedVersion, post-save verification and rollback; move is transactional and… Full guidance: genexus://kb/tool-help/genexus_properties",
       "inputSchema": {
         "properties": {
           "action": {
@@ -3639,7 +3639,7 @@
             "type": "string"
           },
           "baseVersion": {
-            "description": "set/move: opaque optimistic concurrency…",
+            "description": "set/move: opaque concurrency token from…",
             "type": "string"
           },
           "control": {
@@ -3655,7 +3655,7 @@
             "type": "string"
           },
           "destination": {
-            "description": "move: target Folder/Module name…",
+            "description": "move: target Folder/Module: name, path…",
             "type": "string"
           },
           "dryRun": {
