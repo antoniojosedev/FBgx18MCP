@@ -71,6 +71,7 @@ namespace GxMcp.Worker.Tests
             var allowList = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["Helpers/RuntimePaths.cs"] = "InstallDirectory is exposed for read-only path resolution.",
+                ["Helpers/EventsBundleAudit.cs"] = "Only reads and hashes the distributed audit manifests; never writes to the installation directory.",
                 ["Services/HealthService.cs"] = "Legacy index path is read-only.",
                 ["Services/HistoryService.cs"] = "Legacy history root is read-only lookup only.",
                 ["Services/IndexCacheService.cs"] = "Constructor fallback is replaced by the KB-scoped cache path before persistence.",

@@ -74,7 +74,8 @@ independent prerequisite before refusing, so one pass reports all of them.
 | `WriteDestinationVersionMismatch` | destination | The KB's active version is not the pinned version. | Restore it with `genexus_kb_version action=set_active`, `targetVersion` equal to the pin and `autoUpdate=false`, or correct the pin. |
 | `WriteDestinationVersionNotWritable` | destination | The pinned version is frozen or its writability is unknown. | Pin a writable version. |
 | `SdkBundleNotAudited` | sdk-bundle | The loaded SDK/WorkWithPlus bundle is not one of the audited ones (`evidence.loadedBundle` lists each assembly's hash prefix and file version, `evidence.auditedBundles` the audited ids). **Pins do not fix this.** | An audit of that exact bundle (see below). There is no allowlist by version number. |
-| `SdkBundleAssemblyMissing`, `SdkBundleAssemblyAmbiguous` | sdk-bundle | A required assembly is not loaded, or two implementations of one assembly are loaded (a mixed bundle). | Same. |
+| `SdkBundleAssemblyMissing`, `SdkBundleAssemblyAmbiguous`, `SdkBundleAuditFailed` | sdk-bundle | A required assembly is not loaded, two implementations of one assembly are loaded, or the complete-bundle audit failed. | Same. |
+| `PatternInstancesNotVerified` | sdk-bundle | The bundle is audited, but its native proof covers only Knowledge Bases without pattern instances and this one has some (the message gives the count), or they could not be counted. | Not fixable by configuration: a proof that covers pattern instances is needed first. |
 | `UnverifiedObjectPart`, `UnverifiedSdkCallback`, `IsolationTargetTypeUnsupported` | object, callbacks | The object has a part type, a direct callback or a type outside the audited set. | Not fixable by configuration. |
 | `IsolationPreflightFailed` | preflight | Any other preflight failure, with its message and exception type. | Read the Worker log for that request (the response's `correlationId`, when it carries one). |
 
@@ -92,15 +93,82 @@ raise on the real write (layer `patch`; the preview reports it and goes on, so
 without this entry it would say the request can be applied); and
 `BaseVersionRequired` (no `baseVersion`; `expectedVersion` is its alias).
 
-Only the audited bundles are eligible: the GeneXus 18 U16 builds listed in
-`EventsSaveIsolation` (18.0.16.189550 and 18.0.16.189595, each with the exact
-WorkWithPlus implementation when that package is loaded). An installation of
-another update level (for example GeneXus 18 U11 or U12) is refused with
-`SdkBundleNotAudited` whatever the pins say, because the audit is of the whole
-loaded bundle, not of a version string. Making another bundle eligible takes the
-same audit the U16 bundle had: inspection of the installed assemblies, their save
-callbacks and pattern handlers, and native proofs in a disposable Knowledge Base
-(rollback, unchanged sibling parts and objects, no implicit operation).
+Only the audited bundles are eligible (`evidence.auditedBundles` lists their ids):
+
+| Bundle id | Recognized by | Native proof |
+| :--- | :--- | :--- |
+| `18.0.16.189550`, `18.0.16.189595` | The hashes of the assemblies listed in `EventsSaveIsolation`, each with the exact WorkWithPlus implementation when that package is loaded. | [Events canonical snapshot](events-canonical-snapshot.md). |
+| `18.0.16.189595+wwp16.2.0.8386` | The complete-bundle manifest `config/events-u16-wwp16.2-audit.json` (452 files). | A synthetic WebPanel with a persisted WorkWithPlus host in a test Knowledge Base, 2026-10-14 ([Events canonical snapshot](events-canonical-snapshot.md)). |
+| `18.0.11.54344+wwp16.1.2.8167` | The complete-bundle manifest `config/events-u11-wwp16.1-audit.json` (459 files). | A synthetic WebPanel in a Knowledge Base without pattern instances, 2026-10-28; scoped, see [Scope of a native proof](#scope-of-a-native-proof). |
+
+An installation of another update level (for example GeneXus 18 U12), or one with
+another WorkWithPlus, is refused with `SdkBundleNotAudited` whatever the pins say,
+because the audit is of the whole loaded bundle, not of a version string. Making
+another bundle eligible takes the same audit these had: inspection of the installed
+assemblies, their save callbacks and pattern handlers, and native proofs in a
+disposable Knowledge Base (rollback, unchanged sibling parts and objects, no
+implicit operation).
+
+### Complete-bundle manifests
+
+When the WorkWithPlus package is loaded, `EventsBundleAudits` audits the bundle as a
+whole. It picks the manifest by the exact bytes of the loaded
+`DVelop.Patterns.WorkWithPlus` (nothing else selects one, and a mixture of two
+bundles matches none) and checks, in this order:
+
+1. the copy of the manifest distributed beside the Worker is byte-identical to the
+   one embedded in the Worker (editing the distributed copy authorizes nothing; a
+   missing or unreadable copy is a refusal of its own);
+2. every file the manifest lists exists inside the SDK installation (a path that
+   escapes it is refused) and has the SHA-256 of the manifest;
+3. every loaded `Artech.`, `GeneXus.` or `DVelop.` assembly is listed, with the same
+   name and hash; the unknown ones are all named in one refusal, so a single run
+   shows the whole gap;
+4. the nine critical assemblies match the manifest, which `MatchAuditedBuild` then
+   reports as the audited build.
+
+Any failure is `SdkBundleAuditFailed`, with a message that names what did not match.
+A manifest records the file list, the nine critical assemblies, the save API and the
+APIs the save must not call, what the IL review of the save hooks found
+(`runtimeInspection`) and a `nativeVerification` section. While
+`nativeVerification.status` is `pending` only its `syntheticObject` may be saved and
+every other object is refused as `SdkBundleAuditFailed`; `verified` is recorded
+together with the digest of the native proof (`proofEvidenceSha256`).
+
+`scripts/new-events-bundle-audit-manifest.ps1` generates a manifest from an
+installation. It only reads and hashes files (it never opens a Knowledge Base or
+loads an assembly), and what it generates authorizes nothing until the native proof
+is recorded. A Worker hard reload copies the manifests beside the swapped Worker.
+
+### Scope of a native proof
+
+`nativeVerification.scope` states the condition on the Knowledge Base under which a
+proof holds. The U16 manifest has none: its proof covers a WebPanel with a persisted
+WorkWithPlus host. The U11 manifest declares `kb-without-pattern-instances`: its
+proof is for a Knowledge Base with no pattern instance at all (WorkWithPlus or any
+other pattern), where the save hooks of the pattern packages have nothing to apply.
+The SDK loads the WorkWithPlus package of every installation that has it, whether or
+not the Knowledge Base uses it, and that is why the loaded bundle is audited at all.
+
+After the bundle itself verifies, the Worker counts the `PatternInstance` objects of
+the whole model (by class and, independently, by type name; never a sample) and
+refuses the save as `PatternInstancesNotVerified` when there is any, or when the
+count cannot be made. It fails closed, applies while the status is `pending` too,
+and a scope the Worker does not know is refused the same way.
+
+The U11 proof saved the Events part of a synthetic WebPanel through the protected
+pipeline in a Knowledge Base without pattern instances (the Worker counted zero):
+preview without mutation, stale token refused, asynchronous save with a complete
+receipt (object saved, part persisted, other parts and the metadata of other objects
+intact, no implicit operation, revision advanced by exactly one), fresh reread,
+Worker restart, idempotent save, syntax-error rollback, a queue with one winner and
+one `VersionConflict`, and the refusal of any other object while the proof was
+pending. The synthetic objects were removed and the Knowledge Base ended with the
+same object count. The sanitized result (only each check's name and whether it
+passed) is [`evidence/events-u11-wwp16.1-native-proof.json`](evidence/events-u11-wwp16.1-native-proof.json);
+its SHA-256 is the manifest's `proofEvidenceSha256`. Not covered: a persisted
+WorkWithPlus host, a Knowledge Base that has pattern instances (refused, and covered
+by unit tests only), other object types and parts, and other update levels.
 
 ## Applied versus pending configuration
 

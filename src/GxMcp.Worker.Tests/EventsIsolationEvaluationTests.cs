@@ -21,7 +21,7 @@ namespace GxMcp.Worker.Tests
 
         private sealed class Spy
         {
-            public int Hashed, Matched, Inspected;
+            public int Hashed, Verified, Matched, Inspected;
             public readonly List<string> HashedLocations = new List<string>();
         }
 
@@ -35,8 +35,10 @@ namespace GxMcp.Worker.Tests
                 RequiredAssemblies = new[] { "Core.A", "Core.B", "Optional.Wwp" },
                 OptionalAssembly = "Optional.Wwp",
                 LoadedLocations = name => name == "Optional.Wwp" ? new string[0] : new[] { @"C:\sdk\" + name + ".dll" },
-                HashFile = path => { spy.Hashed++; spy.HashedLocations.Add(path); return "hash:" + path; },
+                HashFile = path => { spy.Hashed++; spy.HashedLocations.Add(path); return path.Contains("Optional") ? "trigger" : "hash:" + path; },
                 FileVersion = path => "1.0.0",
+                CompleteBundleTriggerHashes = new[] { "trigger" },
+                VerifyCompleteBundle = hashes => { spy.Verified++; return new JObject { ["verified"] = true }; },
                 MatchAuditedBuild = hashes => { spy.Matched++; return "audited-build"; },
                 AuditedBundleIds = new[] { "id1", "id2" },
                 PartTypes = () => new[] { typeof(EventsPartStub), typeof(AllowedPartStub) },
@@ -59,32 +61,31 @@ namespace GxMcp.Worker.Tests
 
             Assert.Empty(result.Findings);
             Assert.Equal("audited-build", result.AuditedBuild);
+            Assert.Null(result.BundleAudit);
             Assert.Equal("SyntheticVersion", result.Destination.VersionName);
             Assert.Equal(new[] { typeof(EventsPartStub), typeof(AllowedPartStub) }, result.PartTypes.ToArray());
             Assert.Equal(2, spy.Hashed);   // the two core assemblies; the optional one is not loaded
+            Assert.Equal(0, spy.Verified);
             Assert.Equal(1, spy.Matched);
             Assert.Equal(1, spy.Inspected);
         }
 
         [Fact]
-        public void TheOptionalAssemblyWhenLoaded_IsHashedAndMatchedWithTheCoreOnes()
+        public void TheOptionalAssemblyWithTheTriggerHash_RunsTheCompleteBundleAuditExactlyOnce()
         {
             var spy = new Spy();
-            IDictionary<string, string> matched = null;
 
             var result = EventsIsolationFindings.Evaluate(Probe(spy, p =>
-            {
-                p.LoadedLocations = name => new[] { @"C:\sdk\" + name + ".dll" };
-                p.MatchAuditedBuild = hashes => { spy.Matched++; matched = hashes; return "audited-build"; };
-            }));
+                p.LoadedLocations = name => new[] { @"C:\sdk\" + name + ".dll" }));
 
             Assert.Empty(result.Findings);
-            Assert.Equal(3, spy.Hashed);
-            Assert.Equal(new[] { "Core.A", "Core.B", "Optional.Wwp" }, matched.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
+            Assert.Equal(1, spy.Verified);
+            Assert.True(result.BundleAudit["verified"].Value<bool>());
+            Assert.Equal(1, spy.Matched);
         }
 
         [Fact]
-        public void TheOptionalAssemblyLoadedWithAnotherHash_IsNotAudited()
+        public void TheOptionalAssemblyWithAnotherHash_SkipsTheCompleteAuditAndIsNotAudited()
         {
             var spy = new Spy();
 
@@ -96,7 +97,7 @@ namespace GxMcp.Worker.Tests
             }));
 
             Assert.Equal(new[] { "SdkBundleNotAudited" }, Codes(result));
-            Assert.Equal(1, spy.Matched);
+            Assert.Equal(0, spy.Verified);
         }
 
         [Fact]
@@ -133,7 +134,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void AMissingAssembly_SkipsTheBuildMatch()
+        public void AMissingAssembly_SkipsTheCompleteAuditAndTheBuildMatch()
         {
             var spy = new Spy();
 
@@ -142,6 +143,7 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal(new[] { "SdkBundleAssemblyMissing" }, Codes(result));
             Assert.Equal("Unverified SDK implementation: Core.B", result.Findings[0].Message);
+            Assert.Equal(0, spy.Verified);
             Assert.Equal(0, spy.Matched);
             Assert.Equal(1, spy.Hashed);
         }
@@ -157,6 +159,42 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal(new[] { "SdkBundleAssemblyAmbiguous" }, Codes(result));
             Assert.DoesNotContain(spy.HashedLocations, location => location.Contains("Core.A"));
+            Assert.Equal(0, spy.Verified);
+            Assert.Equal(0, spy.Matched);
+        }
+
+        [Fact]
+        public void ACompleteAuditThatRefuses_BecomesAFindingAndSkipsTheBuildMatch()
+        {
+            var spy = new Spy();
+
+            var result = EventsIsolationFindings.Evaluate(Probe(spy, p =>
+            {
+                p.LoadedLocations = name => new[] { @"C:\sdk\" + name + ".dll" };
+                p.VerifyCompleteBundle = hashes => throw new InvalidOperationException("Unverified Events SDK bundle assembly: Core.A");
+            }));
+
+            Assert.Equal(new[] { "SdkBundleAuditFailed" }, Codes(result));
+            Assert.Equal("Unverified Events SDK bundle assembly: Core.A", result.Findings[0].Message);
+            Assert.Equal(0, spy.Matched);
+        }
+
+        [Fact]
+        public void ABundleVerifiedOnlyForKnowledgeBasesWithoutPatternInstances_IsAFindingOfItsOwn()
+        {
+            var spy = new Spy();
+            const string message = "The 18.0.11.54344+wwp16.1.2.8167 bundle is verified only for Knowledge Bases without pattern instances; this Knowledge Base has 2.";
+
+            var result = EventsIsolationFindings.Evaluate(Probe(spy, p =>
+            {
+                p.LoadedLocations = name => new[] { @"C:\sdk\" + name + ".dll" };
+                p.VerifyCompleteBundle = hashes => throw new EventsBundleScopeException(message);
+            }));
+
+            Assert.Equal(new[] { "PatternInstancesNotVerified" }, Codes(result));
+            Assert.Equal(message, result.Findings[0].Message);
+            Assert.Equal(EventsIsolationFindings.BundleLayer, result.Findings[0].Layer);
+            Assert.Contains("covers only Knowledge Bases that have no pattern instances", result.Findings[0].Remediation);
             Assert.Equal(0, spy.Matched);
         }
 
@@ -175,6 +213,18 @@ namespace GxMcp.Worker.Tests
             Assert.DoesNotContain("Secret", result.Findings[1].ToJson().ToString());
             Assert.Equal("IOException", result.Findings[1].Evidence["exceptionType"].ToString());
             Assert.Equal(EventsIsolationFindings.PinsSentence, new EventsIsolationRefusalException(result.Findings).Message);
+        }
+
+        [Fact]
+        public void AnIoFailureFromTheCompleteAudit_IsNotMistakenForAnAuditVerdict()
+        {
+            var result = EventsIsolationFindings.Evaluate(Probe(new Spy(), p =>
+            {
+                p.LoadedLocations = name => new[] { @"C:\sdk\" + name + ".dll" };
+                p.VerifyCompleteBundle = hashes => throw new IOException("sharing violation");
+            }));
+
+            Assert.Equal(new[] { "IsolationPreflightFailed" }, Codes(result));
         }
 
         [Fact]
@@ -269,6 +319,7 @@ namespace GxMcp.Worker.Tests
             var sets = new[] { "AuditedAssemblies", "UpdatedU16Assemblies" }
                 .Select(field => new Dictionary<string, string>((Dictionary<string, string>)typeof(EventsSaveIsolation)
                     .GetField(field, BindingFlags.Static | BindingFlags.NonPublic).GetValue(null)))
+                .Concat(EventsBundleAudits.All.Select(audit => audit.CriticalHashes))
                 .ToArray();
 
             var returned = sets.Select(EventsSaveIsolation.MatchAuditedBuild).ToArray();
