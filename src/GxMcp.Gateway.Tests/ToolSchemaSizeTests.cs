@@ -42,7 +42,7 @@ namespace GxMcp.Gateway.Tests
             // clients pay this cost on every session's tool list, so growth here is
             // deliberate — bump the constant only alongside a schema change that needs
             // the extra room, and check headroom before adding a new field to an
-            // existing tool. Full bump-by-bump history lives in CHANGELOG.md; only the
+            // existing tool. Full bump-by-bump history lives in the changelog; only the
             // last few entries are kept here for quick context:
             //   2026-07-09 (genexus_merge spike): 11750 → 12200 for the new
             //   genexus_merge tool (IMergeService object-merge, WRITE +

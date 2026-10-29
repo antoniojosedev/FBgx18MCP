@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const repoRoot = path.join(__dirname, '..');
+const repoRoot = path.join(__dirname, '../..');
 const read = (file) => fs.readFileSync(path.join(repoRoot, file), 'utf8');
 
 function requiredNodeMajor() {
@@ -196,3 +196,42 @@ test('the docs index lists every top-level document and every link resolves', ()
     assert.match(read('README.md'), /\]\(docs\/README\.md\)/);
     assert.match(read('AGENTS.md'), /\]\(docs\/README\.md\)/);
 });
+
+test('explain documentation advertises compatibility-only contract', () => {
+    for (const docPath of ['README.md', 'GEMINI.md', '.gemini/skills/genexus-mastery/SKILL.md']) {
+        const text = read(docPath);
+        assert.match(text, /compatibility-only/i);
+        assert.match(text, /NotImplemented/);
+        assert.match(text, /genexus_read/i);
+    }
+});
+
+test('issue 146 documentation publishes context lease and HTTP token contract', () => {
+    for (const docPath of ['docs/kb-isolation-contract.md', 'docs/llm_cli_mcp_playbook.md', 'docs/mcp_capabilities_inventory.md']) {
+        const text = read(docPath);
+        assert.match(text, /local-friendly/i);
+        assert.match(text, /hardened/i);
+        assert.match(text, /ResolutionPolicy/);
+        assert.match(text, /KB_NOT_OWNED/);
+        assert.match(text, /KB_LOCKED/);
+        assert.match(text, /KB_LEASE_INVALID/);
+        assert.match(text, /KB_LEASE_EXPIRED/);
+        assert.match(text, /GXMCP_HTTP_TOKEN/);
+        assert.match(text, /select/i);
+        assert.match(text, /close/i);
+    }
+});
+
+test('agent guide links canonical lanes and runs build script last in coding standards', () => {
+    const guide = read('AGENTS.md');
+    assert.match(guide, /\(CODING_STANDARDS\.md#validation-lanes\)/);
+    assert.match(guide, /Run `\.\\build\.ps1` \*\*last\*\*/);
+
+    const standards = read('CODING_STANDARDS.md');
+    assert.match(standards, /generate-operation-contract-inventory\.py/);
+    assert.match(standards, /nexus-ide/i);
+
+    // Verify build.ps1 is in CODING_STANDARDS.md
+    assert.match(standards, /`?\.\\build\.ps1`?/);
+});
+

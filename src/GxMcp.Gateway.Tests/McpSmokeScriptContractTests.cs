@@ -32,11 +32,11 @@ namespace GxMcp.Gateway.Tests
 
         private static string FindRepoRoot()
         {
-            // Walk up from the test assembly location until we find .git or CHANGELOG.md.
+            // Walk up from the test assembly location until we find .git or Genexus18MCP.sln.
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null)
             {
-                if (File.Exists(Path.Combine(dir.FullName, "CHANGELOG.md"))
+                if (File.Exists(Path.Combine(dir.FullName, "Genexus18MCP.sln"))
                     && (Directory.Exists(Path.Combine(dir.FullName, ".git"))
                         || File.Exists(Path.Combine(dir.FullName, ".git"))))
                     return dir.FullName;

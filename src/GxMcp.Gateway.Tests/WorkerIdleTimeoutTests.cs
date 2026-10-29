@@ -63,7 +63,7 @@ namespace GxMcp.Gateway.Tests
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null)
             {
-                if (File.Exists(Path.Combine(dir.FullName, "CHANGELOG.md"))
+                if (File.Exists(Path.Combine(dir.FullName, "Genexus18MCP.sln"))
                     && File.Exists(Path.Combine(dir.FullName, "install.ps1")))
                     return dir.FullName;
                 dir = dir.Parent;

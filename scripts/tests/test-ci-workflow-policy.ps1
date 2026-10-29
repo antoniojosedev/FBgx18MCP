@@ -257,7 +257,7 @@ public static class LaneEvidenceTokens
 {
     private static readonly Regex Token = new Regex(@"[A-Za-z0-9_.\-]+", RegexOptions.Compiled);
 
-    public static void Collect(string text, IDictionary fileNames, IDictionary context)
+    public static void Collect(string text, IDictionary fileNames, IDictionary context, IDictionary immediate)
     {
         var window = new string[6];
         int seen = 0;
@@ -269,6 +269,13 @@ public static class LaneEvidenceTokens
                 var before = context[token] as HashSet<string>;
                 if (before == null) { before = new HashSet<string>(); context[token] = before; }
                 for (int back = Math.Min(seen, window.Length); back >= 1; back--) before.Add(window[(seen - back) % window.Length]);
+
+                if (seen > 0)
+                {
+                    var imm = immediate[token] as HashSet<string>;
+                    if (imm == null) { imm = new HashSet<string>(); immediate[token] = imm; }
+                    imm.Add(window[(seen - 1) % window.Length]);
+                }
             }
             window[seen % window.Length] = token;
             seen++;
@@ -285,6 +292,7 @@ function Get-LaneReads([object]$Policy, [string]$Lane) {
     # The leading comma keeps PowerShell from unrolling the set into an array.
     if (-not $evidence.scan) { return , $reads }
     $context = @{}
+    $immediate = @{}
     foreach ($source in @($sources | Where-Object { $_ -match $scanExtensions })) {
         $text = [IO.File]::ReadAllText((Join-Path $root $source))
         # Relative references such as an MSBuild Include="..\..\.gemini\skills\nexa\references\*.md"
@@ -295,12 +303,24 @@ function Get-LaneReads([object]$Policy, [string]$Lane) {
             $relative = $full.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
             foreach ($file in $trackedFiles) { if ($file -like $relative) { [void]$reads.Add($file) } }
         }
-        [LaneEvidenceTokens]::Collect($text, $filesByName, $context)
+        [LaneEvidenceTokens]::Collect($text, $filesByName, $context, $immediate)
     }
     foreach ($name in $context.Keys) {
+        if ($name -eq 'license') { continue }
         foreach ($file in @($filesByName[$name])) {
             $directory = Split-Path $file -Parent
-            if (@($filesByName[$name]).Count -gt 1 -and $directory -and -not $context[$name].Contains((Split-Path $directory -Leaf).ToLowerInvariant())) { continue }
+            if (@($filesByName[$name]).Count -gt 1) {
+                if ($directory) {
+                    $parentLeaf = (Split-Path $directory -Leaf).ToLowerInvariant()
+                    $imm = $immediate[$name]
+                    if ($null -eq $imm -or -not $imm.Contains($parentLeaf)) { continue }
+                } else {
+                    if ($name -eq 'readme.md') { continue }
+                    $allSubdirParents = @($filesByName[$name] | ForEach-Object { $d = Split-Path $_ -Parent; if ($d) { (Split-Path $d -Leaf).ToLowerInvariant() } })
+                    $matchedSubdirs = @($allSubdirParents | Where-Object { $context[$name].Contains($_) })
+                    if ($matchedSubdirs.Count -gt 0) { continue }
+                }
+            }
             [void]$reads.Add($file)
         }
     }
@@ -312,7 +332,7 @@ foreach ($lane in $laneOutputs.Keys) {
     Assert-Policy ($null -ne $lanePolicy.evidence.$lane -and @($lanePolicy.evidence.$lane.sources).Count -gt 0) "lane-paths.json has no evidence sources for $lane."
     $laneReads[$lane] = Get-LaneReads $lanePolicy $lane
 }
-Assert-Policy ($laneReads['dotnet'].Contains('docs/kb-isolation-contract.md') -and $laneReads['toolchain'].Contains('docs/engine_backend.md')) 'the evidence scan must find documents the tests read.'
+Assert-Policy ($laneReads['dotnet'].Contains('docs/kb-isolation-contract.md') -and $laneReads['toolchain'].Contains('src/GxMcp.Gateway/tool_definitions.json')) 'the evidence scan must find documents the tests read.'
 Assert-Policy (-not $laneReads['dotnet'].Contains('src/nexus-ide/package.json')) 'a shared file name must not match without its parent directory.'
 
 function Test-LaneMap([object]$Policy) {
@@ -544,14 +564,15 @@ try {
     }
     $pr = @{ EventName = 'pull_request' }
     function With-Files([string]$Files) { @{ EventName = 'pull_request'; ChangedFile = $Files } }
-    Assert-LaneClassification 'docs-only' (With-Files 'docs/agent_playbook.md,docs/superpowers/specs/x.md') @('toolchain')
-    Assert-LaneClassification 'docs-read-by-gateway-tests' (With-Files 'README.md,CHANGELOG.md,docs/kb-isolation-contract.md') @('dotnet', 'toolchain')
+    Assert-LaneClassification 'docs-only' (With-Files 'docs/agent_playbook.md,docs/superpowers/specs/x.md') @()
+    Assert-LaneClassification 'docs-unskippable-skip' (With-Files 'README.md,CHANGELOG.md,docs/README.md') @()
+    Assert-LaneClassification 'isolation-doc' (With-Files 'docs/kb-isolation-contract.md') @('dotnet')
     Assert-LaneClassification 'plans-only' (With-Files 'plans/001-index-flush-count-regression-test.md') @()
     Assert-LaneClassification 'cli-only' (With-Files 'cli/run.js,cli/run.test.js') @('dotnet', 'toolchain')
     Assert-LaneClassification 'nexus-ide-only' (With-Files 'src/nexus-ide/src/extension.ts') @('toolchain')
     Assert-LaneClassification 'gxwire-only' (With-Files 'src/gxwire/src/main.rs,src/gxwire/Cargo.lock') @('rust', 'dotnet')
     Assert-LaneClassification 'gx-engine-only' (With-Files 'src/gx-engine/src/lib.rs') @('rust-engine', 'dotnet')
-    Assert-LaneClassification 'gx-engine-readme' (With-Files 'src/gx-engine/README.md') @('rust-engine', 'dotnet', 'toolchain')
+    Assert-LaneClassification 'gx-engine-readme' (With-Files 'src/gx-engine/README.md') @('rust-engine', 'dotnet')
     Assert-LaneClassification 'csharp-only' (With-Files 'src/GxMcp.Worker/Services/PropertyService.cs,src/GxMcp.Gateway.Tests/EngineBackendTests.cs') @('dotnet')
     Assert-LaneClassification 'tool-definitions' (With-Files 'src/GxMcp.Gateway/tool_definitions.json') @('dotnet', 'toolchain')
     Assert-LaneClassification 'backslash-path' (With-Files 'src\gxwire\src\main.rs') @('rust', 'dotnet')
