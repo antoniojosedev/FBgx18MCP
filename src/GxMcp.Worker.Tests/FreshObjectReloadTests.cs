@@ -174,6 +174,33 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void NullExpectedInstance_ReturnsNotResolvedWithoutInvokingInvalidate()
+        {
+            bool invalidateCalled = false;
+            Instance fresh = FreshObjectReload.Reload<Instance>(
+                null,
+                i => i.Id,
+                i => { invalidateCalled = true; return true; },
+                i => { },
+                () => null,
+                out FreshReloadOutcome outcome);
+
+            Assert.Null(fresh);
+            Assert.Equal(FreshReloadOutcome.NotResolved, outcome);
+            Assert.False(invalidateCalled);
+        }
+
+        [Fact]
+        public void IndependentOutcome_DescribeSetsCodeToIndependent()
+        {
+            JObject diagnostic = FreshObjectReload.Describe(FreshReloadOutcome.Independent, "UserControl");
+
+            Assert.Equal("Independent", diagnostic["code"]?.ToString());
+            Assert.Equal("Independent", diagnostic["reason"]?.ToString());
+            Assert.Null(diagnostic["hint"]);
+        }
+
+        [Fact]
         public void TheMessagesTheCallersAlreadyShowAreKept()
         {
             Assert.Equal("The SDK object cache could not be invalidated; a verification read was not attempted.",

@@ -302,6 +302,13 @@ namespace GxMcp.Worker.Helpers
                     try { result.BundleAudit = probe.VerifyCompleteBundle(hashes); }
                     catch (EventsBundleScopeException ex) { bundleFinding = BundleScopeNotCovered(ex.Message); }
                     catch (InvalidOperationException ex) { bundleFinding = BundleAuditFailed(ex.Message); }
+                    catch (Exception ex)
+                    {
+                        bundleFinding = new EventsIsolationFinding(
+                            "IsolationPreflightFailed", BundleLayer,
+                            "SDK bundle verification failed (" + ex.GetType().Name + "): " + IsolatedEventsSaveDiagnostics.Sanitize(ex.Message),
+                            BundleRemediation);
+                    }
                 }
                 result.AuditedBuild = complete && bundleFinding == null ? probe.MatchAuditedBuild(hashes) : null;
                 bundleFinding = bundleFinding ?? EvaluateBundle(

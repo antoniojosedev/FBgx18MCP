@@ -179,9 +179,9 @@ namespace GxMcp.Worker.Services
             catch (Exception ex) { Logger.Warn("MoveObject: descendants of '" + moved.Name + "' could not be refreshed: " + ex.Message); }
         }
 
-        private static Guid? SafeModuleGuid(KBObject obj)
+        private static Guid? SafeModuleGuid(KnowledgeBase kb, KBObject obj)
         {
-            try { return obj?.Module?.Guid; } catch { return null; }
+            try { return (obj?.Module ?? kb?.DesignModel?.RootModule)?.Guid; } catch { return null; }
         }
 
         // A Folder/Module with objects inside. When the answer cannot be read it is "yes": the caller refuses.
@@ -237,11 +237,11 @@ namespace GxMcp.Worker.Services
         {
             try
             {
-                var module = container as global::Artech.Architecture.Common.Objects.Module ?? container?.Module;
+                var module = container as global::Artech.Architecture.Common.Objects.Module ?? container?.Module ?? kb?.DesignModel?.RootModule;
                 string name = module?.Name;
                 return string.IsNullOrWhiteSpace(name) ? PlacementCatalog.RootName : name;
             }
-            catch { return null; }
+            catch { return PlacementCatalog.RootName; }
         }
 
         private static Guid? ModuleGuidOf(KnowledgeBase kb, KBObject container)
@@ -249,8 +249,8 @@ namespace GxMcp.Worker.Services
             try
             {
                 global::Artech.Architecture.Common.Objects.Module module = container == null
-                    ? kb.DesignModel.RootModule
-                    : (container as global::Artech.Architecture.Common.Objects.Module ?? container.Module);
+                    ? kb?.DesignModel?.RootModule
+                    : (container as global::Artech.Architecture.Common.Objects.Module ?? container.Module ?? kb?.DesignModel?.RootModule);
                 return module?.Guid;
             }
             catch { return null; }
@@ -281,7 +281,7 @@ namespace GxMcp.Worker.Services
                     if (other == null || other.Guid == excludeGuid) continue;
                     if (!string.Equals(other.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
                     Guid? otherModule = null;
-                    try { otherModule = other.Module?.Guid; } catch { }
+                    try { otherModule = (other.Module ?? kb?.DesignModel?.RootModule)?.Guid; } catch { }
                     if (otherModule != targetModule) continue;
                     return new MoveNameConflict
                     {
@@ -429,7 +429,7 @@ namespace GxMcp.Worker.Services
                 NameConflict = destination.IsRoot ? null : FindNameConflict(kb, obj, container),
                 ObjectIsImported = IsImported(obj),
                 ObjectHoldsChildren = HoldsChildren(kb, obj),
-                CrossesModules = !destination.IsRoot && ModuleGuidOf(kb, container) != SafeModuleGuid(obj),
+                CrossesModules = !destination.IsRoot && ModuleGuidOf(kb, container) != SafeModuleGuid(kb, obj),
                 DestinationImportedPath = destination.IsRoot ? null : ImportedContainerPath(container),
                 PersistStrategyAvailable = destination.IsRoot || ObjectMover.CanPersistParent(obj, container, out strategyDetail)
             };

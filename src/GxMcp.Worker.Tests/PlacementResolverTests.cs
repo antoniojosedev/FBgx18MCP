@@ -187,6 +187,19 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Catalog_SelfCycle_NormalizesParentToNull()
+        {
+            var catalog = new PlacementCatalog(new[]
+            {
+                new PlacementContainer(StockModule, "Stock", "Folder", StockModule)
+            });
+
+            Assert.Equal("Root Module/Stock", catalog.Get(StockModule).Path);
+            Assert.Null(catalog.Get(StockModule).ParentGuid);
+            Assert.Contains(catalog.Get(StockModule), catalog.ChildrenOf(null));
+        }
+
+        [Fact]
         public void Catalog_ParentCycle_DoesNotLoop()
         {
             var catalog = new PlacementCatalog(new[]

@@ -61,7 +61,7 @@ namespace GxMcp.Worker.Helpers
                 .ToList();
             var rawByGuid = raw.ToDictionary(c => c.Guid);
             _containers = raw
-                .Select(c => c.With(ComposePath(c, rawByGuid), c.ParentGuid.HasValue && rawByGuid.ContainsKey(c.ParentGuid.Value) ? c.ParentGuid : null))
+                .Select(c => c.With(ComposePath(c, rawByGuid), c.ParentGuid.HasValue && rawByGuid.ContainsKey(c.ParentGuid.Value) && c.ParentGuid.Value != c.Guid ? c.ParentGuid : null))
                 .ToList();
             _byGuid = _containers.ToDictionary(c => c.Guid);
         }

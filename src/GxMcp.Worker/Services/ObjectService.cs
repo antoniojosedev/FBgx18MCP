@@ -3638,6 +3638,7 @@ namespace GxMcp.Worker.Services
         /// </summary>
         private static void EvictRetainedInstance(KBObject obj)
         {
+            if (obj == null) return;
             try { (obj.Model.Objects as IKBModelObjectsCacheConfiguration)?.RemoveFromCaches(obj); }
             catch (Exception ex) { Logger.Debug("Fresh-read cache eviction failed: " + ex.GetType().Name); }
         }
