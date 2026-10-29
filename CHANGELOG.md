@@ -7,6 +7,36 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v4.1.0 - 2026-10-29
+
+
+### Tracked issues
+
+- [#702](https://github.com/lennix1337/Genexus18MCP/issues/702) — [Bug] save_as falha ao clonar a parte Events de um WebPanel no GeneXus 18
+- [#703](https://github.com/lennix1337/Genexus18MCP/issues/703) — [Docs] README ainda limita add_tab/move_tab/remove_tab a abas de WebPanel
+- [#704](https://github.com/lennix1337/Genexus18MCP/issues/704) — [Docs] Marcar plano e spec multi-KB de 2026-05-14 como históricos/superseded
+- [#705](https://github.com/lennix1337/Genexus18MCP/issues/705) — [Docs] release_protocol.md não menciona a rejeição de publish/config.json não neutro
+- [#710](https://github.com/lennix1337/Genexus18MCP/issues/710) — [Melhoria] Comparar revisões nativas de objetos GeneXus pelo MCP
+- [#711](https://github.com/lennix1337/Genexus18MCP/issues/711) — [Bug] Dynamic Combo Box: ControlWhere divergente no XML e Conditions exibida pela IDE; alinhamento falha com rollback
+- [#712](https://github.com/lennix1337/Genexus18MCP/issues/712) — [Bug][Follow-up #238] move para Folder falha em 4.0.3: SDK não persiste o parent solicitado, apesar de dry-run aprovado
+- [#715](https://github.com/lennix1337/Genexus18MCP/issues/715) — [Bug] Confirm de reload do mesmo objeto empilha, trava a IDE e força fechar o GeneXus pelo Gerenciador de Tarefas
+- [#728](https://github.com/lennix1337/Genexus18MCP/issues/728) — Report layout: controls imported via genexus_edit/import_part collapse into the first one in generated code (lines and same-caption labels)
+- [#729](https://github.com/lennix1337/Genexus18MCP/issues/729) — genexus_create type=Image fails with CreateObjectFailed ("validation failed") and there is no way to supply the image file
+- [#733](https://github.com/lennix1337/Genexus18MCP/issues/733) — [Bug] genexus_properties set e get com reconcileTimedOutWrite falham com FreshReadUnavailable em UserControl, Image, ThemeClass e DesignSystem
+- [#734](https://github.com/lennix1337/Genexus18MCP/issues/734) — [Melhoria] Save protegido de Events no GeneXus 18 U11 com WorkWithPlus 16.1: auditoria do bundle e escopo "KB sem instâncias de padrão"
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - **`genexus_versioning action=history_diff` compares two native revisions of an object.** Pass the `versionId` listed by `history_list` (without `part`), an optional `toVersionId` (omit it to compare with the current object), `part` and `context`, and the reply is a unified diff plus `from`/`to` revision metadata (date, user, comment, current or not) and `identical`. It is read-only: nothing is restored or saved, and `async: true` works as on the other version-store reads. Parts that are not plain text are compared too: Variables as their declarations, WebForm/Layout as their editable XML with the ids the SDK regenerates on every read masked, and any other stored part as the SDK's serialized XML, re-indented so the diff is per element. A pattern projection part the SDK does not store is refused with `VersionPartNotExtractable`, and a part too large for an in-process diff with `VersionDiffTooLarge`. The tool schema budget grows by about 50 tokens (all profile 103000 -> 103100 bytes, devops 52500 -> 52600) for the new action value and the `toVersionId` input; the `versionId`, `async` and `context` descriptions were shortened to offset part of it. https://github.com/lennix1337/Genexus18MCP/issues/710
 - **Native routing of `genexus_read` serves single-part reads directly from gx-engine.** Under `Engine.Backend=gxengine`, single-part reads of `Source`, `Events`, `Rules` or `Conditions` for `Procedure`, `WebPanel` and `Transaction` objects are dispatched directly to native `kb-read`, bypassing the 32-bit STA Worker COM queue and returning exact SDK-parity responses with `versionToken`, modified timestamp, and lines/bytes pagination envelopes. Multi-part reads, other part types, or requests outside the admitted space fall back transparently to the SDK (or fail closed with `Fallback=error`).
 - **`genexus_list_objects` native routing expands beyond Procedures.** Bounded pages with explicit `fields` limited to `name` and/or `type` now support `typeFilter=Transaction`, `WebPanel`, `Table`, and `DataProvider` in addition to `Procedure`, using native batch lifecycle timestamp queries.

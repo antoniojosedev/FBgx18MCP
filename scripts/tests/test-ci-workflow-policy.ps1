@@ -287,7 +287,11 @@ public static class LaneEvidenceTokens
 
 function Get-LaneReads([object]$Policy, [string]$Lane) {
     $evidence = $Policy.evidence.$Lane
-    $sources = @($trackedFiles | Where-Object { $file = $_; @($evidence.sources | Where-Object { $file -like $_ }).Count -gt 0 })
+    $sources = @($trackedFiles | Where-Object {
+        $file = $_
+        if ($file -like 'scripts/tests/*.js') { return $false }
+        @($evidence.sources | Where-Object { $file -like $_ }).Count -gt 0
+    })
     $reads = [System.Collections.Generic.HashSet[string]]::new([string[]]$sources)
     # The leading comma keeps PowerShell from unrolling the set into an array.
     if (-not $evidence.scan) { return , $reads }
