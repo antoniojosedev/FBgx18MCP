@@ -112,6 +112,30 @@ of changing production code or replaying a build to satisfy an invalid compariso
 **Review signal.** A commit whose message cites counts for some lanes but not
 others is unverified. Ask for the missing lane's output, not for a claim about it.
 
+## CI time budget
+
+CI wall time is a shared budget: every pull request pays for every slow test.
+More tests are welcome; tests that wait are not.
+
+- **No real waiting.** A test of a timeout, deadline or poll interval injects the
+  clock (`TimeProvider`) or shortens the timeout through an instance seam, and
+  pins the production value in a separate assertion. Benchmarks in a unit suite
+  run few iterations; raise them locally when comparing an optimization.
+- **Per-test budgets fail CI.** Gateway tests: `dotnetTestSeconds` in
+  `scripts/ci/test-time-budget.json`, checked from the coverage run's TRX by
+  `scripts/ci/assert-test-durations.ps1`. Release scripts: `releaseScriptSeconds`,
+  enforced by `scripts/tests/run-release-script-tests.ps1` on hosted runners.
+  gx-engine: nextest's `ci` profile (`src/gx-engine/.config/nextest.toml`) kills a
+  test after 120s. An exception needs a written reason in the budget file, and a
+  stale exception fails CI; raising a budget is a reviewed decision, not a fix.
+- **Every job declares `timeout-minutes`**, at most 30 on hosted runners
+  (`scripts/tests/test-ci-workflow-policy.ps1` enforces it).
+- **Nothing runs twice.** A check belongs to exactly one step; reuse a build the
+  lane already produced instead of building again, and cache a binary by the
+  sources it depends on rather than rebuilding it in an unrelated lane.
+- **Measure before and after.** A CI change cites per-job and per-step durations
+  from `gh run view <id> --json jobs` for the same kind of change, not an estimate.
+
 ## Backend and default changes
 
 A backend is substitutable only when the same public operation has compatible
@@ -133,6 +157,9 @@ different operation supports that transformation.
 Unit counts, capability labels and byte-identical generated files do not replace
 this contract evidence. Keep snapshots unchanged unless the public contract
 intentionally changes; test the negative/error paths as well as success.
+An operation must remain in its explicit fallback/refusal policy until its
+replacement route is registered and verified. A missing capability lookup must
+not silently bypass `Fallback=error`; regress both fallback modes during promotion.
 
 A native reader takes its scope (KB version, model, environment) from the
 session the SDK serves, passed by the host and checked against storage, never

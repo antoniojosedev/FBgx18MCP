@@ -78,6 +78,13 @@ namespace GxMcp.Worker.Helpers
         /// mutation. Null keeps the legacy strict comparison.
         /// </summary>
         public Comparison Compare(KBObject obj, string placementName, params string[] ignoredPartNames)
+            => Compare(obj, placementName, null, ignoredPartNames);
+
+        /// <summary>
+        /// <paramref name="placementType"/> is the destination container's object type; when
+        /// set, the SDK's FolderType rewrite to exactly that type is re-parent bookkeeping.
+        /// </summary>
+        public Comparison Compare(KBObject obj, string placementName, Guid? placementType, params string[] ignoredPartNames)
         {
             if (obj == null)
                 return Comparison.Failed(new[] { "ObjectMissing" }, null);
@@ -88,12 +95,17 @@ namespace GxMcp.Worker.Helpers
 
             var changed = new List<string>();
             var changedKeys = new List<string>();
+            JArray propertyDifferences = null;
             if (!_objectXml.SequenceEqual(current._objectXml))
             {
-                var propertyPaths = DiffObjectXml(
-                    Encoding.UTF8.GetString(_objectXml), Encoding.UTF8.GetString(current._objectXml), placementName);
+                string beforeXml = Encoding.UTF8.GetString(_objectXml);
+                string afterXml = Encoding.UTF8.GetString(current._objectXml);
+                var propertyPaths = DiffObjectXml(beforeXml, afterXml, placementName, placementType);
                 if (propertyPaths.Length > 0)
+                {
                     changed.Add("Properties: " + string.Join(", ", propertyPaths));
+                    propertyDifferences = DescribePropertyDifferences(beforeXml, afterXml, propertyPaths);
+                }
             }
 
             var ignored = new HashSet<string>(ignoredPartNames ?? new string[0], StringComparer.OrdinalIgnoreCase);
@@ -117,7 +129,7 @@ namespace GxMcp.Worker.Helpers
 
             return changed.Count == 0
                 ? Comparison.Verified(Hash)
-                : Comparison.Failed(changed, current.Hash, changedKeys);
+                : Comparison.Failed(changed, current.Hash, changedKeys, propertyDifferences);
         }
 
         public Comparison CompareParts(KBObject obj, params string[] ignoredPartNames)
@@ -315,6 +327,9 @@ namespace GxMcp.Worker.Helpers
         /// exactly the legacy canonical comparison.
         /// </summary>
         internal static string[] DiffObjectXml(string expected, string actual, string placementName)
+            => DiffObjectXml(expected, actual, placementName, null);
+
+        internal static string[] DiffObjectXml(string expected, string actual, string placementName, Guid? placementType)
         {
             var expectedValues = ParseCanonicalLines(expected);
             var actualValues = ParseCanonicalLines(actual);
@@ -328,6 +343,8 @@ namespace GxMcp.Worker.Helpers
                 if (string.Equals(before, after, StringComparison.Ordinal)) continue;
                 if (!string.IsNullOrWhiteSpace(placementName)
                     && IsPlacementValueEcho(key, expectedValues, actualValues, placementName))
+                    continue;
+                if (IsFolderTypeRewrite(key, expectedValues, actualValues, placementType))
                     continue;
                 differences.Add(key);
             }
@@ -392,6 +409,37 @@ namespace GxMcp.Worker.Helpers
         }
 
         /// <summary>
+        /// Re-parenting a Folder makes the SDK rewrite its generic FolderType property, the
+        /// object type of its parent container (Module c88fffcd-... to Folder 00000000-...-0008).
+        /// Only that property name is tolerated, only between two type GUIDs, and only when
+        /// the new value is exactly the destination container's type.
+        /// </summary>
+        private static bool IsFolderTypeRewrite(
+            string canonicalKey,
+            IDictionary<string, string> beforeValues,
+            IDictionary<string, string> afterValues,
+            Guid? placementType)
+        {
+            if (!placementType.HasValue || placementType.Value == Guid.Empty) return false;
+            if (string.IsNullOrWhiteSpace(canonicalKey)
+                || canonicalKey.IndexOf("Property[", StringComparison.OrdinalIgnoreCase) < 0
+                || !canonicalKey.EndsWith("]/Value[1]", StringComparison.OrdinalIgnoreCase))
+                return false;
+            string namePath = PropertyNamePath(canonicalKey);
+            if (namePath == null
+                || !beforeValues.TryGetValue(namePath, out var beforeName)
+                || !afterValues.TryGetValue(namePath, out var afterName)
+                || !string.Equals(beforeName, "FolderType", StringComparison.Ordinal)
+                || !string.Equals(afterName, "FolderType", StringComparison.Ordinal))
+                return false;
+            return beforeValues.TryGetValue(canonicalKey, out var before)
+                && afterValues.TryGetValue(canonicalKey, out var after)
+                && Guid.TryParse((before ?? string.Empty).Trim(), out _)
+                && Guid.TryParse((after ?? string.Empty).Trim(), out var afterType)
+                && afterType == placementType.Value;
+        }
+
+        /// <summary>
         /// Returns the sibling Name path for a generic Property Value path. The caller uses it
         /// to confirm that the same placement property exists on both sides of the diff.
         /// </summary>
@@ -419,6 +467,38 @@ namespace GxMcp.Worker.Helpers
             return long.TryParse(value.Trim(), System.Globalization.NumberStyles.Integer,
                 System.Globalization.CultureInfo.InvariantCulture, out _);
         }
+
+        /// <summary>
+        /// Names each rejected generic-property divergence (its sibling Name value plus the
+        /// before/after values) so a refused move reports which property the SDK rewrote
+        /// instead of an ordinal path alone.
+        /// </summary>
+        internal static JArray DescribePropertyDifferences(string expected, string actual, IEnumerable<string> paths)
+        {
+            var expectedValues = ParseCanonicalLines(expected);
+            var actualValues = ParseCanonicalLines(actual);
+            var result = new JArray();
+            foreach (string path in paths ?? Enumerable.Empty<string>())
+            {
+                string namePath = PropertyNamePath(path);
+                string name = null;
+                if (namePath != null && !expectedValues.TryGetValue(namePath, out name))
+                    actualValues.TryGetValue(namePath, out name);
+                expectedValues.TryGetValue(path, out var before);
+                actualValues.TryGetValue(path, out var after);
+                result.Add(new JObject
+                {
+                    ["path"] = path,
+                    ["property"] = name,
+                    ["before"] = Truncate(before),
+                    ["after"] = Truncate(after)
+                });
+            }
+            return result;
+        }
+
+        private static string Truncate(string value)
+            => value == null || value.Length <= 200 ? value : value.Substring(0, 200) + "...";
 
         private static Dictionary<string, string> ParseCanonicalLines(string value)
         {
@@ -495,21 +575,23 @@ namespace GxMcp.Worker.Helpers
 
         internal sealed class Comparison
         {
-            private Comparison(bool equal, IEnumerable<string> changedParts, string persistedHash, IEnumerable<string> changedPartKeys = null)
+            private Comparison(bool equal, IEnumerable<string> changedParts, string persistedHash, IEnumerable<string> changedPartKeys = null, JArray propertyDifferences = null)
             {
                 Equal = equal;
                 ChangedParts = new JArray(changedParts ?? Enumerable.Empty<string>());
                 PersistedHash = persistedHash;
                 ChangedPartKeys = (changedPartKeys ?? Enumerable.Empty<string>()).ToArray();
+                PropertyDifferences = propertyDifferences ?? new JArray();
             }
 
             public bool Equal { get; }
             public JArray ChangedParts { get; }
             public string PersistedHash { get; }
             public string[] ChangedPartKeys { get; }
+            public JArray PropertyDifferences { get; }
 
             public static Comparison Verified(string hash) => new Comparison(true, null, hash);
-            public static Comparison Failed(IEnumerable<string> changedParts, string hash, IEnumerable<string> changedPartKeys = null) => new Comparison(false, changedParts, hash, changedPartKeys);
+            public static Comparison Failed(IEnumerable<string> changedParts, string hash, IEnumerable<string> changedPartKeys = null, JArray propertyDifferences = null) => new Comparison(false, changedParts, hash, changedPartKeys, propertyDifferences);
         }
 
         internal sealed class PartSnapshot

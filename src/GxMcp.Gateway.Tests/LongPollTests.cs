@@ -162,23 +162,36 @@ public class LongPollTests
         // even if the caller passes wait_seconds=600.
         var registry = MakeRegistry();
         var job = registry.Start("s1", "build", 30);
-        // Never complete the job — would otherwise block until cap.
-        // Use a tiny clamp by exploiting the fact that the safe cap is 50s
-        // and we don't want to wait that long in CI. Instead verify the
-        // function returns "running" within the cap window by passing
-        // a small wait_seconds that's still > the safe cap conceptually.
-        // Here we verify the *no-token path doesn't accept >safe cap by
-        // checking we never wait the full 600s — we cap our test at 2s.
-        var sw = Stopwatch.StartNew();
-        var pollTask = McpRouter.LongPollJob(registry, job.Id, waitSeconds: 600);
-        var winner = await Task.WhenAny(pollTask, Task.Delay(TimeSpan.FromSeconds(55)));
-        sw.Stop();
-        // The test passes if the call DIDN'T outrun the safe cap (50s). We assert
-        // it returns within the safe cap window — proves clamping kicked in.
-        Assert.True(winner == pollTask,
-            $"LongPollJob without progressToken exceeded SafeLongPollSecondsWithoutProgress; elapsed {sw.ElapsedMilliseconds}ms");
+        // The job never completes, so only the deadline ends the poll. A clock that
+        // jumps 5s per reading lets the 50s cap elapse in a few real poll intervals
+        // instead of the 50 wall-clock seconds this test used to cost every CI run.
+        var clock = new SteppingClock(TimeSpan.FromSeconds(5));
+        var pollTask = McpRouter.LongPollJob(registry, job.Id, waitSeconds: 600, clock: clock);
+        var winner = await Task.WhenAny(pollTask, Task.Delay(TimeSpan.FromSeconds(30)));
+        Assert.True(winner == pollTask, "LongPollJob did not return once the stepping clock passed the safe cap.");
         var result = await pollTask;
+
         Assert.Equal("running", result["status"]!.ToString());
+        Assert.True((bool)result["capped"]!);
+        Assert.Equal(McpRouter.SafeLongPollSecondsWithoutProgress, (int)result["cappedAtSeconds"]!);
+        // It waited the cap, not the requested 600s and not less than the cap.
+        Assert.InRange(clock.Elapsed.TotalSeconds,
+            McpRouter.SafeLongPollSecondsWithoutProgress,
+            McpRouter.SafeLongPollSecondsWithoutProgress + 10);
+    }
+
+    /// <summary>A clock that advances a fixed step every time it is read.</summary>
+    private sealed class SteppingClock : TimeProvider
+    {
+        private readonly DateTimeOffset _start = DateTimeOffset.UtcNow;
+        private readonly TimeSpan _step;
+        private long _reads;
+
+        public SteppingClock(TimeSpan step) => _step = step;
+
+        public TimeSpan Elapsed => _step * (Interlocked.Read(ref _reads) - 1);
+
+        public override DateTimeOffset GetUtcNow() => _start + _step * Interlocked.Increment(ref _reads);
     }
 
     [Fact]

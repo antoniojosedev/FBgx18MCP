@@ -250,7 +250,10 @@ namespace GxMcp.Gateway.Tests
             // actions that take `kb` in place of `alias` (close, select, set_session_default, set_persistent_default,
             // set_default) and genexus_wwp's `gridPath` taking the grid's name. The schema is what the caller reads to
             // build the call, so a description that omits the actions is the defect. Measured ~39745 tokens; ~55 headroom.
-            Assert.True(approxTokens < 39800, $"tool_definitions.json is ~{approxTokens} tokens; budget 39800.");
+            // Issue #710: 39800 -> 39850 for genexus_versioning history_diff (read-only comparison of native
+            // revisions: the action enum value and the `toVersionId` input; the versionId/async/context
+            // descriptions were shortened to offset part of it). Measured ~39813 tokens; ~37 headroom.
+            Assert.True(approxTokens < 39850, $"tool_definitions.json is ~{approxTokens} tokens; budget 39850.");
         }
 
         [Theory]
@@ -303,11 +306,18 @@ namespace GxMcp.Gateway.Tests
         // (measured 50098), the only profile that crossed its budget; the token budget above does not move.
         // Both landed together with the #637-#662 fixes (whose new descriptions were trimmed to keep the
         // token budget): ui measured 50316 bytes, so ui 50300 -> 50400.
-        [InlineData("all", 103000)]
+        // Issue #710 adds genexus_versioning history_diff (the action enum value and the `toVersionId`
+        // input; the other descriptions were shortened to compensate): all 103000 -> 103100 (measured
+        // 103030), devops 52500 -> 52600 (measured 52577).
+        // Issue #729 adds genexus_create `imagePath`/`imageUrl` (an Image cannot be saved without an
+        // image). Profiles cut every description to 40 chars, so shortening firstItem/firstItemType only
+        // offsets the full-schema token budget: all 103100 -> 103250 (measured 103191), authoring
+        // 71500 -> 71650 (measured 71562).
+        [InlineData("all", 103250)]
         [InlineData("core", 27000)]
         [InlineData("standard", 61000)]
-        [InlineData("authoring", 71500)]
-        [InlineData("devops", 52500)]
+        [InlineData("authoring", 71650)]
+        [InlineData("devops", 52600)]
         [InlineData("ui", 50400)]
         [InlineData("db", 40000)]
         public void PublishedToolProfileStaysWithinItsByteBudget(string profile, int maxBytes)

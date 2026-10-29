@@ -249,6 +249,38 @@ namespace GxMcp.Worker.Models
         }
 
         /// <summary>
+        /// Direct children of every container named <paramref name="parentName"/>, or null when
+        /// ChildrenByParent has not been built (callers then scan Objects by <c>Parent</c>).
+        /// ChildrenByParent is keyed by the full parent path ("Root Module/A/B"), so a bare
+        /// name equals a key only for a top-level container; a nested Folder is found by the
+        /// last segment of its key. Entries are kept only when their <c>Parent</c> is that
+        /// name, matching the full-scan fallback. The empty key holds root entries that carry
+        /// no ParentPath, so it is checked as well.
+        /// </summary>
+        public List<IndexEntry> FindChildrenByParentName(string parentName)
+        {
+            if (ChildrenByParent == null) return null;
+            var results = new List<IndexEntry>();
+            if (string.IsNullOrWhiteSpace(parentName)) return results;
+
+            string name = parentName.Trim();
+            foreach (var bucket in ChildrenByParent)
+            {
+                string key = bucket.Key ?? string.Empty;
+                string lastSegment = key.Substring(key.LastIndexOf('/') + 1);
+                if (key.Length > 0 && !string.Equals(lastSegment, name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                lock (bucket.Value)
+                {
+                    results.AddRange(bucket.Value.Where(e =>
+                        e != null && string.Equals(e.Parent, name, StringComparison.OrdinalIgnoreCase)));
+                }
+            }
+            return results;
+        }
+
+        /// <summary>
         /// Finds an object by its Guid.
         /// Uses GuidToKey (O(1)) when available, otherwise falls back to scanning Objects.Values.
         /// </summary>

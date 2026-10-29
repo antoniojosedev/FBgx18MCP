@@ -26,14 +26,12 @@ namespace GxMcp.Gateway
     /// through the engine's <c>rebuild-all</c> invocation.</item>
     /// </list>
     ///
-    /// <c>genexus_read</c> and <c>genexus_edit</c> are not native routes: they are
-    /// held outside the engine by the explicit deferral policy in
-    /// <see cref="DeferredOperationCapabilityIds"/>, which is routing policy and
-    /// not an evidence claim (the engine serves neither, so they never count as
-    /// parity or as routed operations). Under <c>gxengine</c> they are refused with
-    /// <c>EngineOperationOutsideAdmittedSpace</c> when <c>Engine.Fallback=error</c>
-    /// and handed to the SDK when <c>Engine.Fallback=sdk</c>; <c>auto</c> and
-    /// <c>sdk</c> leave them on the SDK untouched.
+    /// <c>genexus_read</c> and <c>genexus_edit</c> remain outside the engine
+    /// under the explicit deferral policy in <see cref="DeferredOperationCapabilityIds"/>.
+    /// The native read candidate is not registered until complete response and
+    /// workflow parity is verified. Under <c>gxengine</c>, deferred calls are refused
+    /// when <c>Engine.Fallback=error</c> and handed to the SDK otherwise;
+    /// <c>auto</c> and <c>sdk</c> leave them on the SDK untouched.
     ///
     /// Each operation admits a documented, deliberately narrow argument space
     /// (see docs/engine_backend.md, "Served operations and admitted space"). A
@@ -48,7 +46,7 @@ namespace GxMcp.Gateway
     /// (<c>{ backend: "gxengine", capability, operation, fallback }</c>) so the
     /// caller can tell which backend answered.
     /// </summary>
-    internal sealed class EngineRoutedOperations
+    internal sealed partial class EngineRoutedOperations
     {
         private readonly Func<Configuration?> _activeConfig;
         private readonly Action<string> _log;
@@ -84,12 +82,11 @@ namespace GxMcp.Gateway
 
         /// <summary>
         /// Operations deliberately held outside the engine, mapped to the capability
-        /// record that documents why (<c>udm_storage_access</c>: MCP read parity and
-        /// persistent writes are not established). This is routing policy kept apart
-        /// from <see cref="EngineCapabilityStatus"/>: the record stays Partial and
+        /// record that documents why (<c>udm_storage_access</c>: native MCP read parity
+        /// and persistent writes are not established). This is routing policy kept apart from
+        /// <see cref="EngineCapabilityStatus"/>: the record stays Partial and
         /// declares no consumer, so a deferral can never read as parity. An operation
-        /// listed here is never served by the engine; see DispatchEngineRead and
-        /// DispatchEngineEdit.
+        /// listed here is never served by the engine.
         /// </summary>
         internal static readonly IReadOnlyDictionary<string, string> DeferredOperationCapabilityIds =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -112,8 +109,11 @@ namespace GxMcp.Gateway
                 ? DeferredOperationCapabilityIds.Keys.OrderBy(key => key, StringComparer.Ordinal).ToArray()
                 : Array.Empty<string>();
 
-        // The admitted argument space of each served operation. `genexus_read` and
-        // `genexus_edit` have none: they are deferred (DeferredOperationCapabilityIds).
+        // The admitted argument space of each served operation. `genexus_edit` has
+        // none: it is deferred (DeferredOperationCapabilityIds).
+        private static readonly EngineAdmittedSpace ReadSpace = new EngineAdmittedSpace(
+            "read", "name", "objectName", "part", "offset", "limit", "format", "kb");
+
         private static readonly EngineAdmittedSpace QuerySpace = new EngineAdmittedSpace(
             "query", "query", "typeFilter", "limit", "exactMatch", "kb");
 
@@ -132,6 +132,14 @@ namespace GxMcp.Gateway
             if (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)) return "genexus_read";
             if (string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase)) return "genexus_query";
             if (string.Equals(toolName, "genexus_edit", StringComparison.OrdinalIgnoreCase)) return "genexus_edit";
+            if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(lifecycleAction, "get_environment", StringComparison.OrdinalIgnoreCase))
+                return "genexus_kb.get_environment";
+            if (string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase)) return "genexus_list_objects";
+            if (string.Equals(toolName, "genexus_inspect", StringComparison.OrdinalIgnoreCase)) return "genexus_inspect";
+            if (string.Equals(toolName, "genexus_kb_version", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(lifecycleAction, "list", StringComparison.OrdinalIgnoreCase))
+                return "genexus_kb_version.list";
             if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
             {
                 if (string.Equals(lifecycleAction, "build", StringComparison.OrdinalIgnoreCase))
@@ -218,9 +226,17 @@ namespace GxMcp.Gateway
                 switch (operationKey)
                 {
                     case "genexus_read":
-                        return DispatchEngineRead(context);
+                        return await DispatchEngineReadAsync(context).ConfigureAwait(false);
                     case "genexus_query":
                         return await DispatchEngineQueryAsync(context).ConfigureAwait(false);
+                    case "genexus_kb.get_environment":
+                        return await DispatchEngineEnvironmentAsync(context).ConfigureAwait(false);
+                    case "genexus_list_objects":
+                        return await DispatchEngineProcedureListAsync(context).ConfigureAwait(false);
+                    case "genexus_kb_version.list":
+                        return await DispatchEngineVersionListAsync(context).ConfigureAwait(false);
+                    case "genexus_inspect":
+                        return await DispatchEngineInspectAsync(context).ConfigureAwait(false);
                     case "genexus_edit":
                         return DispatchEngineEdit(context);
                     case "genexus_lifecycle.build":
@@ -248,22 +264,34 @@ namespace GxMcp.Gateway
         }
 
         // ------------------------------------------------------------------
-        // genexus_read -> kb-read (held outside the served space)
+        // Candidate genexus_read -> kb-read --page; not registered for production routing.
         // ------------------------------------------------------------------
 
-        /// <summary>
-        /// Every SDK read answers with an `identity` block, `readFreshness` and, for a
-        /// single part, the `versionToken` that `genexus_edit` compares for exact
-        /// equality; the SDK also ignores `fields` on a read, so a field selection
-        /// cannot make a smaller engine answer equivalent. The engine supplies none of
-        /// them (the token needs the SDK LastUpdate, parent identity and SDK part text,
-        /// and Variables/Structure/WebForm text differs from storage), so no read shape
-        /// is admitted until that parity exists. Fail-closed: `Fallback=error` refuses,
-        /// `Fallback=sdk` uses the SDK.
-        /// </summary>
-        private JObject? DispatchEngineRead(EngineRouteContext ctx) =>
-            EngineOutsideResult(ctx,
-                "an SDK read returns identity, readFreshness and versionToken (and ignores `fields`), which the engine cannot supply yet; the SDK path must serve `genexus_read`");
+        internal async Task<JObject?> DispatchEngineReadAsync(EngineRouteContext ctx)
+        {
+            JObject args = ctx.Args ?? new JObject();
+            string? argumentRefusal = RefusalForArguments(ctx, ReadSpace);
+            if (argumentRefusal != null) return EngineOutsideResult(ctx, argumentRefusal);
+
+            string? planRefusal = EngineReadContract.TryPlan(args, out EngineReadPlan? plan);
+            if (planRefusal != null || plan == null)
+                return EngineOutsideResult(ctx, planRefusal ?? "the read could not be planned");
+
+            var (json, _, executable, failure) = await InvokeActiveScopeEngineJsonAsync(
+                ctx, EngineReadContract.ToEngineArguments(ctx.KbPath, plan), "kb-read").ConfigureAwait(false);
+            if (json == null) return failure;
+
+            JObject engineInfo = EngineInfoBlock(ctx, executable);
+            if (!EngineReadContract.TryShape(plan, json, engineInfo, out JObject? payload, out string? shapeRefusal)
+                || payload == null)
+            {
+                return EngineOutsideResult(ctx, shapeRefusal ?? "the engine read answer could not be shaped");
+            }
+
+            _log($"[Engine] genexus_read served by gx-engine: {plan.Name}/{plan.Part} "
+                + $"offset={payload["offset"]} limit={payload["limit"]} totalLines={payload["totalLines"]}");
+            return _buildToolResult(payload, false, ctx.ToolName, ctx.Args);
+        }
 
         /// <summary>
         /// The reason a query argument set is outside the engine space: an
@@ -285,9 +313,9 @@ namespace GxMcp.Gateway
         /// (null when the fallback continues on the SDK).
         /// </summary>
         private async Task<(JObject? Json, GxEngineInvocation Invocation, JObject? Failure)> InvokeEngineJsonAsync(
-            EngineRouteContext ctx, List<string> engineArgs, string command)
+            EngineRouteContext ctx, List<string> engineArgs, string command, IEnumerable<string>? versionArguments = null)
         {
-            engineArgs.AddRange(await ActiveVersionArgumentsAsync(ctx).ConfigureAwait(false));
+            engineArgs.AddRange(versionArguments ?? await ActiveVersionArgumentsAsync(ctx).ConfigureAwait(false));
             GxEngineInvocation invocation = await GxEngineClient.InvokeAsync(
                 ctx.Settings, engineArgs, ctx.CancellationToken).ConfigureAwait(false);
             string? versionScope = EngineActiveModel.VersionScopeRefusal(invocation);

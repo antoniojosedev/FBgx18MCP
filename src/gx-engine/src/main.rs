@@ -1,10 +1,13 @@
 #![forbid(unsafe_code)]
 
+mod kb_command;
+
 use gx_engine::{
     build,
     diagnostics::{Diagnostic, DiagnosticCategory},
     model::Project,
 };
+use kb_command::parse_id_flag;
 use std::{
     env,
     fs::File,
@@ -14,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>] [--design-model <id> --kb-version <id>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]... [--design-model <id> --kb-version <id>]\n  gx-engine --version\n\n--design-model/--kb-version: the Design model and KB version the GeneXus session has active. Without them only a KB with a single Design model (no versions) is served. A read serves the named version's Design model; a build covers only the trunk Design model 1 with every environment under it. Anything else is refused before any read or write, with exit code 4.\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
+const HELP: &str = "gx-engine — independent compiler & build engine\n\nUsage:\n  gx-engine check <project.json>\n  gx-engine emit <project.json>\n  gx-engine explain <previous.json> <next.json>\n  gx-engine build <project.json> [output-directory]\n  gx-engine run <project.json> [output-directory]\n  gx-engine kb-check <catalog.json> <entry-id>\n  gx-engine kb-emit <catalog.json> <entry-id>\n  gx-engine kb-build <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-run <catalog.json> <entry-id> [output-directory]\n  gx-engine kb-read <kb-path> <object> [--parts <Name,Name>] [--page --offset <n> --limit <n> --client mcp] [--design-model <id> --kb-version <id>]\n  gx-engine kb-query <kb-path> [--name <name>] [--type <ObjectType>] [--usedby <object>] [--limit <n>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-environment <kb-path> [--design-model <id> --kb-version <id>]\n  gx-engine kb-list-procedures <kb-path> [--offset <n> --limit <1..200>] [--design-model <id> --kb-version <id>]\n  gx-engine kb-versions <kb-path> [--design-model <id> --kb-version <id>]\n  gx-engine kb-inspect <kb-path> <procedure-name> [--design-model <id> --kb-version <id>]\n  gx-engine kb-write <kb-path> <object> --part <Part> --content-file <path> [--type <ObjectType>] [--design-model <id> --kb-version <id>]\n  gx-engine xml-check <authored.xml> <entry-name>\n  gx-engine xml-emit <authored.xml> <entry-name>\n  gx-engine xml-build <authored.xml> <entry-name> [output-directory]\n  gx-engine xml-run <authored.xml> <entry-name> [output-directory]\n  gx-engine rebuild-all --kb <path> --output <dir> [--target net8.0|net9.0] [--clean] [--concurrency <N>] [--skip-compile] [--object <name> [--closure]] [--catalog-cache <dir>] [--web-theme <name>] [--web-generator <banner>] [--web-master <Name=dotted.class.path>]... [--design-model <id> --kb-version <id>]\n  gx-engine --version\n\n--design-model/--kb-version: the Design model and KB version the GeneXus session has active. Without them only a KB with a single Design model (no versions) is served. A read serves the named version's Design model; a build covers only the trunk Design model 1 with every environment under it. Anything else is refused before any read or write, with exit code 4.\n\nrebuild-all --object <name>: builds that one object alone and is refused by name when it references another object. With --closure, the object and every object its references reach are built, as an executable whose entry point is the object's Main (a parameterless Procedure only). A reference the native reader or emitter does not cover is refused by name, with its path.\nrebuild-all exit codes: 0 complete; 3 partial (web UI objects skipped, a code kind with no generator present, or not compiled; the report lists them); 1 failed.\n\nPrefix a command with --diagnostics=json for structured errors on stderr.\nBuild diagnostics cover the whole build operation, including code generation.\nrun executes authored code with inherited console I/O and a 10-second deadline.\nSupports native UDM KB access with partial object coverage (refusals are named), C# (.NET) generator, and parallel Rebuild All.\n";
 
 fn load(path: &str) -> Result<Project, String> {
     let file = File::open(path).map_err(|e| format!("cannot open project: {e}"))?;
@@ -78,7 +81,17 @@ fn execute(
         return Ok(());
     }
     let raw_command = args[0].as_str();
-    if matches!(raw_command, "kb-read" | "kb-query" | "kb-write") {
+    if matches!(
+        raw_command,
+        "kb-read"
+            | "kb-query"
+            | "kb-write"
+            | "kb-environment"
+            | "kb-list-procedures"
+            | "kb-list-objects"
+            | "kb-versions"
+            | "kb-inspect"
+    ) {
         return execute_kb_ops(raw_command, &args[1..], category);
     }
     let from_xml = raw_command.starts_with("xml-");
@@ -214,16 +227,6 @@ fn execute(
 const EXIT_VERSION_SCOPE: u8 = 4;
 const EXIT_SQL_CREDENTIALS_UNAVAILABLE: u8 = 5;
 
-/// The integer value of `flag` at `args[i]`.
-fn parse_id_flag(args: &[String], i: usize, flag: &str) -> Result<i32, String> {
-    let value = args
-        .get(i)
-        .ok_or_else(|| format!("missing argument for {flag}"))?;
-    value
-        .parse::<i32>()
-        .map_err(|_| format!("{flag} expects an integer id, got '{value}'"))
-}
-
 /// The active KB version named by `--design-model` and `--kb-version`, which go together.
 fn active_version(
     design_model: Option<i32>,
@@ -287,6 +290,32 @@ fn connect_udm_kb(kb_path: &str) -> Result<gx_engine::udm::UdmClient, String> {
     gx_engine::udm::UdmClient::connect_kb(path)
 }
 
+/// The client for `kb_path` serving the Design model of the active KB version, selected on the
+/// operation's own client before any read.
+fn connect_selected_kb(
+    kb_path: &str,
+    active: Option<gx_engine::udm::version_scope::ActiveVersion>,
+    category: &mut DiagnosticCategory,
+) -> Result<gx_engine::udm::UdmClient, String> {
+    // One SQL reader session serves the topology read and the operation's own reads.
+    let client = connect_udm_kb(kb_path)?.with_persistent_reads();
+    let model_id = select_design_model(
+        &client,
+        active,
+        gx_engine::udm::version_scope::ScopeUse::Read,
+        category,
+    )?;
+    Ok(client.with_design_model_id(model_id))
+}
+
+fn print_json<T: serde::Serialize>(result: &T) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string(result).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
 /// One `kb-read` / `kb-query` / `kb-write` product operation against a native
 /// Knowledge Base directory. The result is printed as one line of JSON on
 /// stdout; failures follow the CLI's diagnostic contract (text by default,
@@ -297,176 +326,145 @@ fn execute_kb_ops(
     category: &mut DiagnosticCategory,
 ) -> Result<(), String> {
     *category = DiagnosticCategory::Input;
+    let request = kb_command::parse(command, args)?;
+    let active = active_version(request.design_model, request.kb_version)?;
+    let operation = request.admit(command)?;
+    run_kb_operation(operation, active, category)
+}
 
-    let mut positional: Vec<&str> = Vec::new();
-    let mut parts: Option<Vec<String>> = None;
-    let mut name: Option<String> = None;
-    let mut object_type: Option<String> = None;
-    let mut used_by: Option<String> = None;
-    let mut limit: usize = 0;
-    let mut part: Option<String> = None;
-    let mut content_file: Option<String> = None;
-    let mut design_model: Option<i32> = None;
-    let mut kb_version: Option<i32> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--design-model" => {
-                i += 1;
-                design_model = Some(parse_id_flag(args, i, "--design-model")?);
-            }
-            "--kb-version" => {
-                i += 1;
-                kb_version = Some(parse_id_flag(args, i, "--kb-version")?);
-            }
-            "--parts" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --parts".into());
-                }
-                parts = Some(
-                    args[i]
-                        .split(',')
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty())
-                        .collect(),
-                );
-            }
-            "--name" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --name".into());
-                }
-                name = Some(args[i].clone());
-            }
-            "--type" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --type".into());
-                }
-                object_type = Some(args[i].clone());
-            }
-            "--usedby" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --usedby".into());
-                }
-                used_by = Some(args[i].clone());
-            }
-            "--limit" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --limit".into());
-                }
-                limit = args[i]
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid limit: {e}"))?;
-            }
-            "--part" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --part".into());
-                }
-                part = Some(args[i].clone());
-            }
-            "--content-file" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("missing argument for --content-file".into());
-                }
-                content_file = Some(args[i].clone());
-            }
-            // Accepted here as well so the flag works after the command name;
-            // main() already consumed it when it was the first argument.
-            "--diagnostics=json" => {}
-            other if other.starts_with("--") => {
-                return Err(format!("unexpected argument for {command}: {other}"));
-            }
-            other => positional.push(other),
+fn lift_kb_read<T>(
+    result: Result<T, gx_engine::kb_ops::KbReadError>,
+    category: &mut DiagnosticCategory,
+) -> Result<T, String> {
+    result.map_err(|error| match error {
+        gx_engine::kb_ops::KbReadError::VersionScope(message) => {
+            *category = DiagnosticCategory::VersionScope;
+            message
         }
-        i += 1;
-    }
-    let active = active_version(design_model, kb_version)?;
-    // The Design model of the active KB version, selected on the operation's own client before any read.
-    let connect = |kb_path: &str, category: &mut DiagnosticCategory| {
-        // One SQL reader session serves the topology read and the operation's own reads.
-        let client = connect_udm_kb(kb_path)?.with_persistent_reads();
-        let model_id = select_design_model(
-            &client,
-            active,
-            gx_engine::udm::version_scope::ScopeUse::Read,
-            category,
-        )?;
-        Ok::<_, String>(client.with_design_model_id(model_id))
-    };
+        gx_engine::kb_ops::KbReadError::Operation(message) => message,
+    })
+}
 
-    match command {
-        "kb-read" => {
-            if positional.len() != 2 {
-                return Err("kb-read requires <kb-path> <object>".into());
-            }
-            let client = connect(positional[0], category)?;
-            let result = gx_engine::kb_ops::read_object(&client, positional[1], parts.as_deref())?;
-            println!(
-                "{}",
-                serde_json::to_string(&result).map_err(|e| e.to_string())?
-            );
+/// Runs an admitted operation; its Knowledge Base is connected only now.
+fn run_kb_operation(
+    operation: kb_command::KbOperation,
+    active: Option<gx_engine::udm::version_scope::ActiveVersion>,
+    category: &mut DiagnosticCategory,
+) -> Result<(), String> {
+    use kb_command::KbOperation;
+    match operation {
+        KbOperation::Read {
+            kb_path,
+            object,
+            parts,
+        } => {
+            let client = connect_udm_kb(&kb_path)?;
+            let read = lift_kb_read(
+                gx_engine::kb_ops::read_object_scoped(&client, active, &object, parts.as_deref()),
+                category,
+            )?;
+            print_json(&read)
         }
-        "kb-query" => {
-            if positional.len() != 1 {
-                return Err("kb-query requires <kb-path>".into());
-            }
-            let client = connect(positional[0], category)?;
-            let result = gx_engine::kb_ops::query_objects(
+        KbOperation::ReadPage {
+            kb_path,
+            object,
+            part,
+            offset,
+            limit,
+            client: client_kind,
+        } => {
+            let client = connect_udm_kb(&kb_path)?;
+            let page = lift_kb_read(
+                gx_engine::kb_ops::read_object_page_scoped(
+                    &client,
+                    active,
+                    &object,
+                    &part,
+                    offset,
+                    limit,
+                    client_kind,
+                ),
+                category,
+            )?;
+            print_json(&page)
+        }
+        KbOperation::Query {
+            kb_path,
+            name,
+            object_type,
+            used_by,
+            limit,
+        } => {
+            let client = connect_selected_kb(&kb_path, active, category)?;
+            print_json(&gx_engine::kb_ops::query_objects(
                 &client,
                 name.as_deref(),
                 object_type.as_deref(),
                 used_by.as_deref(),
                 limit,
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string(&result).map_err(|e| e.to_string())?
-            );
+            )?)
         }
-        "kb-write" => {
-            if positional.len() != 2 {
-                return Err("kb-write requires <kb-path> <object>".into());
-            }
-            let part = part.ok_or_else(|| "kb-write requires --part <Part>".to_string())?;
-            let content_file = content_file
-                .ok_or_else(|| "kb-write requires --content-file <path>".to_string())?;
-            let bytes = std::fs::read(&content_file)
-                .map_err(|e| format!("cannot read content file '{content_file}': {e}"))?;
-            let content = String::from_utf8(bytes)
-                .map_err(|_| format!("content file '{content_file}' is not valid UTF-8"))?;
-            let expected = match object_type.as_deref() {
-                None => None,
-                Some(value) if value.trim().is_empty() => None,
-                Some(value) => Some(
-                    gx_engine::kb_ops::kind_from_type_name(value)
-                        .ok_or_else(|| format!("unknown object type '{value}'"))?,
-                ),
-            };
-            let client = connect(positional[0], category)?;
-            let result = gx_engine::kb_ops::write_object_part(
-                &client,
-                positional[1],
-                &part,
-                &content,
-                None,
-                expected,
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string(&result).map_err(|e| e.to_string())?
-            );
+        KbOperation::Write {
+            kb_path,
+            object,
+            part,
+            content,
+            expected,
+        } => {
+            let client = connect_selected_kb(&kb_path, active, category)?;
+            print_json(&gx_engine::kb_ops::write_object_part(
+                &client, &object, &part, &content, None, expected,
+            )?)
         }
-        _ => unreachable!("execute_kb_ops is only called for kb-read/kb-query/kb-write"),
+        scoped_read => run_scoped_read(scoped_read, active),
     }
+}
 
-    Ok(())
+/// The native reads that select the active version inside the read itself, on a client opened
+/// without `connect_selected_kb`.
+fn run_scoped_read(
+    operation: kb_command::KbOperation,
+    active: Option<gx_engine::udm::version_scope::ActiveVersion>,
+) -> Result<(), String> {
+    use kb_command::KbOperation;
+    match operation {
+        KbOperation::ProcedureList {
+            kb_path,
+            offset,
+            limit,
+        } => print_json(&connect_udm_kb(&kb_path)?.procedure_list_page(active, offset, limit)?),
+        KbOperation::ObjectList {
+            kb_path,
+            kind,
+            offset,
+            limit,
+        } => print_json(&connect_udm_kb(&kb_path)?.object_list_page(active, kind, offset, limit)?),
+        KbOperation::Environment { kb_path } => print_json(&serde_json::json!({
+            "environment": connect_udm_kb(&kb_path)?.sole_environment_name(active)?
+        })),
+        KbOperation::Inspect {
+            kb_path,
+            name,
+            kind,
+        } => {
+            let client = connect_udm_kb(&kb_path)?;
+            let json = if kind == gx_engine::catalog::ObjectKind::Procedure {
+                client.procedure_inspect_minimal(active, &name)?
+            } else {
+                client.object_inspect_minimal(active, kind, &name)?
+            };
+            print_json(&json)
+        }
+        KbOperation::VersionList { kb_path } => {
+            print_json(&connect_udm_kb(&kb_path)?.kb_version_list(active)?)
+        }
+        KbOperation::Read { .. }
+        | KbOperation::ReadPage { .. }
+        | KbOperation::Query { .. }
+        | KbOperation::Write { .. } => {
+            unreachable!("run_kb_operation serves the category-selecting operations")
+        }
+    }
 }
 
 /// Exit code of a partial rebuild: some objects were skipped or not compiled. Distinct from
@@ -1005,5 +1003,63 @@ fn main() -> ExitCode {
             }
             exit
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gx_engine::udm::version_scope::ActiveVersion;
+
+    #[test]
+    fn active_version_requires_design_model_and_kb_version_together() {
+        assert_eq!(active_version(None, None), Ok(None));
+        assert_eq!(
+            active_version(Some(3), Some(7)),
+            Ok(Some(ActiveVersion {
+                design_model_id: 3,
+                kb_version_id: 7
+            }))
+        );
+        for pair in [(Some(3), None), (None, Some(7))] {
+            assert_eq!(
+                active_version(pair.0, pair.1).unwrap_err(),
+                "--design-model and --kb-version name the active KB version together: give both or neither"
+            );
+        }
+    }
+
+    #[test]
+    fn unpaired_version_flags_are_refused_before_operation_admission() {
+        let mut category = DiagnosticCategory::Usage;
+        let args = ["kb", "--design-model", "3"].map(String::from);
+        let error = execute_kb_ops("kb-query", &args, &mut category).unwrap_err();
+        assert!(error.starts_with("--design-model and --kb-version name"));
+        assert_eq!(category, DiagnosticCategory::Input);
+    }
+
+    #[test]
+    fn lift_kb_read_maps_version_scope_errors_to_version_scope_category() {
+        let mut category = DiagnosticCategory::Input;
+        let error = lift_kb_read::<()>(
+            Err(gx_engine::kb_ops::KbReadError::VersionScope(
+                "model 4 is not a Design model".into(),
+            )),
+            &mut category,
+        )
+        .unwrap_err();
+        assert_eq!(error, "model 4 is not a Design model");
+        assert_eq!(category, DiagnosticCategory::VersionScope);
+
+        let mut category = DiagnosticCategory::Input;
+        let error = lift_kb_read::<()>(
+            Err(gx_engine::kb_ops::KbReadError::Operation(
+                "object 'PAlpha' was not found in the active model".into(),
+            )),
+            &mut category,
+        )
+        .unwrap_err();
+        assert_eq!(error, "object 'PAlpha' was not found in the active model");
+        assert_eq!(category, DiagnosticCategory::Input);
     }
 }

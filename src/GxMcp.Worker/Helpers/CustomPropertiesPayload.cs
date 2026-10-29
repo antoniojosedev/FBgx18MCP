@@ -105,7 +105,9 @@ namespace GxMcp.Worker.Helpers
         private static bool ValuesEqual(string a, string b)
         {
             if (string.Equals(a, b, StringComparison.Ordinal)) return true;
-            return string.Equals(CanonicalXmlOrText(a), CanonicalXmlOrText(b), StringComparison.Ordinal);
+            if (string.Equals(CanonicalXmlOrText(a), CanonicalXmlOrText(b), StringComparison.Ordinal)) return true;
+            // Issue #711: an expression property (ControlWhere) reads back as a TokenDataList.
+            return ControlExpressionText.SameTokenExpression(a, b);
         }
 
         /// <summary>The value's XML without formatting, or its trimmed text when it is not XML.</summary>

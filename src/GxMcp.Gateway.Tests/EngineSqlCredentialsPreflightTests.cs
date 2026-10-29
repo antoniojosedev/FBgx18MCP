@@ -194,6 +194,7 @@ namespace GxMcp.Gateway.Tests
         public async Task AFailedBuildLogsItsStageAndMasksCredentials(string fallback)
         {
             string stderr = "gx-engine: sqlcmd execution failed with exit code Some(1): Sqlcmd: Login failed for user 'sa'. Password=hunter2; pwd: s3cret -P topsecret\n"
+                + "{\"category\":\"input\",\"message\":\"Password=\\\"escaped-secret\\\" end\"}\n"
                 + "Senha:\nweb theme not read\n";
             var run = await RunAsync("auto", fallback, IssueArguments, "build", 1, "", stderr);
 
@@ -207,7 +208,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("Login failed for user", logged);
             Assert.Contains("reconciliation required, no SDK replay", logged);
             Assert.DoesNotContain("\n", run.Log.Single(line => line.Contains("EngineCommandFailed")));
-            foreach (string secret in new[] { "hunter2", "s3cret", "topsecret" })
+            foreach (string secret in new[] { "hunter2", "s3cret", "topsecret", "escaped-secret" })
             {
                 Assert.DoesNotContain(secret, logged);
                 Assert.DoesNotContain(secret, payload.ToString());
@@ -270,6 +271,11 @@ namespace GxMcp.Gateway.Tests
         [InlineData("sqlcmd -Phunter2", "sqlcmd -P[redacted]")]
         [InlineData("sqlcmd -P'hunter 2'", "sqlcmd -P[redacted]")]
         [InlineData("SQLCMDPASSWORD=\"hunter 2\" x", "SQLCMDPASSWORD=[redacted] x")]
+        [InlineData("{\"message\":\"Password=\\\"hunter2\\\" end\"}", "{\"message\":\"Password=[redacted] end\"}")]
+        [InlineData("Password=\\\"hunter 2\\\" next", "Password=[redacted] next")]
+        [InlineData("Password=\\\"hunter\\\"2\\\" end", "Password=[redacted] end")]
+        [InlineData("Password=abc\\\"def end", "Password=[redacted] end")]
+        [InlineData("sqlcmd -P\\\"hunter 2\\\" -d db", "sqlcmd -P[redacted] -d db")]
         [InlineData("sqlcmd -S host -P hunter2 -d db", "sqlcmd -S host -P [redacted] -d db")]
         [InlineData("Senha:\nnext line", "Senha:\nnext line")]
         [InlineData("Login failed for user 'sa'.", "Login failed for user 'sa'.")]

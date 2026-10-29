@@ -48,6 +48,26 @@ impl std::fmt::Display for VersionScopeRefusal {
 /// The version stored in a model's properties. Missing is distinct from unreadable metadata:
 /// substring extraction can misread a formatted or duplicated property as the trunk (version 0).
 pub(crate) fn version_from_properties(raw: &str) -> Result<Option<i32>, String> {
+    let Some(text) = property_scalars(raw, &["KBVersion"])?.remove("KBVersion") else {
+        return Ok(None);
+    };
+    let id = text
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| "model property KBVersion is not an integer".to_string())?;
+    if id < 0 {
+        return Err("model property KBVersion is negative".into());
+    }
+    Ok(Some(id))
+}
+
+/// The text values of the `wanted` properties in a UDM `<Properties>` document. Every property's
+/// structure and name are validated; a wanted property that repeats, lacks a value or holds
+/// markup is refused. Other properties' values are not inspected.
+pub(crate) fn property_scalars(
+    raw: &str,
+    wanted: &[&str],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
     let document = roxmltree::Document::parse(raw)
         .map_err(|error| format!("invalid model properties XML: {error}"))?;
     let root = document.root_element();
@@ -67,7 +87,7 @@ pub(crate) fn version_from_properties(raw: &str) -> Result<Option<i32>, String> 
         }
         Ok(text)
     };
-    let mut version = None;
+    let mut found = std::collections::BTreeMap::new();
     for property in root.children().filter(|node| node.is_element()) {
         if !property.has_tag_name("Property") {
             return Err("model properties contain an unsupported element".into());
@@ -90,23 +110,15 @@ pub(crate) fn version_from_properties(raw: &str) -> Result<Option<i32>, String> 
             }
         }
         let name = scalar(name.ok_or("model property has no Name")?)?;
-        if name != "KBVersion" {
+        if !wanted.contains(&name.as_str()) {
             continue;
         }
-        if version.is_some() {
-            return Err("model property KBVersion is repeated".into());
+        let text = scalar(value.ok_or(format!("model property {name} has no Value"))?)?;
+        if found.insert(name.clone(), text).is_some() {
+            return Err(format!("model property {name} is repeated"));
         }
-        let text = scalar(value.ok_or("model property KBVersion has no Value")?)?;
-        let id = text
-            .trim()
-            .parse::<i32>()
-            .map_err(|_| "model property KBVersion is not an integer".to_string())?;
-        if id < 0 {
-            return Err("model property KBVersion is negative".into());
-        }
-        version = Some(id);
     }
-    Ok(version)
+    Ok(found)
 }
 
 /// Whether the Knowledge Base stores more than one Design model, that is, has KB versions besides one.

@@ -242,14 +242,7 @@ namespace GxMcp.Worker.Services
                 }
                 else if (!string.IsNullOrEmpty(criteria.ParentFilter) && index.ChildrenByParent != null)
                 {
-                    if (index.ChildrenByParent.TryGetValue(criteria.ParentFilter, out var children))
-                    {
-                        sourceSet = children;
-                    }
-                    else
-                    {
-                        sourceSet = Enumerable.Empty<SearchIndex.IndexEntry>();
-                    }
+                    sourceSet = index.FindChildrenByParentName(criteria.ParentFilter);
                 }
                 else
                 {

@@ -17,12 +17,292 @@
 
 In practice: you point the MCP at your KB, then ask your AI assistant things like *"list all transactions with attribute CustomerId"*, *"add a rule to the Order transaction that validates the total"*, or *"refactor this procedure to use the new SDT"* — and it does it.
 
+<!-- BEGIN GENERATED: gx-compatibility -->
+Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18** (native SDK).
+Basic legacy compatibility: **GeneXus Evolution 3, GeneXus Evolution 2, GeneXus Evolution 1, GeneXus 15, GeneXus 9.0, GeneXus 8.0** via `com-gxpublic` and `dotnet-reflection` (not the native SDK build).
+Primary SDK: **GeneXus 18**.
+Source of truth: `config/gx-versions.json`.
+<!-- END GENERATED: gx-compatibility -->
+
+## Contents
+
+- [What you can do with it](#what-you-can-do-with-it)
+- [Prerequisites](#prerequisites) · [Quickstart](#quickstart-3-steps-5-minutes) · [Corporate install](#corporate-install-fixed-path-asr-friendly)
+- [What can I ask the AI?](#what-can-i-ask-the-ai) · [Supported AI clients](#supported-ai-clients) · [Troubleshooting](#troubleshooting)
+- [Multi-version GeneXus support](#multi-version-genexus-support)
+- [Tool Surface](#tool-surface) · [WorkWithPlus pattern editing](#workwithplus-pattern-editing--what-you-can-actually-do) · [AXI CLI](#axi-cli-for-agents-and-automation)
+- [Advanced Configuration](#advanced-configuration) · [Experimental `gx-engine`](#experimental-gx-engine-rust-sdk-replacement-project)
+- [Development & building from source](#development--building-from-source) · [Contributing](#contributing)
+- [Support the project](#support-the-project) · [Acknowledgements](#acknowledgements) · [License](#license)
+
+---
+
+## What you can do with it
+
+A quick map of what the agent can do against your real KB through the **60 tools** (details in [Tool Surface](#tool-surface); new installs expose a 20-tool `standard` profile by default, see [Tool profiles](#tool-profiles)):
+
+| Area | What the agent can do |
+|---|---|
+| 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
+| 🧭 **Orient & trace** | Rank the objects a task touches, list direct and transitive callers, trace the shortest call path between two objects, check blast radius and safe-delete, follow one variable's data flow. Runs on exported sources through `genexus_wire` (read-only, token-budgeted); `pack_task` also works directly on the open native KB |
+| ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, scaffold a Procedure from a **curl command**, edit + rebuild callers in one shot |
+| 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules, table↔transaction relations & redundant-attribute detection, Data View–backed Business Components |
+| 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns, K2B Designer (through the IDE bridge), typed .NET generator references |
+| 🎨 **UI & WorkWithPlus** | Full read/write of pattern XML (controls, actions, grids, orders, groups), theme classes & styling, native WebForm/layout edits, **control catalog & design-system tokens/classes/images**, headless-browser verification |
+| 🔬 **Analyze** | Impact/dependency analysis, complexity & code metrics, naming, KB activity/freshness, reorg/DDL impact preview, native security scan, schema-drift check, ER diagrams |
+| 🛠️ **Build, test & deploy** | Build (full or fast `compile_check`), validate, reorg, index, run native GXtest tests, deploy the application (targets + deploy) |
+| 🔀 **Refactor & compare** | Rename across the KB, extract procedure, compare & merge objects (IDE parity), compare two KB directories |
+| 🌿 **Versioning, transfer & teams** | KB model versions/branches, **real XPZ export/import** (dependency-aware), GXserver (Team Development) sync + **CI pipelines**, git-style history, multi-KB parallel work, disposable KB sandboxes |
+| 🔐 **Security** | GAM / integrated-security provisioning, KB security audit + native Security Scanner |
+
+Native SDK support works through the **native GeneXus SDK** — the same code paths
+the IDE uses — so edits are real and validated, not text hacks on KB files.
+Legacy support uses the reflection or COM driver listed in the catalog and
+degrades unsupported modern tools explicitly.
+
+---
+
+## Prerequisites
+
+Before you start, make sure you have:
+
+- ✅ **Windows** (GeneXus is Windows-only)
+- ✅ **GeneXus 18, 17, or 16** installed locally for native SDK support (GeneXus 18 is the primary SDK), or a catalogued legacy installation for basic compatibility — see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md)
+- ✅ **A Knowledge Base created with a supported native or legacy GeneXus major** and opened at least once in the IDE (so it's initialized)
+- ✅ **Node.js 22+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
+- ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
+
+You do **not** need to clone this repo or install anything globally — `npx` handles it.
+
+**Never used a terminal before?** Press `Win+R`, type `powershell`, hit Enter. That's your terminal.
+
+---
+
+## Quickstart (3 steps, ~5 minutes)
+
+### Find your two paths first
+
+Before running the installer, note these down:
+
+1. **GeneXus install folder** — where `GeneXus.exe` lives. Usually `C:\Program Files (x86)\GeneXus\GeneXus18`.
+2. **Your KB folder** — the root folder of your Knowledge Base (it contains the `<KBName>.gxw` file and `knowledgebase.connection`).
+
+Not sure where your KB lives? Open it in GeneXus and check the title bar, or look in `File → Recent`.
+
+### Step 1 — Run the installer
+
+Open a terminal and run, replacing the paths with **your** KB folder and **your** GeneXus install:
+
+```bash
+npx genexus-mcp@latest init --kb "C:\KBs\YourKB" --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+> Prefer the wizard? Run `npx genexus-mcp@latest init --interactive` and answer the prompts. Running `init` from inside a KB folder also works: the KB path is detected from the current directory.
+
+What happens (takes ~30 seconds the first time, faster on re-runs):
+
+1. `npx` downloads the package.
+2. The installer checks that both paths exist and that the KB's GeneXus major (read from its `.gxw`) matches the selected installation and is supported. It stops before writing anything when they conflict.
+3. It writes the MCP `config.json`.
+4. It **auto-detects** which AI clients you have installed and registers the MCP in each one (pass `--no-write-clients` to skip, or `--all-clients` to write every known client).
+5. It verifies the result with a short MCP smoke test and prints what to do next.
+
+On Windows, Antigravity is registered with the gateway executable bundled in the
+current npm package when that artifact is available, so it skips the npx bootstrap
+chain on every MCP handshake. That path follows the package in the npx cache; after
+an upgrade, run `npx genexus-mcp@latest clients add --clients antigravity` again if
+`genexus-mcp clients` reports a stale launcher. Other clients keep the `npx genexus-mcp@latest`
+launcher unless you use the fixed-path installer below.
+
+### Step 2 — Check the client registration
+
+Step 1 auto-registers every supported client it detects, including Claude Desktop, Claude Code, Cursor, Antigravity, Gemini CLI, OpenCode, Codex CLI, and VS Code. Run `npx genexus-mcp clients` to confirm. If yours wasn't detected, register it manually — see the [client setup guide](TROUBLESHOOTING.md#client-setup).
+
+### Step 3 — Restart your AI client, then test
+
+This part trips most people: **fully close** your AI client and reopen it. Not just the window — the whole process.
+
+- **Claude Desktop**: right-click the system-tray icon → **Quit**. Then launch it again. (Closing the window is not enough.)
+- **Claude Code**: end the session and start a fresh one.
+- **Cursor / Antigravity**: close all windows and reopen.
+- **OpenCode**: fully quit and reopen it so it reloads `opencode.json` / `opencode.jsonc`.
+- **Gemini CLI / Codex CLI**: start a new process or session.
+
+Then paste this prompt:
+
+> *"Using the GeneXus MCP, list the first 5 objects in my KB and show name + type."*
+
+**What should happen:**
+
+- The AI invokes the `genexus_list_objects` tool (some UIs show "calling tool…").
+- A few seconds later, you get a list of objects from your KB.
+
+If you get a list back — **you're done**. Skip to [What can I ask the AI?](#what-can-i-ask-the-ai) for ideas.
+
+If the AI says it doesn't have a GeneXus tool, or nothing happens, go to [Troubleshooting](TROUBLESHOOTING.md) — most issues are covered there.
+
+---
+
+## 🤖 Let your AI install it for you
+
+If you'd rather not run anything in the terminal yourself, paste this into your AI chat:
+
+> Please configure the GeneXus MCP server. Run `npx genexus-mcp@latest init --kb "<MY_KB_PATH>" --gx "<MY_GENEXUS_PATH>"` in the terminal. If I haven't told you my GeneXus path and KB path yet, ask me first. Once it succeeds, run `npx genexus-mcp clients` to confirm my client is registered, and tell me when I should restart the client to start using GeneXus tools.
+
+Replace the placeholders or let the AI ask you for them.
+
+---
+
+## Corporate install (fixed path, ASR-friendly)
+
+If your machine has **Microsoft Defender ASR**, **SmartScreen**, or another endpoint policy blocking unsigned binaries, the default `npx` flow is painful — `npx` caches the package under `%LOCALAPPDATA%\npm-cache\_npx\<hash>\...`, and the `<hash>` changes per version, so IT can't whitelist a stable path without a wildcard over the whole npm cache (which is too broad).
+
+Use the corporate installer instead. It extracts the binaries to a stable directory, creates a neutral runtime configuration (no hardcoded KB), and registers the AI clients to launch the gateway directly from there — `npx` is never on the runtime path.
+
+```pwsh
+# One-liner — installs latest release, registers AI clients
+iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
+
+# With an explicit GeneXus installation
+$s = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1
+& ([scriptblock]::Create($s)) -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+The KB is chosen at runtime: ask the agent to open it (`genexus_kb action=open path=<KB root>`, then `action=select`), or declare it in `Environment.KBs` (see [Advanced Configuration](#advanced-configuration)).
+
+Install location:
+
+- **Admin shell** → `C:\Tools\GenexusMCP\`
+- **Non-admin shell** → `%LOCALAPPDATA%\Programs\GenexusMCP\`
+
+Paths to give to IT for the ASR / Defender exclusion list:
+
+```
+<InstallDir>\GxMcp.Gateway.exe
+<InstallDir>\worker\GxMcp.Worker.exe
+```
+
+Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Other switches: `-Force` reinstalls the same version, `-Version v4.0.4` pins a specific tag, `-InstallDir` chooses the folder, `-Clients claude-code,cursor` limits registration, `-NoClient` skips AI client registration, `-Repair` wipes and reinstalls the installed version, and `-Uninstall` removes the install dir and its client entries. Node.js 22+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
+
+---
+
+## What can I ask the AI?
+
+Once installed, here's what unlocks. Try these as your first prompts:
+
+**Exploration**
+- *"List all objects of type Procedure in the KB."*
+- *"Show me the source of the procedure CalculateInvoiceTotal."*
+- *"Find all transactions that reference the attribute CustomerId."*
+
+**Editing**
+- *"Add a rule to the Order transaction: error('Total must be positive') if Total < 0."*
+- *"Add a new attribute CreatedAt of type DateTime to the Customer transaction."*
+- *"Rename the variable &qty to &quantity in procedure CreateOrder."*
+
+**Data model authoring** (no IDE round-trip)
+- *"Make CustomerEmail unique on the Customer transaction."* (creates a unique index)
+- *"Turn CustomerBalance into a formula: sum(InvoiceAmount)."*
+- *"Add the enum values Active/Inactive/Pending to the Status domain."*
+- *"Add a property apiKey and a method Connect(url) to the PaymentGateway external object."*
+- *"Add a menu option 'Customers' to MainMenu that opens CustomerWW."*
+
+**WorkWithPlus pattern editing** (full structural + theming control)
+- *"Add a typed tab with variables, an action, and nested responsive tables to a WorkWithPlus WebPanel."*
+- *"In WorkWithPlusOrder, add a 'Duplicate' button to the transaction view alongside Save/Cancel/Delete."*
+- *"Group the Customer transaction attributes into a 'Contact Info' section with theme class GroupTelaResp."*
+- *"On the WorkWithPlusInvoice list, add a new ordering by InvoiceDate descending."*
+- *"Style the Save button on WorkWithPlusOrder with buttonClass='btn ButtonGreen' and apply BigTitle to the form header."*
+- *"Remove the Export action from the Selection grid of WorkWithPlusReport."*
+- *"Read the Documentation part of the transaction Customer and rewrite it in markdown."*
+
+**Architecture, call graph & impact** (`genexus_wire`, on an exported text tree of the KB)
+- *"Before I change CliSaldo, what is the blast radius? Which procedures write it?"*
+- *"Who calls PValidaCreditoLive, directly and through other procedures?"*
+- *"Show me the call path from PEmiteFaturaLive to PValidaCreditoLive."*
+- *"I need to change the invoice interest calculation. Where should I start?"*
+
+**Analysis**
+- *"Explain what the procedure ProcessShipment does."* — `genexus_analyze mode=explain` is a compatibility-only envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` for supported analysis and source.
+- *"What SQL does the query in WebPanel CustomerList generate?"*
+- *"Summarize the structure of the Sales module."*
+
+**Build & lifecycle**
+- *"Build the KB and report any errors."*
+- *"Run the unit tests and show me which failed."*
+
+The agent picks the right tool from the ones the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
+
+---
+
+## Supported AI clients
+
+Auto-detected and auto-configured by the installer:
+
+| Client | Auto-config | Notes |
+|---|---|---|
+| Claude Desktop | ✅ | Restart required after install |
+| Claude Code (CLI) | ✅ | Reload session |
+| Cursor | ✅ | Restart required |
+| Antigravity | ✅ | Direct packaged gateway; restart required; detected even before its MCP config exists |
+| Gemini CLI | ✅ | — |
+| OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
+| Codex CLI | ✅ | Writes `~/.codex/config.toml` |
+| VS Code / VS Code Insiders | ✅ | Native MCP (`User/mcp.json`); restart required |
+| OpenCode Desktop | ✅ | Shares `opencode.jsonc` with OpenCode CLI; restart required |
+| Any MCP client | Manual | See the [client setup guide](TROUBLESHOOTING.md#client-setup) |
+
+Run **`npx genexus-mcp clients`** at any time to see which agents are installed, which have `genexus` registered, and whether any point at a stale gateway exe. To (re)register specific ones: `npx genexus-mcp clients add --clients antigravity,vscode`.
+
+### OpenCode Desktop
+
+OpenCode Desktop shares its MCP configuration file (`opencode.jsonc` or `opencode.json`)
+with OpenCode CLI. Running `genexus-mcp init --write-clients` or `genexus-mcp clients add --clients opencode-desktop`
+automatically registers `genexus18mcp` in the shared config. After registration,
+fully restart OpenCode Desktop so it reloads its MCP configuration.
+
+---
+
+## Troubleshooting
+
+First stop for any "the agent doesn't see GeneXus" problem: **`npx genexus-mcp clients`** (is it registered? does it point at a gateway exe that still exists?) and **`npx genexus-mcp doctor --mcp-smoke`**.
+
+Most install issues fall into a handful of buckets — see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for fixes:
+
+- Installer can't find GeneXus or the KB
+- AI client doesn't see the GeneXus tools after restart
+- "Worker failed to start" / .NET 4.8 errors
+- KB build errors / locked artifacts
+- Port 5000 already in use (legacy `http-shared` mode only)
+- Permissions on `%LOCALAPPDATA%\GenexusMCP\`
+- Antigravity only shows `exit status 1` / `0xffffffff` with no useful stderr
+
+When a stdio launcher fails before the client can retain stderr, the wrapper writes
+the last failure to `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`. It contains
+the UTC timestamp, exit code, and bounded stderr tail. `genexus-mcp doctor` reports the
+same path when a previous failure is present. Read it before changing the install or
+using a global npm install; if the Antigravity launcher is stale, re-register it with
+`npx genexus-mcp@latest clients add --clients antigravity`.
+
+### Diagnosing a shared Worker failure
+
+If `shared-host` does not attach or a Worker is restarted, run
+`genexus_whoami` and `genexus_doctor` from the affected client and preserve the
+structured `worker.diagnostics`/`workerHealth` block. The useful evidence is the
+mode, identity, host/Worker PID, generation, attachment state, connection error,
+and failure diagnostic — not only the final `no_worker` or `startup_failed`
+summary. Do not remove a shared-worker registry file while a matching host is
+still running; the broker owns that lifecycle and stale records are recovered
+after PID/start-time validation.
+
+Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) with the output of `npx genexus-mcp doctor --mcp-smoke` and the bounded diagnostic fields above. Redact credentials, tokens, connection strings, and other sensitive values.
+
 ---
 
 ## Multi-version GeneXus support
 
 The same MCP distribution supports the official native SDK majors listed in the
-generated compatibility document. It also includes basic, best-effort
+generated compatibility block at the top of this page. It also includes basic, best-effort
 compatibility for the legacy versions listed there through separate drivers;
 that path is not equivalent to full native-SDK support. A process can route
 each declared KB to its own SDK/driver; `--gx` remains the convenient global
@@ -37,7 +317,7 @@ npx genexus-mcp@latest init --kb "C:\KBs\MyGX18KB" --gx "C:\Program Files (x86)\
 
 After switching the SDK or KB, fully restart the AI client so it reloads the
 MCP process and its tool schemas. If GX17 and GX18 must run simultaneously,
-use separate MCP configurations and ports.
+use separate MCP configurations.
 
 Classic GX8/GX9 KBs can be opened without changing the global GX18 default by
 declaring their driver and installation per KB (the Gateway accepts both the
@@ -89,13 +369,6 @@ replaced field-by-field by parsing the native `Tokens` and `Styles` parts when
 needed. Existing tool names, arguments, and MCP client configuration formats do
 not change.
 
-<!-- BEGIN GENERATED: gx-compatibility -->
-Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18** (native SDK).
-Basic legacy compatibility: **GeneXus Evolution 3, GeneXus Evolution 2, GeneXus Evolution 1, GeneXus 15, GeneXus 9.0, GeneXus 8.0** via `com-gxpublic` and `dotnet-reflection` (not the native SDK build).
-Primary SDK: **GeneXus 18**.
-Source of truth: `config/gx-versions.json`.
-<!-- END GENERATED: gx-compatibility -->
-
 To add another native-SDK major in the future, add it to the explicit
 `supportedMajors` catalog only after compiling the Worker with that SDK and
 passing the focused tests plus a live KB smoke. This prevents the server from
@@ -115,452 +388,30 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ---
 
-## Experimental `gx-engine` (Rust SDK Replacement Project)
-
-`src/gx-engine` is an independent, high-performance Rust compiler and runtime designed to completely replace the proprietary GeneXus SDK, eliminate the legacy 32-bit STA worker, and deliver sub-20s builds ([Plan 130](plans/130-direct-udm-kb-engine.md), [Plan 129](plans/129-independent-rust-toolchain.md)).
-
-### 🎮 Decompilation / Parity Progress
-
-Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. At the published 4.0.0 baseline, the disposable `KBTeste` Rebuild All recorded **346/346, 0 skipped, 0 refused** and **byte for byte (328/328 files)** C# agreement, together with web scripts, `gxcfg.js`, messages and runtime configuration. These historical counts do not validate later changes or prove that unsupported database semantics were preserved. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds and field-limited type-only queries; reads/edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
-
-### What builds today
-
-The counts and timings below describe the published 4.0.0 baseline, not a fresh
-validation of uncommitted generator changes. Checked emission now refuses
-unsupported database statements rather than accepting incomplete behavior;
-post-change whole-KB counts and SDK parity must be measured again.
-
-| Lane | Verified evidence | Boundary |
-| :--- | :--- | :--- |
-| Package build | `build.ps1` built Gateway, Worker, gxwire and gx-engine; local publish/backend engine hashes match. | Building the MCP distribution is not building every object in a KB. |
-| Selected-object build | Five alternating local SDK/engine pairs regenerated and compiled `DCM37961700`; core APIs and actual CLI output matched. SDK median **14.756s**, engine **0.230s** (**64.19×**). | Synthetic warm fixture; AUTO_CLOSE=OFF on both sides, original ON restored. The packaged binary was not benchmarked; it passed a separate build/run smoke. |
-| Full native KB build (`KBTeste`) | `rebuild-all`: **346 generated / 346 compiled, 0 skipped, 0 refused**. Against the SDK's own output for the same KB: **328/328 C# files byte-identical, 0 missing**; 24/24 web `.js`, `gxcfg.js`, `messages.eng.txt/.js`, `log.config`, `log.console.config` (+ `bin/` copies) and `CloudServices.config` byte-identical. | One oracle KB. Extra SDT and assembly-info output remains outside the matching-file denominator. Developer Menu not written (its object selection is not established). |
-
-Use the SDK for required workflows outside validated engine coverage. See
-[Plan 131](plans/131-sdk-performance-benchmark.md) for the exact binary, commands,
-samples and caveats; [engine routing](docs/engine_backend.md) for default/explicit backend behavior.
-
-| Subsystem | Evidence boundary / remaining work |
-| :--- | :--- |
-| Language, runtime, control flow, SDTs and collections | Bounded native differential corpora; not exhaustive GeneXus semantics. |
-| Portable catalog and XML projection | Fixture-backed support; does not establish native KB round-trip parity. |
-| Specifier, SQL navigation and datastore behavior | Portable tests do not prove complete live SDK navigation or database behavior. |
-| Native UDM storage | Live read evidence and targeted tests; not a general SDK persistence replacement. |
-| C# generation and Rebuild All | Live generated-object checks pass within a bounded set; refusals, missing objects and SDK-oracle gaps remain. |
-| Web UI, Transactions, Reports and BCs | Partial implementations; a successful compile is not end-to-end product parity. |
-
-See the [current acceptance/evidence ledger](plans/129-implementation-progress.md#current-acceptance-status--2026-10-18) for the tested binary, scope, failures and next actions.
-
-#### Gateway Capability Registry Gates
-
-The MCP Gateway exposes an evidence gate (`EngineCapabilityRegistry`). See the
-[current capability table](docs/engine_backend.md) for each bounded status,
-consumer and evidence source. Runtime oracle fixtures, portable model tests and
-live MCP compatibility are different kinds of evidence; none is an overall SDK
-replacement percentage.
-
-- Native-runtime oracle rows cover only their recorded inputs, encodings and
-  environment; synthetic library tests alone do not establish native parity.
-- Admitted type-only queries and blocking builds/rebuilds are the current native
-  MCP surface. Reads and edits remain SDK-backed or fail closed; routing a call
-  to a deferral guard is not native implementation coverage.
-- Storage decoding, navigation planning, object modeling and C# emission remain
-  partial. Unsupported database statements must fail generation rather than
-  produce a successful Procedure with missing database behavior.
-
-The published 4.0.0 `KBTeste` result (346 compiled classes, 328 matching SDK C#
-files and 20 extra files) is historical, bounded evidence. It is not a fresh
-validation of later safety changes, all object families or whole-SDK behavior.
-The [full-parity acceptance plan](plans/132-gxengine-full-parity.md) tracks the
-remaining workflows and evidence required.
-
-### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
-
-A speed comparison requires the same input workload, target, dependency closure, observable results and success criteria. Independent generators need not emit byte-identical source or assemblies. Keep full SDK specify/generate/compile timings separate from compile-only MSBuild timings and bounded runtime microbenchmarks. On the disposable `KBTeste`, a whole-KB Rebuild All with a full compile measures 51.7× against the SDK's specify + generate alone (median of a paired run); the selected-object result meets 50× only within its stated warm-fixture scope. Historical microbenchmarks do not establish a whole-KB speed goal.
-
-**Scope of these numbers.** They were measured on disposable KBs with a single Design model. In a KB with versions the engine builds only the trunk, verified so far on one disposable copy; a frozen version or a branch builds on the SDK ([open check](docs/engine_backend.md#open-check-for-trunk-builds-of-a-kb-with-versions-issue-637)). It also needs SQL credentials in the process environment or the connection file for a KB on SQL Server with SQL authentication, and it skips web UI objects (a partial build, exit 3). A type-only `genexus_query` is served by the engine only when `fields` is limited to `name`/`type`, and once the SDK search index is warm it is faster on the SDK: 38 ms of SDK time against 300–370 ms for the engine on an 86-Procedure KB behind a remote SQL Server (2026-10-23, direct `kb-query` against the Gateway's `sdkMs`). The engine query path therefore helps mainly before the SDK index is ready.
-
-| Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
-| :--- | :---: | :---: | :---: | :--- |
-| **Warm selected-object C# build** (`DCM37961700`) | **14,755.9 ms** *(local specify + generate + Rebuild/Publish)* | **229.9 ms** *(live read + emit + guarded compiler replay, setup included)* | **64.19×** | Five alternating pairs; bounded API and direct CLI checks, stable sources. Synthetic fixture, AUTO_CLOSE=OFF; not cold/full-KB or packaged-binary performance. [Protocol](plans/131-sdk-performance-benchmark.md). |
-| **`Str()` Numeric Picture Formatting** (Microbenchmark) | 274 – 286 ns / row *(1.75 ms / pass)* | **121 – 130 ns / row** *(0.75 ms / pass)* | **~2.25x faster** | 6,152 rows (`str_matrix.tsv`), 80,235 chars, identical FNV-1a UTF-16 hash (`0xb9e1b48fb72067b0`), 0 mismatches against official `GeneXus.Classes.Core` runtime. |
-| **Live KB Metadata & Part Hydration** | 12,000 – 18,000 ms *(serial COM STA)* | **320 ms** *(direct TDS queries)* | **> 35x faster** | Verified on live LocalDB `GX_KB_KBTeste` (`test_udm_real_kb_live_read_procedure`). |
-| **Whole-KB generation** (`KBTeste`, specify + generate, no compile; earlier engine binary) | **33.4 – 39.9 s** *(MSBuild `SpecifyAllOnly` + `GenerateOnly`, 3 runs)* | **0.61 – 0.68 s** *(`rebuild-all --skip-compile`, 3 runs alternating with the SDK runs; ~0.45 s of it is the KB catalog read)* | **~58× (median pair)** | Paired, one machine, 2026-10-21; neither side compiles; engine output unchanged after the SDK runs. Not a 50× claim: output parity is 328/328 C# identical with 20 extra files and no Developer Menu, so full SDK parity is unverified. The previous engine binary measured 1.29 – 1.40 s (12 alternating runs). |
-| **Whole-KB Rebuild All, nothing changed** (`KBTeste`, 346 classes) | **42.2 s** median *(32.3 – 46.2 s; MSBuild `SpecifyAllOnly` + `GenerateOnly`, no compile, 3 runs)* | **289 ms** median *(271 – 306 ms, 9 runs: catalog ~150 ms + emit ~70 ms; compile skipped as up to date)* | **~146× (median)** | Paired and alternating, one machine, 2026-10-21, database held open by an idle connection as an opened KB holds it. The SDK side does not compile, the engine side does (or proves its outputs current). Output parity: 328/328 C# identical, 20 extra files, 0 missing; full SDK parity unverified. Script `bench-s42.py`. |
-| **Whole-KB Rebuild All, forced full compile** (`KBTeste`, 346 classes) | **42.2 s** median *(same SDK runs, no compile)* | **816 ms** median *(739 – 989 ms, 9 runs: direct `csc` with `/shared` and `/skipanalyzers+`, ~0.6 – 0.7 s)* | **~51.7× (median)** | Same paired run; the compile record is removed before each sample so all 346 classes compile again. The ratio is a median of medians: against the fastest SDK run (32.3 s) and slowest engine run it is ~33×. A first build into a new folder takes ~1.9 s (`dotnet build`); a cold compiler server was measured once at ~22.8 s. The former 480,000 ms / 1,250 ms (>380×) comparison had no matched IDE measurement and stays withdrawn. |
-| **Historical arithmetic fixture build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild process wall)* | **223 ms** *(Rust CLI + rustc build)* | **Not a whole-SDK speed ratio** | `RustTimingProbe` (`21 * 2 = 42`), three recorded samples, exit/output checked. Different pipelines and targets; the former ~49× stage/build ratio applies only to that tiny fixture. [Evidence and caveats](src/gx-engine/VALIDATION.md#verified-custom-msbuild--sdk-pipeline). |
-| **Generated Artifact Startup & Execution** | 123.06 ms *(CLR bootstrap + run)* | **5.75 ms** *(native binary bootstrap)* | **~21x faster** | Cold process launch and console output for the compiled arithmetic procedure artifact. |
-
-#### 📈 Benchmark Protocol & How to Record Improvements
-
-As new capabilities reach parity and additional optimizations land, follow this protocol to update this ledger:
-
-1. **Verify Parity First:** No benchmark is valid without zero diffs against the official SDK or recorded native differential fixture:
-   ```powershell
-   python src/gx-engine/scripts/benchmark.py --iterations 100
-   ```
-2. **Standardized Environment:** Keep compiler flags, hardware specifications, and iterations explicit (see [src/gx-engine/VALIDATION.md](src/gx-engine/VALIDATION.md)).
-3. **Record in Ledger:** Update this table and [plans/129-implementation-progress.md](plans/129-implementation-progress.md) with: workload description, GeneXus SDK baseline, gx-engine timing, observed speedup ratio, and the committed evidence fixture.
-
-### Activation Flag & Safety Seam
-
-> [!IMPORTANT]
-> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do admitted type-only `genexus_query` calls selecting only `name`/`type` fields. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Edits, async/other directed builds, all reads, `usedby:` searches, ranked fuzzy queries and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
-
-No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the engine off (`"sdk"`), configure `config.json`:
-
-```json
-{
-  "Engine": {
-    "Backend": "auto",
-    "Fallback": "sdk",
-    "TimeoutSeconds": 120
-  }
-}
-```
-
-- **`Engine.Backend`**: `"gxengine"` (default: admitted builds and field-limited type-only queries; reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
-- **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK outside admitted native coverage) or `"error"` (fails closed: `EngineCapabilityNotParity` for evidence-gate rejection; `EngineOperationOutsideAdmittedSpace` for read/edit deferrals and unsupported query/build arguments).
-- **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, and `capabilities`. Its `routedOperations` lists served native operations; `deferredOperations` lists read/edit deferrals separately, never as parity.
-
-To run compiler tests or standalone projects from checkout:
-
-```powershell
-cargo test --manifest-path src/gx-engine/Cargo.toml
-cargo run --manifest-path src/gx-engine/Cargo.toml -- check src/gx-engine/fixtures/demo.json
-```
-
-See [docs/engine_backend.md](docs/engine_backend.md), the [engine guide](src/gx-engine/README.md), and the [capability matrix](plans/129-sdk-capability-matrix.md) for full architecture and evidence ledgers.
-
----
-
-## Sharing one Worker between MCP clients
-
-The Gateway and the GeneXus SDK Worker have different responsibilities. By
-default, `Server.WorkerSharingMode` is `"isolated"`: each Gateway owns its own
-Worker process. Keep that mode when an agent intentionally needs multiple
-independent Workers.
-
-When two or more independent MCP clients need to work on the same physical KB,
-set `WorkerSharingMode` to `"shared-host"` in a `stdio-isolated` configuration:
-
-```json
-{
-  "ConfigSchemaVersion": 2,
-  "GatewayMode": "stdio-isolated",
-  "GeneXus": {
-    "InstallationPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
-    "WorkerExecutable": "C:\\path\\to\\GxMcp.Worker.exe"
-  },
-  "Server": {
-    "HttpPort": 0,
-    "McpStdio": true,
-    "WorkerSharingMode": "shared-host"
-  },
-  "Environment": {
-    "ResolutionPolicy": "strict",
-    "KBs": [
-      { "alias": "main", "path": "C:\\KBs\\YourKB" }
-    ]
-  }
-}
-```
-
-`shared-host` shares only the per-KB broker-owned SDK Worker through bounded
-local named-pipe attachments. The Gateways remain independent: MCP sessions,
-authorization, KB selection, caches, request tracking, cancellation, progress,
-notifications, and generated artifacts do not cross the process boundary.
-Sharing is accepted only when the physical KB, Worker executable, GeneXus
-installation, driver, and target major are compatible; a mismatch fails closed
-instead of attaching to the wrong SDK process.
-
-Writes carry a Gateway-local owner into the Worker. The same object/part cannot
-be written concurrently by two attached clients, while writes to distinct
-objects may proceed independently through the shared SDK boundary. The Worker
-itself remains a single STA process, so calls that reach the same SDK are still
-serialized as required by GeneXus.
-
-For a healthy shared attachment, `genexus_whoami` and `genexus_doctor` report the
-mode, identity key, pipe, host/Worker PIDs, generation, attachment ID, connection
-state, and the latest startup/failure diagnostic. When something fails, inspect
-`worker.diagnostics` and `workerHealth` before restarting or deleting local
-state; these fields distinguish configuration/identity, mutex or registry,
-pipe/handshake, startup, child exit/respawn, TTL, and frame failures.
-
-See [Worker ownership](docs/worker-ownership.md) for the lifecycle contract and
-[the shared-Worker benchmark](docs/benchmarks/2026-09-18-shared-worker.md) for
-the measured two-client smoke and backpressure results.
-
----
-
-## What you can do with it
-
-A quick map of what the agent can do against your real KB through the **60 tools** (details in [Tool Surface](#tool-surface)):
-
-| Area | What the agent can do |
-|---|---|
-| 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
-| 🧭 **Orient & trace** | Rank the objects a task touches, list direct and transitive callers, trace the shortest call path between two objects, check blast radius and safe-delete, follow one variable's data flow. Runs on exported sources through `genexus_wire` (read-only, token-budgeted); `pack_task` also works directly on the open native KB |
-| ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, scaffold a Procedure from a **curl command**, edit + rebuild callers in one shot |
-| 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules, table↔transaction relations & redundant-attribute detection |
-| 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns, typed .NET generator references |
-| 🎨 **UI & WorkWithPlus** | Full read/write of pattern XML (controls, actions, grids, orders, groups), theme classes & styling, native WebForm/layout edits, **control catalog & design-system tokens/classes/images**, headless-browser verification |
-| 🔬 **Analyze** | Impact/dependency analysis, complexity & code metrics, naming, explain-what-this-does, KB activity/freshness, reorg/DDL impact preview, native security scan, schema-drift check |
-| 🛠️ **Build, test & deploy** | Build (full or fast `compile_check`), validate, reorg, index, run native GXtest tests, deploy the application (targets + deploy) |
-| 🔀 **Refactor & compare** | Rename across the KB, extract procedure, compare & merge objects (IDE parity) |
-| 🌿 **Versioning, transfer & teams** | KB model versions/branches, **real XPZ export/import** (dependency-aware), GXserver (Team Development) sync + **CI pipelines**, git-style history, multi-KB parallel work |
-| 🔐 **Security** | GAM / integrated-security provisioning, KB security audit + native Security Scanner |
-
-Native SDK support works through the **native GeneXus SDK** — the same code paths
-the IDE uses — so edits are real and validated, not text hacks on KB files.
-Legacy support uses the reflection or COM driver listed in the catalog and
-degrades unsupported modern tools explicitly.
-
----
-
-## Prerequisites
-
-Before you start, make sure you have:
-
-- ✅ **Windows** (GeneXus is Windows-only)
-- ✅ **A supported GeneXus installation** installed locally: GeneXus 16, 17, or 18 for native SDK support, or a catalogued legacy installation for basic compatibility (see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md); pass another install path explicitly when needed)
-- ✅ **GeneXus 18** installed locally for the primary native-SDK path; other catalogued native and legacy versions are also supported according to their listed driver
-- ✅ **A Knowledge Base created with a supported native or legacy GeneXus major** and opened at least once in the IDE (so it's initialized)
-- ✅ **Node.js 22+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
-- ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
-
-You do **not** need to clone this repo or install anything globally — `npx` handles it.
-
-**Never used a terminal before?** Press `Win+R`, type `powershell`, hit Enter. That's your terminal.
-
----
-
-## Quickstart (3 steps, ~5 minutes)
-
-### Find your two paths first
-
-Before running the installer, note these down:
-
-1. **GeneXus install folder** — where `GeneXus.exe` lives. Usually `C:\Program Files (x86)\GeneXus\GeneXus18`.
-2. **Your KB folder** — the root folder of your Knowledge Base (contains the `.gx` file and subfolders like `Model/`, `WebSpa/`).
-
-Not sure where your KB lives? Open it in GeneXus and check the title bar, or look in `File → Recent`.
-
-### Step 1 — Run the installer
-
-Open a terminal and run, replacing the paths with **your** KB folder and **your** GeneXus install:
-
-```bash
-npx genexus-mcp@latest init --kb "C:\KBs\YourKB" --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
-```
-
-> Prefer the wizard? Run `npx genexus-mcp@latest init --interactive` and answer the prompts.
-
-What you'll see (takes ~30 seconds first time, faster on re-runs):
-
-1. `npx` downloads the package.
-2. The installer verifies the paths exist and GeneXus is present.
-3. It **auto-detects** which AI clients you have installed and adds the MCP config to each one.
-4. Prints a JSON snippet at the end — keep it in case you need to configure a client manually.
-5. Finishes with `🎉 You are all set!`.
-
-On Windows, Antigravity is registered with the gateway executable bundled in the
-current npm package when that artifact is available, so it skips the npx bootstrap
-chain on every MCP handshake. That path follows the package in the npx cache; after
-an upgrade, run `npx genexus-mcp@latest clients add --clients antigravity` again if
-`genexus-mcp clients` reports a stale launcher. Other clients keep the `npx genexus-mcp@latest`
-launcher unless you use the fixed-path installer below.
-
-### Step 2 — Register the MCP in your AI client
-
-Step 1 auto-registers every supported client it detects, including Claude Desktop, Claude Code, Cursor, Antigravity, Gemini CLI, OpenCode, Codex CLI, and VS Code. If yours wasn't detected, copy the JSON snippet from Step 1 into your client's MCP config manually. See the [client setup guide](TROUBLESHOOTING.md#client-setup) if unsure where that file lives.
-
-### Step 3 — Restart your AI client, then test
-
-This part trips most people: **fully close** your AI client and reopen it. Not just the window — the whole process.
-
-- **Claude Desktop**: right-click the system-tray icon → **Quit**. Then launch it again. (Closing the window is not enough.)
-- **Claude Code**: end the session and start a fresh one.
-- **Cursor / Antigravity**: close all windows and reopen.
-- **OpenCode**: fully quit and reopen it so it reloads `opencode.json` / `opencode.jsonc`.
-- **Gemini CLI / Codex CLI**: start a new process or session.
-
-Then paste this prompt:
-
-> *"Using the GeneXus MCP, list the first 5 objects in my KB and show name + type."*
-
-**What should happen:**
-
-- The AI invokes the `genexus_list_objects` tool (some UIs show "calling tool…").
-- A few seconds later, you get a list of objects from your KB.
-
-If you get a list back — **you're done**. Skip to [What can I ask the AI?](#what-can-i-ask-the-ai) for ideas.
-
-If the AI says it doesn't have a GeneXus tool, or nothing happens, go to [Troubleshooting](TROUBLESHOOTING.md) — most issues are covered there.
-
----
-
-## 🤖 Let your AI install it for you
-
-If you'd rather not run anything in the terminal yourself, paste this into your AI chat:
-
-> Please configure the GeneXus MCP server. Run `npx genexus-mcp@latest init --kb "<MY_KB_PATH>" --gx "<MY_GENEXUS_PATH>"` in the terminal. If I haven't told you my GeneXus path and KB path yet, ask me first. Once it succeeds, read the JSON block it printed and add it to my MCP client config. Tell me when I should restart the client to start using GeneXus tools.
-
-Replace the placeholders or let the AI ask you for them.
-
----
-
-## Corporate install (fixed path, ASR-friendly)
-
-If your machine has **Microsoft Defender ASR**, **SmartScreen**, or another endpoint policy blocking unsigned binaries, the default `npx` flow is painful — `npx` caches the package under `%LOCALAPPDATA%\npm-cache\_npx\<hash>\...`, and the `<hash>` changes per version, so IT can't whitelist a stable path without a wildcard over the whole npm cache (which is too broad).
-
-Use the corporate installer instead. It extracts the binaries to a stable directory and registers the AI clients to launch the gateway directly from there — `npx` is never on the runtime path.
-
-```pwsh
-# One-liner — installs latest release, registers AI clients
-iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
-
-# With explicit KB and GeneXus paths
-$s = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1
-& ([scriptblock]::Create($s)) -Kb "C:\KBs\MyKB" -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
-```
-
-Install location:
-
-- **Admin shell** → `C:\Tools\GenexusMCP\`
-- **Non-admin shell** → `%LOCALAPPDATA%\Programs\GenexusMCP\`
-
-Paths to give to IT for the ASR / Defender exclusion list:
-
-```
-<InstallDir>\GxMcp.Gateway.exe
-<InstallDir>\worker\GxMcp.Worker.exe
-```
-
-Re-run the same one-liner later to **upgrade** — it detects the installed version (`version.txt` in the install dir) and downloads only if a newer release is available. Use `-Force` to reinstall the same version, `-Version v2.3.0` to pin a specific tag, `-NoClient` to skip AI client registration. Node.js 22+ must be installed for client registration; without it the script still extracts the binaries but you'll need to edit the client config (`claude_desktop_config.json` etc.) manually.
-
----
-
-## What can I ask the AI?
-
-Once installed, here's what unlocks. Try these as your first prompts:
-
-**Exploration**
-- *"List all objects of type Procedure in the KB."*
-- *"Show me the source of the procedure CalculateInvoiceTotal."*
-- *"Find all transactions that reference the attribute CustomerId."*
-
-**Editing**
-- *"Add a rule to the Order transaction: error('Total must be positive') if Total < 0."*
-- *"Add a new attribute CreatedAt of type DateTime to the Customer transaction."*
-- *"Rename the variable &qty to &quantity in procedure CreateOrder."*
-
-**Data model authoring** (no IDE round-trip)
-- *"Make CustomerEmail unique on the Customer transaction."* (creates a unique index)
-- *"Turn CustomerBalance into a formula: sum(InvoiceAmount)."*
-- *"Add the enum values Active/Inactive/Pending to the Status domain."*
-- *"Add a property apiKey and a method Connect(url) to the PaymentGateway external object."*
-- *"Add a menu option 'Customers' to MainMenu that opens CustomerWW."*
-
-**WorkWithPlus pattern editing** (full structural + theming control)
-- *"Add a typed tab with variables, an action, and nested responsive tables to a WorkWithPlus WebPanel."*
-- *"In WorkWithPlusOrder, add a 'Duplicate' button to the transaction view alongside Save/Cancel/Delete."*
-- *"Group the Customer transaction attributes into a 'Contact Info' section with theme class GroupTelaResp."*
-- *"On the WorkWithPlusInvoice list, add a new ordering by InvoiceDate descending."*
-- *"Style the Save button on WorkWithPlusOrder with buttonClass='btn ButtonGreen' and apply BigTitle to the form header."*
-- *"Remove the Export action from the Selection grid of WorkWithPlusReport."*
-- *"Read the Documentation part of the transaction Customer and rewrite it in markdown."*
-
-**Architecture, call graph & impact** (`genexus_wire`)
-- *"Before I change CliSaldo, what is the blast radius? Which procedures write it?"*
-- *"Who calls PValidaCreditoLive, directly and through other procedures?"*
-- *"Show me the call path from PEmiteFaturaLive to PValidaCreditoLive."*
-- *"I need to change the invoice interest calculation. Where should I start?"*
-
-**Analysis**
-- *"Explain what the procedure ProcessShipment does."* — `genexus_analyze mode=explain` is a compatibility-only envelope and returns `NotImplemented`; use `mode=summary`, `mode=context`, or `genexus_read` for supported analysis and source.
-- *"What SQL does the query in WebPanel CustomerList generate?"*
-- *"Summarize the structure of the Sales module."*
-
-**Build & lifecycle**
-- *"Build the KB and report any errors."*
-- *"Run the unit tests and show me which failed."*
-
-The agent picks the right tool from the **60 tools** the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
-
----
-
-## Supported AI clients
-
-Auto-detected and auto-configured by the installer:
-
-| Client | Auto-config | Notes |
-|---|---|---|
-| Claude Desktop | ✅ | Restart required after install |
-| Claude Code (CLI) | ✅ | Reload session |
-| Cursor | ✅ | Restart required |
-| Antigravity | ✅ | Direct packaged gateway; restart required; detected even before its MCP config exists |
-| Gemini CLI | ✅ | — |
-| OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
-| Codex CLI | ✅ | Writes `~/.codex/config.toml` |
-| VS Code / VS Code Insiders | ✅ | Native MCP (`User/mcp.json`); restart required |
-| OpenCode Desktop | ✅ | Shares `opencode.jsonc` with OpenCode CLI; restart required |
-| Any MCP client | Manual | Use the JSON snippet printed by `init` |
-
-Run **`npx genexus-mcp clients`** at any time to see which agents are installed, which have `genexus` registered, and whether any point at a stale gateway exe. To (re)register specific ones: `npx genexus-mcp clients add --clients antigravity,vscode`.
-
-### OpenCode Desktop
-
-OpenCode Desktop shares its MCP configuration file (`opencode.jsonc` or `opencode.json`)
-with OpenCode CLI. Running `genexus-mcp init --write-clients` or `genexus-mcp clients add --clients opencode-desktop`
-automatically registers `genexus18mcp` in the shared config. After registration,
-fully restart OpenCode Desktop so it reloads its MCP configuration.
-
----
-
-## Troubleshooting
-
-First stop for any "the agent doesn't see GeneXus" problem: **`npx genexus-mcp clients`** (is it registered? does it point at a gateway exe that still exists?) and **`npx genexus-mcp doctor --mcp-smoke`**.
-
-Most install issues fall into a handful of buckets — see **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for fixes:
-
-- Installer can't find GeneXus or the KB
-- AI client doesn't see the GeneXus tools after restart
-- "Worker failed to start" / .NET 4.8 errors
-- KB build errors / locked artifacts
-- Port 5000 already in use
-- Permissions on `%LOCALAPPDATA%\GenexusMCP\`
-- Antigravity only shows `exit status 1` / `0xffffffff` with no useful stderr
-
-When a stdio launcher fails before the client can retain stderr, the wrapper writes
-the last failure to `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`. It contains
-the UTC timestamp, exit code, and bounded stderr tail. `genexus-mcp doctor` reports the
-same path when a previous failure is present. Read it before changing the install or
-using a global npm install; if the Antigravity launcher is stale, re-register it with
-`npx genexus-mcp@latest clients add --clients antigravity`.
-
-### Diagnosing a shared Worker failure
-
-If `shared-host` does not attach or a Worker is restarted, run
-`genexus_whoami` and `genexus_doctor` from the affected client and preserve the
-structured `worker.diagnostics`/`workerHealth` block. The useful evidence is the
-mode, identity, host/Worker PID, generation, attachment state, connection error,
-and failure diagnostic — not only the final `no_worker` or `startup_failed`
-summary. Do not remove a shared-worker registry file while a matching host is
-still running; the broker owns that lifecycle and stale records are recovered
-after PID/start-time validation.
-
-Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) with the output of `npx genexus-mcp doctor --mcp-smoke` and the bounded diagnostic fields above. Redact credentials, tokens, connection strings, and other sensitive values.
-
----
-
 ## Tool Surface
 
-The worker exposes **60 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json). Feature guides such as the [K2B Designer bridge](docs/k2b-ide-bridge.md), [WorkWithPlus on Empty WebPanels](docs/wwp-empty-webpanel.md), [textual Variables edits](docs/variables-text-integrity.md) and [External Object methods](docs/external-object-method-authoring.md) are listed in the [documentation index](docs/README.md).
+The Gateway defines **60 tools**, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json), and each tool's full guidance is served as the `genexus://kb/tool-help/<tool>` MCP resource. Feature guides such as the [K2B Designer bridge](docs/k2b-ide-bridge.md), [WorkWithPlus on Empty WebPanels](docs/wwp-empty-webpanel.md), [textual Variables edits](docs/variables-text-integrity.md) and [External Object methods](docs/external-object-method-authoring.md) are listed in the [documentation index](docs/README.md).
+
+### Tool profiles
+
+Not every client should load 60 schemas up front. New configurations written by `init` or client registration use `Server.ToolProfile: "standard"`; existing configs are not rewritten, and `genexus_whoami` reports the active profile.
+
+| Profile | Tools | Use |
+|---|---:|---|
+| `standard` | 20 | Recommended default: core read/search/lifecycle, create, structure, variable, properties, and IO tools |
+| `core` | 15 | Read, search, inspect, edit, and lifecycle essentials |
+| `authoring` | 35 | Core plus the full object-authoring and refactoring surface |
+| `devops` | 37 | Core plus build, versioning, deployment, diagnostics, and worker operations |
+| `ui` | 23 | Core plus layout, form, browser, and WorkWithPlus tools |
+| `db` | 19 | Core plus database and data-view tools |
+| `all` | 60 | Every canonical tool |
+
+Profiles combine with `+` (for example `standard+db`). Set `Server.ToolProfile` in `config.json` or `GXMCP_PROFILE` in the process environment, then restart the client. Calling a tool outside the active profile returns `ToolNotInProfile` with the profile that exposes it. Details: [LLM CLI/MCP playbook](docs/llm_cli_mcp_playbook.md#tool-profiles-and-schema-budgets).
 
 **Orientation & health**
 - `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
 - `genexus_doctor` — connection + install + cache health check
+- `genexus_connection_recover` — probe open Workers and recover unhealthy ones; inspect and repair recovery fences
 - `genexus_recipe` — named playbooks / self-extending macros
 - `genexus_telemetry` — observability (metrics, latency, errors)
 
@@ -617,8 +468,9 @@ in GeneXus first.
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set
 - `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
-- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel tabs and typed children
+- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel and Transaction tabs and typed children
 - `genexus_workwith` — typed authoring of standard WorkWith (WorkWith for Web) pattern actions on tabs (`General`, etc.), procedure calls, conditions, and parameters
+- `genexus_k2b_designer` — inspect and edit an already-active K2B WebPanel Designer through the open GeneXus IDE (requires the [K2B IDE bridge](docs/k2b-ide-bridge.md))
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
@@ -632,7 +484,7 @@ in GeneXus first.
 - `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)
 
 **Lifecycle, build, test & DB**
-- `genexus_lifecycle` — directed `build` (incl. `compile_check`), incremental global `build_all`, forced global `rebuild`, validate, index, reorg, and poll status
+- `genexus_lifecycle` — directed `build` (incl. `compile_check`), incremental global `build_all`, forced global `rebuild`, specify, validate, index, reorg/`reorg_preview`, cancel, and poll status
 - `genexus_test` — run native GXtest tests
 - `genexus_db` — DB umbrella: schema-drift, `sql_ddl`/`sql_navigation`, static index advisor, `sample_data`, typed Transaction record query/insert/update with dry-run, optimistic versioning, reread and verified rollback, Domain/SDT type introspection, translation import, `reorg_impact`, and non-mutating `reorg_preview` with exact DDL only from a current Impact Analysis artifact
 - `genexus_deploy` — deploy application (`IDeploymentService`): `list_targets` (read) / `deploy` (destructive, `confirm=true`)
@@ -642,12 +494,15 @@ in GeneXus first.
 - `genexus_layout` — SDK layout/WebForm ops (`get_tree`, `find_controls`, `set_property`, `add_printblock`, `get_preview`, `list_controls` = control/theme-class catalog, `design_system` = DSO tokens/classes/images, …)
 
 **KB pool, versioning & team dev**
-- `genexus_kb` — multi-KB pool (`list`/`open`/`close`/`set_default`)
+- `genexus_kb` — open KBs and session context: `list`/`open`/`close`, `select` (current session only), `set_persistent_default` (writes the startup default to `config.json`; `set_default` is the legacy alias), startup object, environments, and `create` (new KB)
+- `genexus_worker_pool` — Gateway-side warm-spare Worker configuration
 - `genexus_module` — Module Manager (`IModuleManagerService`)
 - `genexus_kb_version` — model version/branch management (Create/Activate/Revert)
 - `genexus_versioning` — versioning umbrella (git-style history over the KB)
 - `genexus_gxserver` — GXserver / Team Development sync, incl. `pipeline_*` (CI pipelines via `IContinuousIntegrationService`)
 - `genexus_transfer` — real XPZ export/import (`IKnowledgeManagerService`, dependency-aware): `export` / `inspect` / `import` (`import` previews by default: pass `dryRun:false` and `confirm:true` to actually import)
+- `genexus_kb_diff` / `genexus_kb_import` — Gateway-only filesystem comparison of two KB directories and copy of one object between them
+- `genexus_sandbox` — Gateway-only clone/remove of a disposable KB directory
 - `genexus_memory` — per-KB fact store for the agent
 
 **Security provisioning, IO & meta**
@@ -686,7 +541,7 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 | Reorganize Transaction view (form layout, action row) | edit under `/instance/transaction/...` | ✅ verified live |
 | Reorganize Selection view (list/grid, filters, orders) | edit under `/instance/level/selection/...` | ✅ verified live |
 | Auto-rebuild `childrenOrderedList` from XML order | done implicitly on every write; report under `childrenOrderedListReconciliation` | ✅ verified live |
-| Add / move / remove WebPanel tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
+| Add / move / remove WebPanel and Transaction tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
 | Add or reconcile one grid Attribute caption | `genexus_wwp` `add_grid_attribute` | ✅ isolated dry-run, full PatternInstance/WebForm snapshots, exact rollback and no implicit lifecycle |
 
 **Recommended workflow for a screen redesign:**
@@ -741,7 +596,10 @@ genexus-mcp status               # gateway/worker state
 genexus-mcp doctor --mcp-smoke   # health check + protocol probe
 genexus-mcp tools list           # list available tools
 genexus-mcp config show          # current resolved config
+genexus-mcp clients              # AI client registration state
+genexus-mcp kb list              # declared KBs (also add/remove/switch)
 genexus-mcp layout status        # native layout automation state
+genexus-mcp update               # update plan for the installed package
 ```
 
 Global flags: `--format toon|json|text` · `--fields f1,f2,...` · `--limit N` · `--query <text>` · `--quiet` · `--no-color`.
@@ -761,24 +619,28 @@ Full contract: [`docs/axi_cli_contract.md`](docs/axi_cli_contract.md). Best-prac
 
 ## Advanced Configuration
 
-The installer writes a `config.json` for you. To customize networking, timeouts, or shadow paths:
+The installer writes a neutral `config.json` for you. A typical configuration with declared KBs looks like this:
 
 ```json
 {
+  "ConfigSchemaVersion": 2,
+  "GatewayMode": "stdio-isolated",
+  "GeneXus": {
+    "InstallationPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
+    "WorkerExecutable": "C:\\path\\to\\worker\\GxMcp.Worker.exe"
+  },
   "Server": {
-    "HttpPort": 5000,
-    "BindAddress": "127.0.0.1",
+    "HttpPort": 0,
+    "McpStdio": true,
+    "ToolProfile": "standard",
+    "WorkerSharingMode": "isolated",
     "SessionIdleTimeoutMinutes": 10,
     "WorkerIdleTimeoutMinutes": 30,
     "MaxOpenKbs": 3,
     "ArtifactOutputDirectory": "C:\\GenexusMCP\\Artifacts"
   },
-  "GeneXus": {
-    "InstallationPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
-    "WorkerExecutable": "worker\\GxMcp.Worker.exe"
-  },
   "Environment": {
-    "DefaultKb": "main",
+    "ResolutionPolicy": "strict",
     "KBs": [
       { "alias": "main",   "path": "C:\\KBs\\YourKB" },
       { "alias": "legacy", "path": "C:\\KBs\\OtherKB" }
@@ -786,6 +648,8 @@ The installer writes a `config.json` for you. To customize networking, timeouts,
   }
 }
 ```
+
+`GatewayMode: "stdio-isolated"` (the default) gives every client its own Gateway over stdio, with no HTTP listener. The older `"http-shared"` mode, where several clients share one Gateway over HTTP, is still accepted. Use `genexus-mcp config migrate` to convert a legacy configuration; see the [LLM CLI/MCP playbook](docs/llm_cli_mcp_playbook.md).
 
 > **Backward compatibility:** old configs with a single `Environment.KBPath` keep working — the gateway auto-migrates them to `KBs[]` + `DefaultKb` at load time.
 
@@ -803,30 +667,28 @@ Once you declare more than one KB in `Environment.KBs[]`, every tool accepts an 
 { "tool": "genexus_list_objects", "arguments": { "kb": "legacy", "type": "Transaction" } }
 ```
 
-Resolution rules when `kb` is omitted:
+Resolution rules when `kb` is omitted (default `ResolutionPolicy: "strict"`):
 - an explicit `kb` always wins; use it for parallel work or when a prompt touches more than one KB
-- each MCP session snapshots the configured `DefaultKb` at `initialize`; `set_default` changes the current session and persists the startup fallback for future sessions
-- `open` only starts/registers a Worker; it does not silently change another session's target. Select it with `set_default`, or pass `kb` explicitly
-- exactly 1 KB open → uses that KB when the session has no selection
-- 2+ KBs open with no session selection → server returns `KB_AMBIGUOUS`; choose one with `set_default` or pass `kb` explicitly
+- `genexus_kb action=select` (or `set_session_default`) sets the KB for the current MCP session only, in memory, without changing any config file
+- `open` only starts/registers a Worker; it does not silently change another session's target
+- exactly 1 KB open → used when the session has no selection, unless it conflicts with a configured default (then `KB_CONTEXT_REQUIRED`)
+- 0 or 2+ KBs open with no session selection → `KB_CONTEXT_REQUIRED` / `KB_AMBIGUOUS`; declared KBs are never opened automatically and a persisted default does not select a KB by itself
+- `action=set_persistent_default` writes the startup fallback to `config.json` and returns `persistedTo` (`set_default` is the legacy alias)
+- `ResolutionPolicy: "legacy"` keeps the older chain (`config-default` → `single-open` → `declared-first`)
 
 Manage the pool at runtime:
 
 ```jsonc
 { "tool": "genexus_kb", "arguments": { "action": "list" } }
-// → { selectedKb, activeKb, openKbs: [{alias, path, pid, workingSetMB, idleSeconds}], knownKbs, maxOpenKbs, defaultKb, declaredKbs }
+// → session selection and its source/state, startup default, open/known/declared KBs, maxOpenKbs
 
 { "tool": "genexus_kb", "arguments": { "action": "open", "alias": "adhoc", "path": "C:/KBs/ScratchKB" } }
+{ "tool": "genexus_kb", "arguments": { "action": "select", "alias": "adhoc" } }                  // this session only
 { "tool": "genexus_kb", "arguments": { "action": "close", "alias": "legacy" } }
-{ "tool": "genexus_kb", "arguments": { "action": "set_default", "alias": "main" } }   // persists to config.json
+{ "tool": "genexus_kb", "arguments": { "action": "set_persistent_default", "alias": "main" } }  // persists to config.json
 ```
 
-For OpenCode, call `genexus_whoami` once at the start of a session. Use
-`kb.selected`, `kb.default`, `kb.openKbs`, `kb.knownKbs`, and `kb.declaredKbs`
-to understand the target, then select the normal working KB with
-`genexus_kb action=set_default`. Every KB-bound response also includes `kbAlias`
-in its JSON payload, which lets OpenCode correlate text-only responses. Keep
-`kb=<alias>` on calls that intentionally compare or update another KB.
+Call `genexus_whoami` once at the start of a session (OpenCode included): it reports the session selection, its source, the startup default, and the open, known and declared KBs. Select the normal working KB with `genexus_kb action=select`. Every KB-bound response also includes `kbAlias` in its JSON payload, which lets clients correlate text-only responses. Keep `kb=<alias>` on calls that intentionally compare or update another KB.
 
 The installer registers both OpenCode configuration layouts: the legacy direct
 `mcp.genexus` entry used by OpenCode 1.x and the current `mcp.servers.genexus`
@@ -837,33 +699,214 @@ configuration.
 
 When the pool is full and no Worker is idle, the server returns `KB_POOL_FULL` — close one explicitly or raise `Server.MaxOpenKbs`. Each Worker carries the SDK in its own process (~200–400 MB idle, up to 1–2 GB on heavy KBs), so size the pool against available RAM.
 
+### Sharing one Worker between MCP clients
+
+The Gateway and the GeneXus SDK Worker have different responsibilities. By
+default, `Server.WorkerSharingMode` is `"isolated"`: each Gateway owns its own
+Worker process. Keep that mode when an agent intentionally needs multiple
+independent Workers.
+
+When two or more independent MCP clients need to work on the same physical KB,
+set `WorkerSharingMode` to `"shared-host"` in a `stdio-isolated` configuration:
+
+```json
+{
+  "ConfigSchemaVersion": 2,
+  "GatewayMode": "stdio-isolated",
+  "GeneXus": {
+    "InstallationPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
+    "WorkerExecutable": "C:\\path\\to\\GxMcp.Worker.exe"
+  },
+  "Server": {
+    "HttpPort": 0,
+    "McpStdio": true,
+    "WorkerSharingMode": "shared-host"
+  },
+  "Environment": {
+    "ResolutionPolicy": "strict",
+    "KBs": [
+      { "alias": "main", "path": "C:\\KBs\\YourKB" }
+    ]
+  }
+}
+```
+
+`shared-host` shares only the per-KB broker-owned SDK Worker through bounded
+local named-pipe attachments. The Gateways remain independent: MCP sessions,
+authorization, KB selection, caches, request tracking, cancellation, progress,
+notifications, and generated artifacts do not cross the process boundary.
+Sharing is accepted only when the physical KB, Worker executable, GeneXus
+installation, driver, and target major are compatible; a mismatch fails closed
+instead of attaching to the wrong SDK process.
+
+Writes carry a Gateway-local owner into the Worker. The same object/part cannot
+be written concurrently by two attached clients, while writes to distinct
+objects may proceed independently through the shared SDK boundary. The Worker
+itself remains a single STA process, so calls that reach the same SDK are still
+serialized as required by GeneXus.
+
+For a healthy shared attachment, `genexus_whoami` and `genexus_doctor` report the
+mode, identity key, pipe, host/Worker PIDs, generation, attachment ID, connection
+state, and the latest startup/failure diagnostic. When something fails, inspect
+`worker.diagnostics` and `workerHealth` before restarting or deleting local
+state; these fields distinguish configuration/identity, mutex or registry,
+pipe/handshake, startup, child exit/respawn, TTL, and frame failures.
+
+See [Worker ownership](docs/worker-ownership.md) for the lifecycle contract and
+[the shared-Worker benchmark](docs/benchmarks/2026-09-18-shared-worker.md) for
+the measured two-client smoke and backpressure results.
+
 ### Architecture
 
 ```mermaid
 graph LR
-    A[AI Client / Nexus-IDE] -->|MCP stdio or HTTP /mcp| B[Independent Gateway .NET 10]
-    B -->|isolated stdio: direct child| C[Worker .NET Framework 4.8]
+    A[AI Client / Nexus-IDE] -->|MCP stdio, or HTTP /mcp in http-shared mode| B[Independent Gateway .NET 10]
+    B -->|isolated: direct child| C[Worker .NET Framework 4.8]
     B -->|shared-host: named-pipe attachment| H[Per-KB WorkerHost broker]
     H -->|one compatible child| C
-    C -->|Native SDK| D[GeneXus KB]
+    C -->|Native SDK or legacy driver| D[GeneXus KB]
+    B -->|admitted builds, type-only queries, bounded reads| E[gx-engine]
+    E -->|direct UDM read| D
 ```
 
 - **Worker pool (v2.3.0+)**: in isolated mode, one .NET 4.8 Worker process per open KB in each Gateway, capped by `MaxOpenKbs` (default 3). With `shared-host`, compatible Gateways attach to one broker-owned Worker per physical KB instead of starting duplicate SDK processes. Workers are spawned lazily, recycled by `WorkerIdleTimeoutMinutes`, and evicted LRU when the pool is full.
 - **Cross-KB parallelism**: tool calls to different KBs run on different Worker processes and never block each other. Calls to the same KB are still serialized by the GeneXus SDK's STA requirement.
 - **Gateway isolation**: `shared-host` does not turn one Gateway into a master or proxy for another; each client keeps its own MCP state and only the SDK Worker is shared.
-- **Gateway reuse**: multiple IDE instances share one gateway via lease files at `%LOCALAPPDATA%\GenexusMCP\gateway-leases`.
-- **HTTP mode**: also available at `http://127.0.0.1:5000/mcp` with SSE. Header: `MCP-Protocol-Version: 2025-11-25`.
+- **Legacy HTTP mode (`http-shared`)**: the Gateway also serves `http://127.0.0.1:5000/mcp` with SSE (header `MCP-Protocol-Version: 2025-11-25`), and multiple IDE instances share one Gateway via lease files at `%LOCALAPPDATA%\GenexusMCP\gateway-leases`.
+
+---
+
+## Experimental `gx-engine` (Rust SDK Replacement Project)
+
+`src/gx-engine` is an independent, high-performance Rust compiler and runtime designed to completely replace the proprietary GeneXus SDK, eliminate the legacy 32-bit STA worker, and deliver sub-20s builds ([Plan 130](plans/130-direct-udm-kb-engine.md), [Plan 129](plans/129-independent-rust-toolchain.md)).
+
+### 🎮 Decompilation / Parity Progress
+
+Progress is measured against recorded SDK differential inputs and observable results, not the number of implemented modules or passing unit tests. At the published 4.0.0 baseline, the disposable `KBTeste` Rebuild All recorded **346/346, 0 skipped, 0 refused** and **byte for byte (328/328 files)** C# agreement, together with web scripts, `gxcfg.js`, messages and runtime configuration. These historical counts do not validate later changes or prove that unsupported database semantics were preserved. **Full SDK replacement is not verified** for arbitrary KBs: unsupported forms are still refused by name, and only one KB is the oracle. gx-engine is the **default backend** (`Engine.Backend=gxengine`: admitted builds, field-limited type-only queries and four bounded read-only requests; object reads, edits and other shapes use SDK fallback; `auto` = builds only, `sdk` = engine off); see [engine routing](docs/engine_backend.md).
+
+### What builds today
+
+The counts and timings below describe the published 4.0.0 baseline, not a fresh
+validation of uncommitted generator changes. Checked emission now refuses
+unsupported database statements rather than accepting incomplete behavior;
+post-change whole-KB counts and SDK parity must be measured again.
+
+| Lane | Verified evidence | Boundary |
+| :--- | :--- | :--- |
+| Package build | `build.ps1` built Gateway, Worker, gxwire and gx-engine; local publish/backend engine hashes match. | Building the MCP distribution is not building every object in a KB. |
+| Selected-object build | Five alternating local SDK/engine pairs regenerated and compiled `DCM37961700`; core APIs and actual CLI output matched. SDK median **14.756s**, engine **0.230s** (**64.19×**). | Synthetic warm fixture; AUTO_CLOSE=OFF on both sides, original ON restored. The packaged binary was not benchmarked; it passed a separate build/run smoke. |
+| Full native KB build (`KBTeste`) | `rebuild-all`: **346 generated / 346 compiled, 0 skipped, 0 refused**. Against the SDK's own output for the same KB: **328/328 C# files byte-identical, 0 missing**; 24/24 web `.js`, `gxcfg.js`, `messages.eng.txt/.js`, `log.config`, `log.console.config` (+ `bin/` copies) and `CloudServices.config` byte-identical. | One oracle KB. Extra SDT and assembly-info output remains outside the matching-file denominator. Developer Menu not written (its object selection is not established). |
+
+Use the SDK for required workflows outside validated engine coverage. See
+[Plan 131](plans/131-sdk-performance-benchmark.md) for the exact binary, commands,
+samples and caveats; [engine routing](docs/engine_backend.md) for default/explicit backend behavior.
+
+| Subsystem | Evidence boundary / remaining work |
+| :--- | :--- |
+| Language, runtime, control flow, SDTs and collections | Bounded native differential corpora; not exhaustive GeneXus semantics. |
+| Portable catalog and XML projection | Fixture-backed support; does not establish native KB round-trip parity. |
+| Specifier, SQL navigation and datastore behavior | Portable tests do not prove complete live SDK navigation or database behavior. |
+| Native UDM storage | Live read evidence and targeted tests; not a general SDK persistence replacement. |
+| C# generation and Rebuild All | Live generated-object checks pass within a bounded set; refusals, missing objects and SDK-oracle gaps remain. |
+| Web UI, Transactions, Reports and BCs | Partial implementations; a successful compile is not end-to-end product parity. |
+
+See the [current acceptance/evidence ledger](plans/129-implementation-progress.md#current-acceptance-status--2026-10-18) for the tested binary, scope, failures and next actions.
+
+#### Gateway Capability Registry Gates
+
+The MCP Gateway exposes an evidence gate (`EngineCapabilityRegistry`). See the
+[current capability table](docs/engine_backend.md) for each bounded status,
+consumer and evidence source. Runtime oracle fixtures, portable model tests and
+live MCP compatibility are different kinds of evidence; none is an overall SDK
+replacement percentage.
+
+- Native-runtime oracle rows cover only their recorded inputs, encodings and
+  environment; synthetic library tests alone do not establish native parity.
+- Admitted type-only queries, blocking builds/rebuilds and four bounded read-only
+  requests (sole-environment `genexus_kb get_environment`, Procedure pages of
+  `genexus_list_objects`, `genexus_kb_version list`, minimal Procedure
+  `genexus_inspect`) are the current native MCP surface. Object reads
+  (`genexus_read`) and edits remain SDK-backed or fail closed; routing a call
+  to a deferral guard is not native implementation coverage.
+- Storage decoding, navigation planning, object modeling and C# emission remain
+  partial. Unsupported database statements must fail generation rather than
+  produce a successful Procedure with missing database behavior.
+
+The published 4.0.0 `KBTeste` result (346 compiled classes, 328 matching SDK C#
+files and 20 extra files) is historical, bounded evidence. It is not a fresh
+validation of later safety changes, all object families or whole-SDK behavior.
+The [full-parity acceptance plan](plans/132-gxengine-full-parity.md) tracks the
+remaining workflows and evidence required.
+
+### ⚡ Performance Benchmarks (gx-engine vs. GeneXus SDK)
+
+A speed comparison requires the same input workload, target, dependency closure, observable results and success criteria. Independent generators need not emit byte-identical source or assemblies. Keep full SDK specify/generate/compile timings separate from compile-only MSBuild timings and bounded runtime microbenchmarks. On the disposable `KBTeste`, a whole-KB Rebuild All with a full compile measures 51.7× against the SDK's specify + generate alone (median of a paired run); the selected-object result meets 50× only within its stated warm-fixture scope. Historical microbenchmarks do not establish a whole-KB speed goal.
+
+**Scope of these numbers.** They were measured on disposable KBs with a single Design model. In a KB with versions the engine builds only the trunk, verified so far on one disposable copy; a frozen version or a branch builds on the SDK ([open check](docs/engine_backend.md#open-check-for-trunk-builds-of-a-kb-with-versions-issue-637)). It also needs SQL credentials in the process environment or the connection file for a KB on SQL Server with SQL authentication, and it skips web UI objects (a partial build, exit 3). A type-only `genexus_query` is served by the engine only when `fields` is limited to `name`/`type`, and once the SDK search index is warm it is faster on the SDK: 38 ms of SDK time against 300–370 ms for the engine on an 86-Procedure KB behind a remote SQL Server (2026-10-23, direct `kb-query` against the Gateway's `sdkMs`). The engine query path therefore helps mainly before the SDK index is ready.
+
+| Benchmark Workload | GeneXus SDK (.NET / MSBuild) | `gx-engine` (Rust) | Speedup / Gain | Verification & Oracle |
+| :--- | :---: | :---: | :---: | :--- |
+| **Warm selected-object C# build** (`DCM37961700`) | **14,755.9 ms** *(local specify + generate + Rebuild/Publish)* | **229.9 ms** *(live read + emit + guarded compiler replay, setup included)* | **64.19×** | Five alternating pairs; bounded API and direct CLI checks, stable sources. Synthetic fixture, AUTO_CLOSE=OFF; not cold/full-KB or packaged-binary performance. [Protocol](plans/131-sdk-performance-benchmark.md). |
+| **`Str()` Numeric Picture Formatting** (Microbenchmark) | 274 – 286 ns / row *(1.75 ms / pass)* | **121 – 130 ns / row** *(0.75 ms / pass)* | **~2.25x faster** | 6,152 rows (`str_matrix.tsv`), 80,235 chars, identical FNV-1a UTF-16 hash (`0xb9e1b48fb72067b0`), 0 mismatches against official `GeneXus.Classes.Core` runtime. |
+| **Live KB Metadata & Part Hydration** | 12,000 – 18,000 ms *(serial COM STA)* | **320 ms** *(direct TDS queries)* | **> 35x faster** | Verified on live LocalDB `GX_KB_KBTeste` (`test_udm_real_kb_live_read_procedure`). |
+| **Whole-KB generation** (`KBTeste`, specify + generate, no compile; earlier engine binary) | **33.4 – 39.9 s** *(MSBuild `SpecifyAllOnly` + `GenerateOnly`, 3 runs)* | **0.61 – 0.68 s** *(`rebuild-all --skip-compile`, 3 runs alternating with the SDK runs; ~0.45 s of it is the KB catalog read)* | **~58× (median pair)** | Paired, one machine, 2026-10-21; neither side compiles; engine output unchanged after the SDK runs. Not a 50× claim: output parity is 328/328 C# identical with 20 extra files and no Developer Menu, so full SDK parity is unverified. The previous engine binary measured 1.29 – 1.40 s (12 alternating runs). |
+| **Whole-KB Rebuild All, nothing changed** (`KBTeste`, 346 classes) | **42.2 s** median *(32.3 – 46.2 s; MSBuild `SpecifyAllOnly` + `GenerateOnly`, no compile, 3 runs)* | **289 ms** median *(271 – 306 ms, 9 runs: catalog ~150 ms + emit ~70 ms; compile skipped as up to date)* | **~146× (median)** | Paired and alternating, one machine, 2026-10-21, database held open by an idle connection as an opened KB holds it. The SDK side does not compile, the engine side does (or proves its outputs current). Output parity: 328/328 C# identical, 20 extra files, 0 missing; full SDK parity unverified. Script `bench-s42.py`. |
+| **Whole-KB Rebuild All, forced full compile** (`KBTeste`, 346 classes) | **42.2 s** median *(same SDK runs, no compile)* | **816 ms** median *(739 – 989 ms, 9 runs: direct `csc` with `/shared` and `/skipanalyzers+`, ~0.6 – 0.7 s)* | **~51.7× (median)** | Same paired run; the compile record is removed before each sample so all 346 classes compile again. The ratio is a median of medians: against the fastest SDK run (32.3 s) and slowest engine run it is ~33×. A first build into a new folder takes ~1.9 s (`dotnet build`); a cold compiler server was measured once at ~22.8 s. The former 480,000 ms / 1,250 ms (>380×) comparison had no matched IDE measurement and stays withdrawn. |
+| **Historical arithmetic fixture build** | 10,930 ms *(SDK stages)*<br>16,366 ms *(MSBuild process wall)* | **223 ms** *(Rust CLI + rustc build)* | **Not a whole-SDK speed ratio** | `RustTimingProbe` (`21 * 2 = 42`), three recorded samples, exit/output checked. Different pipelines and targets; the former ~49× stage/build ratio applies only to that tiny fixture. [Evidence and caveats](src/gx-engine/VALIDATION.md#verified-custom-msbuild--sdk-pipeline). |
+| **Generated Artifact Startup & Execution** | 123.06 ms *(CLR bootstrap + run)* | **5.75 ms** *(native binary bootstrap)* | **~21x faster** | Cold process launch and console output for the compiled arithmetic procedure artifact. |
+
+#### 📈 Benchmark Protocol & How to Record Improvements
+
+As new capabilities reach parity and additional optimizations land, follow this protocol to update this ledger:
+
+1. **Verify Parity First:** No benchmark is valid without zero diffs against the official SDK or recorded native differential fixture:
+   ```powershell
+   python src/gx-engine/scripts/benchmark.py --iterations 100
+   ```
+2. **Standardized Environment:** Keep compiler flags, hardware specifications, and iterations explicit (see [src/gx-engine/VALIDATION.md](src/gx-engine/VALIDATION.md)).
+3. **Record in Ledger:** Update this table and [plans/129-implementation-progress.md](plans/129-implementation-progress.md) with: workload description, GeneXus SDK baseline, gx-engine timing, observed speedup ratio, and the committed evidence fixture.
+
+### Activation Flag & Safety Seam
+
+> [!IMPORTANT]
+> **Engine-first:** `Engine.Backend` defaults to `"gxengine"`. Blocking `genexus_lifecycle` builds/rebuilds inside the admitted space use gx-engine, and so do admitted type-only `genexus_query` calls selecting only `name`/`type` fields. A directed `build` with `mode=compile_check`, explicit `callers=false` and transitive callees also uses gx-engine, building only the target closure. Four bounded read-only requests also use gx-engine: `genexus_kb get_environment` when the KB has exactly one stored environment, nonempty `typeFilter=Procedure` pages of `genexus_list_objects` (explicit `limit` 1..100, `name`/`type` fields), `genexus_kb_version action=list`, and `genexus_inspect type=Procedure projection=minimal` for an exact-case ASCII name. Edits, async/other directed builds, all reads through `genexus_read`, other shapes of those read tools, `usedby:` searches, ranked fuzzy queries and unsupported request shapes fall back to the SDK. Capability and argument gates still apply. Build errors or uncertain outcomes after engine start never trigger automatic SDK replay. `"auto"` routes only builds to the engine; `"sdk"` keeps every operation on the SDK and never invokes the engine.
+
+No backend setting is needed. To narrow routing to builds (`"auto"`) or turn the engine off (`"sdk"`), configure `config.json`:
+
+```json
+{
+  "Engine": {
+    "Backend": "auto",
+    "Fallback": "sdk",
+    "TimeoutSeconds": 120
+  }
+}
+```
+
+- **`Engine.Backend`**: `"gxengine"` (default: admitted builds, field-limited type-only queries and the four bounded read-only requests; object reads/edits use SDK fallback), `"auto"` (admitted builds only), or `"sdk"` (SDK only, engine never invoked).
+- **`Engine.Fallback`**: `"sdk"` (fallback to GeneXus SDK outside admitted native coverage) or `"error"` (fails closed: `EngineCapabilityNotParity` for evidence-gate rejection; `EngineOperationOutsideAdmittedSpace` for read/edit deferrals and unsupported query/build arguments).
+- **Diagnostics**: `genexus_doctor` inspects the engine via `--version` handshake and reports an `engine` status block with `backend`, `available`, `version`, and `capabilities`. Its `routedOperations` lists served native operations; `deferredOperations` lists read/edit deferrals separately, never as parity.
+
+To run compiler tests or standalone projects from checkout:
+
+```powershell
+cargo test --manifest-path src/gx-engine/Cargo.toml
+cargo run --manifest-path src/gx-engine/Cargo.toml -- check src/gx-engine/fixtures/demo.json
+```
+
+See [docs/engine_backend.md](docs/engine_backend.md), the [engine guide](src/gx-engine/README.md), and the [capability matrix](plans/129-sdk-capability-matrix.md) for full architecture and evidence ledgers.
 
 ---
 
 ## Development & building from source
 
-Want to contribute or run a local dev build?
+Want to run a local dev build?
 
 1. Clone this repo on Windows.
 2. Run `.\build.ps1` to restore and build the C# components and package the local artifacts. The script checks for the required .NET SDK and GeneXus 18 installation.
 3. If GeneXus is installed outside the default path, set `$env:GX_PATH` to its installation folder before running the build. A Knowledge Base is only needed for runtime testing.
 4. GxWire (needed for `genexus_wire` and `genexus-mcp wire`) is a Rust engine in `src/gxwire`. Install the Rust toolchain (`cargo`). `build.ps1` builds it in release mode and copies `gxwire.exe` into `publish/`. Without `cargo` that step is skipped without a message, and the tool returns `GxwireNotFound`. The Gateway looks for `gxwire.exe` next to itself, in `publish/`, in `src/gxwire/target/release/`, and on `PATH`. The CLI also honours `GENEXUS_MCP_GXWIRE_EXE`.
+5. To point your AI clients at the local build, run `.\install.ps1` instead: it builds, then registers every writable client against `publish\GxMcp.Gateway.exe`.
 
 ### Bundled AI skills (`.gemini/skills/`)
 
@@ -895,11 +938,47 @@ It provides a virtual filesystem (`genexus://` scheme), a KB explorer with multi
 
 ### Automated release
 
-Releases ship through `release.ps1`; the full protocol is in [`docs/release_protocol.md`](docs/release_protocol.md).
+Releases are cut by the maintainer through `release.ps1`; the full protocol is in [`docs/release_protocol.md`](docs/release_protocol.md).
 
 - **Entry point:** `./release.ps1 -Version <X.Y.Z>` builds the artifacts, creates the `v<version>` tag and the GitHub Release (with `publish.zip`, its checksum and the Nexus VSIX attached). Nothing is published by a push to `main`.
 - **Workflow:** creating that release fires [`.github/workflows/release.yml`](.github/workflows/release.yml) on the `release: [published]` event; a manual `workflow_dispatch` with a `tag` re-runs it for a release that already exists. The workflow **verifies** the release's assets and publishes the package to npm — it does not create the tag or the release.
 - **npm authentication:** [OIDC Trusted Publishing](https://docs.npmjs.com/trusted-publishers). There is no npm token secret to configure, and the workflow unsets any token it finds before publishing.
+
+---
+
+## Contributing
+
+Contributions are welcome — bug reports with a repro, fixes, docs, and new tools that wrap an SDK capability agents currently struggle to drive.
+
+- Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: it covers the dev loop, the checks CI runs, commit style, and what kinds of PRs are likely to be accepted.
+- Bug fixes and doc tweaks can go straight to a PR; for a new tool or a behavior change, [open an issue](https://github.com/lennix1337/Genexus18MCP/issues) first so we can agree on the shape.
+- When a PR touches the Worker, say which KB and GeneXus build you tested against — there is no fixture KB in the repo.
+- Report security issues privately as described in [SECURITY.md](SECURITY.md), and follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+---
+
+## Support the project
+
+If you'd like to help cover the AI tokens used in developing and maintaining this
+project, voluntary contributions are welcome. Any contribution is
+appreciated — thank you!
+
+- **Pix:** `492d0dbc-4768-47f3-8480-d532385b639a`
+- **PayPal:** `swlucas05@gmail.com`
+
+---
+
+## Acknowledgements
+
+Thank you to everyone who has contributed to this project — with code, issue
+reports, testing on real Knowledge Bases, ideas, and financial support. Every
+contribution has helped shape it.
+
+A special thank-you to **[Chip On Sistemas de Informática](https://www.chipon.com.br/)**
+and **Luiz E. B. R.** for their support.
+
+Thanks also to **Roberto G. A. J.**, **Msinfor**, **Leonardo M. M.**, **Leoncio G. L.**,
+and **Saul G. B.**
 
 ---
 

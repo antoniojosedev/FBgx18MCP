@@ -17,6 +17,9 @@ namespace GxMcp.Worker.Services
         {
             public string Mode { get; set; }
             public bool Matches { get; set; }
+            /// <summary>True when a visual part matched by XML layout equivalence: the whole
+            /// requested document is persisted, so the replacement need not appear verbatim.</summary>
+            public bool XmlLayoutEquivalent { get; set; }
             public string RequestedHash { get; set; }
             public string PersistedHash { get; set; }
             public string NormalizedRequestedHash { get; set; }
@@ -43,7 +46,10 @@ namespace GxMcp.Worker.Services
             string mode = (requestedMode ?? string.Empty).Trim().ToLowerInvariant();
             if (mode.Length == 0)
             {
-                if (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase))
+                // A visual part defaults to semantic, which for WebForm/Layout is the XML
+                // layout equivalence the visual write itself verifies with (issue #711).
+                if (string.Equals(partName, "Structure", StringComparison.OrdinalIgnoreCase)
+                    || WebFormXmlHelper.IsVisualPart(partName))
                     return "semantic";
                 return IsCodeOrTextPart(partName) ? "normalized" : "exact";
             }
@@ -60,7 +66,17 @@ namespace GxMcp.Worker.Services
             string nr = Normalize(requested);
             string np = Normalize(persisted);
             bool matches;
-            if (mode == "exact")
+            bool xmlLayoutEquivalent = false;
+            if (mode == "semantic" && WebFormXmlHelper.IsVisualPart(partName))
+            {
+                // Issue #711: the SDK stores a visual part in its own canonical form (a
+                // ControlWhere expression becomes a TokenDataList, control ids are dropped).
+                // Text cannot tell that from lost content; the XML layout equivalence that
+                // WriteVisualPart verifies with can, and keeps every other value strict.
+                matches = xmlLayoutEquivalent = XmlEquivalence.AreEquivalent(
+                    persisted, requested, XmlEquivalenceOptions.Layout, out _);
+            }
+            else if (mode == "exact")
                 matches = string.Equals(
                     ExactCanonicalize(requested, partName),
                     ExactCanonicalize(persisted, partName),
@@ -73,15 +89,19 @@ namespace GxMcp.Worker.Services
             else
                 matches = string.Equals(nr, np, StringComparison.Ordinal);
 
+            var normalizations = DetectNormalizations(requested, persisted);
+            if (xmlLayoutEquivalent && !string.Equals(nr, np, StringComparison.Ordinal))
+                normalizations.Add("xml-layout-equivalence");
             return new Result
             {
                 Mode = mode,
                 Matches = matches,
+                XmlLayoutEquivalent = xmlLayoutEquivalent,
                 RequestedHash = Sha256(requested),
                 PersistedHash = Sha256(persisted),
                 NormalizedRequestedHash = Sha256(nr),
                 NormalizedPersistedHash = Sha256(np),
-                NormalizationApplied = DetectNormalizations(requested, persisted),
+                NormalizationApplied = normalizations,
                 DiffNormalized = BuildDiff(nr, np),
                 NormalizedRequested = nr,
                 NormalizedPersisted = np

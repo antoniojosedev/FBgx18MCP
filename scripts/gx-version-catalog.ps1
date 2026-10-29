@@ -5,7 +5,8 @@ function Get-GxVersionCatalog {
         [Parameter(Mandatory = $true)][string]$Root
     )
 
-    $catalogPath = Join-Path ([IO.Path]::GetFullPath($Root)) 'config\gx-versions.json'
+    # Forward slash: the coverage gate dot-sources this on a Linux runner.
+    $catalogPath = Join-Path ([IO.Path]::GetFullPath($Root)) 'config/gx-versions.json'
     if (-not (Test-Path -LiteralPath $catalogPath -PathType Leaf)) {
         throw "GeneXus version catalog was not found at '$catalogPath'."
     }

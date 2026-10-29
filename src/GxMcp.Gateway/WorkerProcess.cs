@@ -64,6 +64,12 @@ namespace GxMcp.Gateway
         internal const int CommandChannelCapacity = 512;
         internal static readonly TimeSpan CommandQueueEnqueueTimeout = TimeSpan.FromSeconds(5);
 
+        /// <summary>
+        /// The enqueue wait this instance applies; <see cref="CommandQueueEnqueueTimeout"/> in
+        /// production. Tests of the refusal shorten it rather than wait 5s per refusal.
+        /// </summary>
+        internal TimeSpan CommandEnqueueTimeout { get; set; } = CommandQueueEnqueueTimeout;
+
         private readonly Channel<QueuedCommand> _commandChannel =
             Channel.CreateBounded<QueuedCommand>(new BoundedChannelOptions(CommandChannelCapacity)
             {
@@ -1501,7 +1507,8 @@ namespace GxMcp.Gateway
         /// </summary>
         private async Task EnqueueCommandAsync(QueuedCommand cmd, string? id, string? method)
         {
-            using var timeout = new CancellationTokenSource(CommandQueueEnqueueTimeout);
+            var enqueueTimeout = CommandEnqueueTimeout;
+            using var timeout = new CancellationTokenSource(enqueueTimeout);
             try
             {
                 await _commandChannel.Writer.WriteAsync(cmd, timeout.Token).ConfigureAwait(false);
@@ -1510,7 +1517,7 @@ namespace GxMcp.Gateway
             {
                 Interlocked.Decrement(ref _queuedCommands);
                 throw new WorkerCommandQueueFullException(Kb.Alias, id, method,
-                    CommandChannelCapacity, CommandQueueEnqueueTimeout.TotalMilliseconds);
+                    CommandChannelCapacity, enqueueTimeout.TotalMilliseconds);
             }
         }
 

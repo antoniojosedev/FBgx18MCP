@@ -244,8 +244,8 @@ namespace GxMcp.Worker.Services
                         missedParentKey = parentPathFilter;
                     }
                     else if (!string.IsNullOrWhiteSpace(parentFilter) &&
-                             index.ChildrenByParent != null &&
-                             index.ChildrenByParent.TryGetValue(parentFilter, out var childrenByParent))
+                             index.FindChildrenByParentName(parentFilter) is List<SearchIndex.IndexEntry> childrenByParent &&
+                             childrenByParent.Count > 0)
                     {
                         entries = childrenByParent;
                         source = "index-parent";

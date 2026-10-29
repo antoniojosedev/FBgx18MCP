@@ -31,8 +31,13 @@ namespace GxMcp.Gateway.Tests
                 ["params"] = new JObject { ["action"] = "read" }
             };
 
+        // The refusal fires after the enqueue timeout; the production 5s would make each
+        // refusal test wait 5s (The_Capacity_Is_Bounded_And_Positive pins that value).
         private static WorkerProcess NewWorker()
-            => new WorkerProcess(new Configuration(), new KbHandle("kb1", "C:/kb1"));
+            => new WorkerProcess(new Configuration(), new KbHandle("kb1", "C:/kb1"))
+            {
+                CommandEnqueueTimeout = TimeSpan.FromMilliseconds(100)
+            };
 
         /// <summary>Fills the bounded channel to capacity.</summary>
         private static async Task Fill(WorkerProcess worker)
@@ -140,6 +145,9 @@ namespace GxMcp.Gateway.Tests
             Assert.InRange(WorkerProcess.CommandChannelCapacity, 1, 100_000);
             Assert.InRange(WorkerProcess.CommandQueueEnqueueTimeout,
                 TimeSpan.FromMilliseconds(1), TimeSpan.FromMinutes(5));
+            // The shortened timeout above is a test seam; a production Worker keeps the constant.
+            var production = new WorkerProcess(new Configuration(), new KbHandle("kb1", "C:/kb1"));
+            Assert.Equal(WorkerProcess.CommandQueueEnqueueTimeout, production.CommandEnqueueTimeout);
         }
 
         [Fact]

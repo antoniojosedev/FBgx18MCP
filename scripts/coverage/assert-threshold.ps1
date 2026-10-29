@@ -5,13 +5,13 @@ param(
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-. (Join-Path $repoRoot 'scripts\gx-version-catalog.ps1')
+. (Join-Path $repoRoot 'scripts/gx-version-catalog.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $repoRoot
 if ([string]::IsNullOrWhiteSpace($CoverageRoot)) {
     if ($env:RUNNER_TEMP) {
         $CoverageRoot = Join-Path $env:RUNNER_TEMP "gx-coverage-artifacts"
     } else {
-        $CoverageRoot = Join-Path $repoRoot "artifacts\coverage"
+        $CoverageRoot = Join-Path $repoRoot "artifacts/coverage"
     }
 }
 

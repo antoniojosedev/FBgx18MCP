@@ -36,15 +36,30 @@ permissions:
 # work in one leg and a skip in the other, buying no wall clock and costing a
 # second runner. Measured on the pre-change workflow: Worker line-rate: skipped
 # (no local GeneXus 18 SDK; gateway threshold enforced only).
+#
+# Lanes a pull request's diff cannot affect are skipped. `changes` maps every
+# changed path through scripts/ci/lane-paths.json (classify-lanes.ps1) and each
+# skippable lane runs unless its output is exactly 'false'. Fails closed: a
+# non-PR event, an unknown diff, an unmapped path or a CI-definition change runs
+# every lane. contracts always runs (its line-ending check covers every file).
+# The gate accepts a skipped lane only when `changes` said 'false' for it, and
+# enforces the coverage threshold whenever the dotnet lane was required.
 jobs:
-  # Classifies the change once so the gate can require SDK/live evidence for
-  # Engine.Backend routing/default changes. Fails closed: the classifier requires
-  # evidence whenever the diff cannot be determined.
+  # Classifies the change once: which lanes it can affect, and whether the gate
+  # must require SDK/live evidence for Engine.Backend routing/default changes.
+  # Both classifiers fail closed when the diff cannot be determined. Ubuntu
+  # because every lane waits on this job and a Linux runner starts sooner.
   changes:
-    name: changes (sdk evidence scope)
-    runs-on: windows-latest
+    name: changes (lane + sdk evidence scope)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       sdk_evidence_required: ${{ steps.classify.outputs.sdk_evidence_required }}
+      run_dotnet: ${{ steps.lanes.outputs.run_dotnet }}
+      run_toolchain: ${{ steps.lanes.outputs.run_toolchain }}
+      run_rust: ${{ steps.lanes.outputs.run_rust }}
+      run_rust_engine: ${{ steps.lanes.outputs.run_rust_engine }}
+      lanes_reason: ${{ steps.lanes.outputs.lanes_reason }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -59,21 +74,40 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: ./scripts/ci/classify-sdk-evidence.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA
 
+      - name: Classify which lanes the change can affect
+        id: lanes
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/ci/classify-lanes.ps1 -BaseSha $env:BASE_SHA -HeadSha $env:HEAD_SHA
+
   dotnet:
     name: dotnet
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_dotnet != 'false' }}
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
 
+      # Skip the 300 MB SDK download (~35s) when the image already has a 10.0 SDK.
+      - name: Detect preinstalled .NET 10 SDK
+        id: dotnet-sdk
+        shell: pwsh
+        run: |
+          $sdks = if (Get-Command dotnet -ErrorAction SilentlyContinue) { @(dotnet --list-sdks) } else { @() }
+          "present=$((@($sdks -match '^10\.0\.').Count -gt 0).ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
       - name: Setup .NET
+        if: ${{ steps.dotnet-sdk.outputs.present != 'true' }}
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v5
         with:
           dotnet-version: 10.0.x
 
-      # Restore and build outputs, not just the NuGet packages. A PR that does
-      # not touch C# should not rebuild the dependency chain; MSBuild still
-      # recompiles whatever source changed, so a stale cache cannot mask an edit.
+      # Restore and build outputs; MSBuild still recompiles changed source, so a stale
+      # cache cannot mask an edit. No src/**/bin: builds go to .test-bin.
       - name: Cache NuGet packages and build outputs
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -81,26 +115,29 @@ jobs:
             ~/.nuget/packages
             .test-bin
             src/**/obj
-            src/**/bin
-          key: dotnet-${{ runner.os }}-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.*', '**/Directory.Packages.props', '**/NuGet.Config', '**/*.runsettings') }}
+          key: dotnet-v2-${{ runner.os }}-${{ hashFiles('global.json', '**/*.csproj', '**/Directory.Build.*', '**/Directory.Packages.props', '**/NuGet.Config', '**/*.runsettings') }}
           restore-keys: |
-            dotnet-${{ runner.os }}-
+            dotnet-v2-${{ runner.os }}-
 
+      # Without publish/gxwire.exe, collect.ps1 spends ~70s building it from cold.
+      - name: Cache gxwire binary for Gateway tests
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: publish/gxwire.exe
+          key: gxwire-exe-${{ runner.os }}-${{ hashFiles('src/gxwire/Cargo.lock', 'src/gxwire/Cargo.toml', 'src/gxwire/**/*.rs', 'src/gxwire/**/build.rs', '**/.cargo/config*') }}
+
+      # Includes McpSmokeScriptContractTests (scripts/mcp_smoke.ps1 against a live
+      # Gateway), pointed at the Gateway this run built rather than any stale copy.
       - name: Gateway and Worker coverage
         shell: pwsh
+        env:
+          GXMCP_LIVE_GATEWAY_EXE: ${{ github.workspace }}\.test-bin\gateway\Debug\net10.0-windows\GxMcp.Gateway.exe
         run: ./scripts/coverage/collect.ps1 -OutputRoot "$env:RUNNER_TEMP\gx-coverage-artifacts"
 
-      # Contract test: the gateway builds without the GeneXus SDK (net10.0-windows, no
-      # Artech refs), so this runs on CI. It launches a real gateway in-process and runs
-      # scripts/mcp_smoke.ps1 unmodified against it - pinning first-party diagnostic
-      # scripts to the gateway's HTTP protocol contract (the v2.38.0-v2.45.1 406 drift).
-      # Stays in this lane rather than getting its own job: it reuses the Gateway test
-      # build the coverage step just produced, and on its own runner it would pay a
-      # cold rebuild to run a 14-second check.
-      - name: MCP smoke script contract test
-        run: >
-          dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj
-          --filter "FullyQualifiedName~McpSmokeScriptContract"
+      # CI time budget: scripts/ci/test-time-budget.json.
+      - name: Assert per-test time budget
+        shell: pwsh
+        run: ./scripts/ci/assert-test-durations.ps1 -TrxPath "$env:RUNNER_TEMP\gx-coverage-artifacts\gateway.trx"
 
       - name: Upload coverage artifacts
         if: always()
@@ -111,7 +148,10 @@ jobs:
 
   toolchain:
     name: toolchain (cli + nexus-ide)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_toolchain != 'false' }}
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -180,7 +220,10 @@ jobs:
 
   rust:
     name: rust (gxwire)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_rust != 'false' }}
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -214,23 +257,18 @@ jobs:
         shell: pwsh
         run: cargo clippy --manifest-path src/gxwire/Cargo.toml --all-targets --locked -- -D warnings
 
+      # No release build here: the staged exe was never uploaded, and the release
+      # workflow and build.ps1 build the shipped binary. The dotnet lane caches its own.
       - name: Test gxwire engine
         shell: pwsh
         run: cargo test --manifest-path src/gxwire/Cargo.toml --locked
 
-      - name: Build gxwire engine
-        shell: pwsh
-        run: cargo build --release --manifest-path src/gxwire/Cargo.toml --locked
-
-      - name: Stage gxwire engine
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path publish -Force | Out-Null
-          Copy-Item src/gxwire/target/release/gxwire.exe -Destination publish/gxwire.exe -Force
-
   rust-engine:
     name: rust (gx-engine)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.run_rust_engine != 'false' }}
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -263,23 +301,29 @@ jobs:
         shell: pwsh
         run: cargo fmt --manifest-path src/gx-engine/Cargo.toml --check
 
+      # cargo test runs the ~90 test binaries one after another (~230s, two of them
+      # 61s and 47s); nextest runs every test in parallel across binaries. Its `ci`
+      # profile (src/gx-engine/.config/nextest.toml) also fails any test that exceeds
+      # the per-test time budget. No release build: the staged exe was never uploaded,
+      # and the release workflow and build.ps1 build the shipped binary (~130s here).
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-nextest@0.9.146
+
       - name: Test gx-engine
         shell: pwsh
-        run: cargo test --manifest-path src/gx-engine/Cargo.toml --locked
+        run: cargo nextest run --manifest-path src/gx-engine/Cargo.toml --locked --profile ci
 
-      - name: Build gx-engine
+      # nextest does not run doctests (gx-engine has compile_fail ones).
+      - name: Test gx-engine doctests
         shell: pwsh
-        run: cargo build --release --manifest-path src/gx-engine/Cargo.toml --locked
-
-      - name: Stage gx-engine
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path publish -Force | Out-Null
-          Copy-Item src/gx-engine/target/release/gx-engine.exe -Destination publish/gx-engine.exe -Force
+        run: cargo test --doc --manifest-path src/gx-engine/Cargo.toml --locked
 
   contracts:
     name: contracts (python + docs)
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
@@ -323,11 +367,7 @@ jobs:
           }
           ./scripts/check-build-warning-baseline.ps1 -ValidateOnly
           ./scripts/tests/test-upstream-drift.ps1
-          ./scripts/tests/test-live-matrix.test.ps1
-          ./scripts/tests/test-integration-preflight.ps1
           ./scripts/tests/sdk-validation-contract.tests.ps1
-          ./scripts/tests/install-contract.tests.ps1
-          ./scripts/tests/test-ci-workflow-policy.ps1
           python -c "import ast, pathlib; ast.parse(pathlib.Path('scripts/bench-live-http.py').read_text(encoding='utf-8')); print('benchmark-python: valid')"
           if ($LASTEXITCODE -ne 0) { throw 'Benchmark Python syntax validation failed.' }
           python -c "import ast, pathlib; ast.parse(pathlib.Path('scripts/validate-v3-plan.py').read_text(encoding='utf-8')); print('v3-plan-python: valid')"
@@ -345,6 +385,9 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/check-line-endings.ps1
 
+      # Includes test-ci-workflow-policy, install-contract, test-live-matrix and
+      # test-integration-preflight, which the step above used to run a second time.
+      # The scripts run in parallel; each one is held to the per-script time budget.
       - name: Release script suite
         shell: pwsh
         run: ./scripts/tests/run-release-script-tests.ps1
@@ -369,14 +412,18 @@ jobs:
         shell: pwsh
         run: ./scripts/mcp_llm_contract_smoke.ps1
 
-  # The required check. Every lane above must have passed; this job keeps the name
+  # The required check. Every lane above must have passed, or been skipped because
+  # `changes` classified it as unreachable from the diff; this job keeps the name
   # `test` on the merge gate. It runs when a lane fails (`!cancelled()`) because a job
   # skipped for a failed dependency would otherwise count as a passing required check.
   # The gate asserts every lane result, the SDK evidence an Engine.Backend routing or
   # default change requires, and the coverage threshold over both projects together.
   test:
     name: test
-    runs-on: windows-latest
+    # Linux: the gate only reads job results and a coverage XML, and it is the last
+    # job on the critical path, where a Windows runner's slower start is paid in full.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: ${{ !cancelled() }}
     needs: [changes, dotnet, toolchain, rust, rust-engine, contracts, sdk-validation]
     steps:
@@ -395,15 +442,19 @@ jobs:
             -SdkEvidenceRequired $env:SDK_EVIDENCE_REQUIRED -SdkEnabled $env:SDK_ENABLED `
             -HeadRepository $env:HEAD_REPOSITORY
 
+      # Skipped only when the classifier said the dotnet lane cannot be affected;
+      # the step above has already refused a dotnet lane skipped for any other reason.
       - name: Download coverage artifacts
+        if: ${{ needs.changes.outputs.run_dotnet != 'false' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: gateway-worker-coverage
-          path: ${{ runner.temp }}\gx-coverage-artifacts
+          path: ${{ runner.temp }}/gx-coverage-artifacts
 
       - name: Assert combined coverage threshold
+        if: ${{ needs.changes.outputs.run_dotnet != 'false' }}
         shell: pwsh
-        run: ./scripts/coverage/assert-threshold.ps1 -CoverageRoot "$env:RUNNER_TEMP\gx-coverage-artifacts" -MinLineRatePercent 60
+        run: ./scripts/coverage/assert-threshold.ps1 -CoverageRoot "$env:RUNNER_TEMP/gx-coverage-artifacts" -MinLineRatePercent 60
 
   # Contract test: the gateway builds without the GeneXus SDK (net10.0-windows, no
   # Artech refs), so this runs on CI. It launches a real gateway in-process and runs

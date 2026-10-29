@@ -169,18 +169,197 @@ impl UdmClient {
         let sql = format!(
             "SET NOCOUNT ON; SELECT EntityTypeId, EntityId, ModelParentEntityTypeId, ModelParentEntityId FROM ModelEntityVersion WHERE ModelId = {model_id}"
         );
-        let raw = self.execute_live_sql(&sql)?;
-        parse_live_rows(&raw, 4)?
-            .iter()
-            .map(|row| {
-                Ok(ModelParentRecord {
-                    entity_type_id: parse_live_int(row[0], "EntityTypeId")?,
-                    entity_id: parse_live_int(row[1], "EntityId")?,
-                    parent_entity_type_id: parse_live_int(row[2], "ModelParentEntityTypeId")?,
-                    parent_entity_id: parse_live_int(row[3], "ModelParentEntityId")?,
-                })
+        self.live_records(&sql, 4, |row| {
+            Ok(ModelParentRecord {
+                entity_type_id: parse_live_int(row[0], "EntityTypeId")?,
+                entity_id: parse_live_int(row[1], "EntityId")?,
+                parent_entity_type_id: parse_live_int(row[2], "ModelParentEntityTypeId")?,
+                parent_entity_id: parse_live_int(row[3], "ModelParentEntityId")?,
             })
-            .collect()
+        })
+    }
+
+    /// The stored identity and last-update inputs of one exact active object version.
+    ///
+    /// The SDK's `KBObject.Guid`, `KBObject.Parent` and `KBObject.LastUpdate` are the
+    /// token inputs of `WriteService.ComputeVersionToken`. Last update is the active
+    /// version's `ObjectSaved` output (`OutputTypeId=301`, `OutputTypeVersion=0`);
+    /// when that row is absent it is `ModelEntityVersion.ModelEntityVersionTimestamp`.
+    /// An `ObjectSaved` row that exists with a `NULL` timestamp is refused, not treated as
+    /// absent. A parent row of `(0, 0)` means no parent; its name is read from the parent's
+    /// own row in this model only. The live query refuses a duplicated parent or
+    /// `ObjectSaved` row, and never converts the stored value between time zones.
+    pub fn get_object_read_metadata(
+        &self,
+        model_id: i32,
+        entity_type_id: i32,
+        entity_id: i32,
+        entity_version_id: i32,
+    ) -> Result<Option<ObjectReadMetadata>, String> {
+        if self.connection_info.is_none() {
+            let store = self
+                .storage
+                .read()
+                .map_err(|e| format!("Storage lock poisoned: {e}"))?;
+            let parent = store
+                .model_parents
+                .get(&(model_id, entity_type_id, entity_id))
+                .copied();
+            let has_metadata = store
+                .entity_guids
+                .contains_key(&(entity_type_id, entity_id))
+                || parent.is_some()
+                || store.object_saved_timestamps.contains_key(&(
+                    model_id,
+                    entity_type_id,
+                    entity_id,
+                    entity_version_id,
+                ))
+                || store.model_entity_version_timestamps.contains_key(&(
+                    model_id,
+                    entity_type_id,
+                    entity_id,
+                    entity_version_id,
+                ));
+            if !has_metadata {
+                return Ok(None);
+            }
+            let parent = match parent {
+                Some((0, 0)) => None,
+                Some((0, id)) | Some((id, 0)) => {
+                    return Err(format!(
+                        "parent of entity {entity_id} is stored with a zero half: ({id}, 0)"
+                    ));
+                }
+                other => other,
+            };
+            let parent_guid = parent.and_then(|(parent_type, parent_id)| {
+                store.entity_guids.get(&(parent_type, parent_id)).cloned()
+            });
+            let parent_name = match parent {
+                Some((parent_type, parent_id)) => {
+                    // Only the active model's own row of the parent is a candidate; any
+                    // second row of it (even with the same name) is refused, like the live join.
+                    let names = store
+                        .model_entity_versions
+                        .iter()
+                        .filter(|row| {
+                            row.model_id == model_id
+                                && row.entity_type_id == parent_type
+                                && row.entity_id == parent_id
+                        })
+                        .map(|row| row.name.as_str())
+                        .collect::<Vec<_>>();
+                    match names.as_slice() {
+                        [] => None,
+                        [name] => Some((*name).to_string()),
+                        _ => {
+                            return Err(format!(
+                                "parent ({parent_type}, {parent_id}) is stored {} times in model {model_id}; expected one",
+                                names.len()
+                            ));
+                        }
+                    }
+                }
+                None => None,
+            };
+            return Ok(Some(ObjectReadMetadata {
+                guid: store
+                    .entity_guids
+                    .get(&(entity_type_id, entity_id))
+                    .cloned(),
+                parent,
+                parent_guid,
+                parent_name,
+                object_saved_ticks: store
+                    .object_saved_timestamps
+                    .get(&(model_id, entity_type_id, entity_id, entity_version_id))
+                    .copied(),
+                model_entity_version_ticks: store
+                    .model_entity_version_timestamps
+                    .get(&(model_id, entity_type_id, entity_id, entity_version_id))
+                    .copied(),
+            }));
+        }
+
+        let sql = object_read_metadata_sql(model_id, entity_type_id, entity_id, entity_version_id);
+        let raw = self.execute_live_sql(&sql)?;
+        let rows = parse_live_rows(&raw, OBJECT_READ_METADATA_COLUMNS)?;
+        object_read_metadata_from_rows(entity_id, &rows)
+    }
+
+    /// The last-update ticks of a batch of active object versions in `model_id` of `entity_type_id`,
+    /// keyed by `entity_id`.
+    ///
+    /// Each requested `(entity_id, entity_version_id)` resolves
+    /// `object_saved_ticks.or(model_entity_version_ticks)` under the same rules as
+    /// [`Self::get_object_read_metadata`]: an `ObjectSaved` row (`OutputTypeId=301`,
+    /// `OutputTypeVersion=0`) that exists with a `NULL` or unparseable timestamp, or a duplicated
+    /// row for an entity, fails closed with an error. An entity with no stored metadata row is
+    /// omitted from the returned map so the caller can refuse missing lifecycle metadata.
+    pub fn get_objects_lifecycle_ticks(
+        &self,
+        model_id: i32,
+        entity_type_id: i32,
+        versions: &[(i32, i32)],
+    ) -> Result<BTreeMap<i32, Option<i64>>, String> {
+        if versions.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut seen_entities = std::collections::BTreeSet::new();
+        for &(entity_id, _) in versions {
+            if !seen_entities.insert(entity_id) {
+                return Err(format!(
+                    "lifecycle metadata batch contains duplicate entity {entity_id}"
+                ));
+            }
+        }
+        if self.connection_info.is_none() {
+            let store = self
+                .storage
+                .read()
+                .map_err(|e| format!("Storage lock poisoned: {e}"))?;
+            let mut ticks_by_entity = BTreeMap::new();
+            for &(entity_id, entity_version_id) in versions {
+                let has_metadata = store
+                    .entity_guids
+                    .contains_key(&(entity_type_id, entity_id))
+                    || store
+                        .model_parents
+                        .contains_key(&(model_id, entity_type_id, entity_id))
+                    || store.object_saved_timestamps.contains_key(&(
+                        model_id,
+                        entity_type_id,
+                        entity_id,
+                        entity_version_id,
+                    ))
+                    || store.model_entity_version_timestamps.contains_key(&(
+                        model_id,
+                        entity_type_id,
+                        entity_id,
+                        entity_version_id,
+                    ));
+                if !has_metadata {
+                    continue;
+                }
+                let object_saved_ticks = store
+                    .object_saved_timestamps
+                    .get(&(model_id, entity_type_id, entity_id, entity_version_id))
+                    .copied();
+                let model_entity_version_ticks = store
+                    .model_entity_version_timestamps
+                    .get(&(model_id, entity_type_id, entity_id, entity_version_id))
+                    .copied();
+                ticks_by_entity
+                    .insert(entity_id, object_saved_ticks.or(model_entity_version_ticks));
+            }
+            return Ok(ticks_by_entity);
+        }
+
+        let sql = objects_lifecycle_ticks_sql(model_id, entity_type_id, versions);
+        let raw = self.execute_live_sql(&sql)?;
+        let rows = parse_live_rows(&raw, OBJECTS_LIFECYCLE_TICKS_COLUMNS)?;
+        objects_lifecycle_ticks_from_rows(&rows)
     }
 
     /// Retrieves part compositions for a compound entity version.
@@ -390,20 +569,10 @@ impl UdmClient {
         module_type_id: i32,
     ) -> Result<Option<(i32, i32)>, String> {
         if self.is_live() {
-            let sql = format!(
-                "SET NOCOUNT ON; SELECT m.EntityTypeId, m.EntityId, ISNULL(e.EntityGuid, '') FROM ModelEntityVersion m LEFT JOIN Entity e ON e.EntityTypeId = m.EntityTypeId AND e.EntityId = m.EntityId WHERE m.ModelId = {model_id} AND m.EntityTypeId = {module_type_id} AND m.EntityId = 1 AND m.ModelParentEntityTypeId = 0 AND m.ModelParentEntityId = 0"
-            );
+            let sql = system_root_module_sql(model_id, module_type_id);
             let raw = self.execute_live_sql(&sql)?;
-            let rows = parse_live_rows(&raw, 3)?;
-            let mut root = None;
-            for row in &rows {
-                if row[2].eq_ignore_ascii_case(SYSTEM_ROOT_MODULE_GUID) {
-                    let entity_type = parse_live_int(row[0], "EntityTypeId")?;
-                    let entity_id = parse_live_int(row[1], "EntityId")?;
-                    root = Some((entity_type, entity_id));
-                }
-            }
-            return Ok(root);
+            let rows = parse_live_rows(&raw, SYSTEM_ROOT_MODULE_COLUMNS)?;
+            return system_root_module_from_rows(model_id, module_type_id, &rows);
         }
         let store = self
             .storage
@@ -518,3 +687,416 @@ impl UdmClient {
             .collect())
     }
 }
+
+const SYSTEM_ROOT_MODULE_COLUMNS: usize = 3;
+
+/// The candidate-row query behind [`UdmClient::system_root_module`]: the model's parent-less
+/// `EntityId` 1 row of the Module type, with its owner GUID.
+///
+/// The GUID is converted to `VARCHAR(36)` before `ISNULL`, because `ISNULL` casts its
+/// replacement to the type of its first argument: on a `uniqueidentifier` column `''` is a
+/// failed conversion, not an absent GUID. A missing `Entity` row or a `NULL` GUID arrives as
+/// an empty field and never matches the root GUID.
+///
+/// Columns: entity type id, entity id, owner GUID.
+fn system_root_module_sql(model_id: i32, module_type_id: i32) -> String {
+    format!(
+        "SET NOCOUNT ON; SELECT m.EntityTypeId, m.EntityId, ISNULL(CONVERT(VARCHAR(36), e.EntityGuid), '') \
+         FROM ModelEntityVersion m \
+         LEFT JOIN Entity e ON e.EntityTypeId = m.EntityTypeId AND e.EntityId = m.EntityId \
+         WHERE m.ModelId = {model_id} AND m.EntityTypeId = {module_type_id} AND m.EntityId = 1 \
+           AND m.ModelParentEntityTypeId = 0 AND m.ModelParentEntityId = 0"
+    )
+}
+
+/// Interprets the rows of [`system_root_module_sql`]. No row, or a row whose GUID is empty
+/// or another value, is no root. A second candidate row is refused rather than resolved by
+/// order, and a row that is not the requested `(module type, 1)` is refused as malformed.
+fn system_root_module_from_rows(
+    model_id: i32,
+    module_type_id: i32,
+    rows: &[Vec<&str>],
+) -> Result<Option<(i32, i32)>, String> {
+    let row = match rows {
+        [] => return Ok(None),
+        [row] => row,
+        _ => {
+            return Err(format!(
+                "system root module candidates of model {model_id} matched {} rows; expected at most one",
+                rows.len()
+            ));
+        }
+    };
+    if row.len() != SYSTEM_ROOT_MODULE_COLUMNS {
+        return Err(format!(
+            "system root module row has {} fields; expected {SYSTEM_ROOT_MODULE_COLUMNS}",
+            row.len()
+        ));
+    }
+    let entity_type = parse_live_int(row[0], "EntityTypeId")?;
+    let entity_id = parse_live_int(row[1], "EntityId")?;
+    if entity_type != module_type_id || entity_id != 1 {
+        return Err(format!(
+            "system root module candidate is ({entity_type}, {entity_id}); expected ({module_type_id}, 1)"
+        ));
+    }
+    let guid = row[2].trim();
+    Ok(guid
+        .eq_ignore_ascii_case(SYSTEM_ROOT_MODULE_GUID)
+        .then_some((entity_type, entity_id)))
+}
+
+const OBJECT_READ_METADATA_COLUMNS: usize = 9;
+const ROW_PRESENT: &str = "PRESENT";
+const ROW_ABSENT: &str = "ABSENT";
+
+/// The one-row query behind [`UdmClient::get_object_read_metadata`].
+///
+/// Every join is bound to the requested model, type, entity and exact version. The parent's
+/// name comes from the parent's own `ModelEntityVersion` row **in the same model**, joined
+/// without any ordering or `TOP`: a second row of that parent in the model, or a second
+/// `ObjectSaved` row, multiplies the result and is refused by the caller instead of being
+/// resolved by a guess. `PRESENT`/`ABSENT` markers come from join-key columns, so a row that
+/// exists with a `NULL` timestamp is distinguishable from a row that does not exist. Entity
+/// GUIDs are converted to `VARCHAR(36)` before `ISNULL`, so a `uniqueidentifier` column is
+/// never coerced from `''`.
+///
+/// Columns: object GUID, parent type, parent id, parent GUID, parent-row marker, parent name,
+/// `ObjectSaved`-row marker, `ObjectSaved` timestamp, `ModelEntityVersionTimestamp`.
+fn object_read_metadata_sql(
+    model_id: i32,
+    entity_type_id: i32,
+    entity_id: i32,
+    entity_version_id: i32,
+) -> String {
+    format!(
+        "SET NOCOUNT ON; SELECT \
+         ISNULL(CONVERT(VARCHAR(36), e.EntityGuid), ''), \
+         m.ModelParentEntityTypeId, m.ModelParentEntityId, \
+         ISNULL(CONVERT(VARCHAR(36), p.EntityGuid), ''), \
+         CASE WHEN pm.EntityId IS NULL THEN '{ROW_ABSENT}' ELSE '{ROW_PRESENT}' END, \
+         ISNULL(pm.ModelEntityVersionName, ''), \
+         CASE WHEN o.OutputTypeId IS NULL THEN '{ROW_ABSENT}' ELSE '{ROW_PRESENT}' END, \
+         ISNULL(CONVERT(VARCHAR(33), o.OutputTimestamp, 126), ''), \
+         ISNULL(CONVERT(VARCHAR(33), m.ModelEntityVersionTimestamp, 126), '') \
+         FROM ModelEntityVersion m \
+         JOIN Entity e ON e.EntityTypeId = m.EntityTypeId AND e.EntityId = m.EntityId \
+         LEFT JOIN Entity p ON p.EntityTypeId = m.ModelParentEntityTypeId AND p.EntityId = m.ModelParentEntityId \
+         LEFT JOIN ModelEntityVersion pm ON pm.ModelId = m.ModelId \
+            AND pm.EntityTypeId = m.ModelParentEntityTypeId AND pm.EntityId = m.ModelParentEntityId \
+         LEFT JOIN ModelEntityOutput o ON o.ModelId = m.ModelId AND o.EntityTypeId = m.EntityTypeId \
+            AND o.EntityId = m.EntityId AND o.OutputEntityVersionId = m.EntityVersionId \
+            AND o.OutputTypeId = 301 AND o.OutputTypeVersion = 0 \
+         WHERE m.ModelId = {model_id} AND m.EntityTypeId = {entity_type_id} \
+           AND m.EntityId = {entity_id} AND m.EntityVersionId = {entity_version_id}"
+    )
+}
+
+/// Interprets the rows of [`object_read_metadata_sql`]: none is `None`, one is the metadata,
+/// more than one (a duplicated parent or `ObjectSaved` row) is refused.
+fn object_read_metadata_from_rows(
+    entity_id: i32,
+    rows: &[Vec<&str>],
+) -> Result<Option<ObjectReadMetadata>, String> {
+    let row = match rows {
+        [] => return Ok(None),
+        [row] => row,
+        _ => {
+            return Err(format!(
+                "read metadata of entity {entity_id} matched {} rows; expected one",
+                rows.len()
+            ));
+        }
+    };
+    if row.len() != OBJECT_READ_METADATA_COLUMNS {
+        return Err(format!(
+            "read metadata row has {} fields; expected {OBJECT_READ_METADATA_COLUMNS}",
+            row.len()
+        ));
+    }
+    let parent_type = parse_live_int(row[1], "ModelParentEntityTypeId")?;
+    let parent_id = parse_live_int(row[2], "ModelParentEntityId")?;
+    let parent = match (parent_type, parent_id) {
+        (0, 0) => None,
+        (0, _) | (_, 0) => {
+            return Err(format!(
+                "parent of entity {entity_id} is stored with a zero half: ({parent_type}, {parent_id})"
+            ));
+        }
+        other => Some(other),
+    };
+    let parent_row_present = parse_row_marker(row[4], "parent ModelEntityVersion row")?;
+    let parent_name = if parent_row_present {
+        non_empty(row[5])
+    } else {
+        None
+    };
+    // An absent `ObjectSaved` row falls back to the model timestamp; a row that exists
+    // without a timestamp has no last update to fall back from and is refused.
+    let object_saved_ticks = if parse_row_marker(row[6], "ObjectSaved ModelEntityOutput row")? {
+        let ticks = parse_stored_datetime_ticks(row[7], "ModelEntityOutput.OutputTimestamp")?;
+        Some(ticks.ok_or_else(|| {
+            format!(
+                "ObjectSaved ModelEntityOutput row of entity {entity_id} exists with a NULL OutputTimestamp"
+            )
+        })?)
+    } else {
+        if !row[7].trim().is_empty() {
+            return Err(format!(
+                "ObjectSaved ModelEntityOutput row of entity {entity_id} is absent but reports a timestamp"
+            ));
+        }
+        None
+    };
+    Ok(Some(ObjectReadMetadata {
+        guid: non_empty(row[0]),
+        parent,
+        parent_guid: non_empty(row[3]),
+        parent_name,
+        object_saved_ticks,
+        model_entity_version_ticks: parse_stored_datetime_ticks(
+            row[8],
+            "ModelEntityVersion.ModelEntityVersionTimestamp",
+        )?,
+    }))
+}
+
+const OBJECTS_LIFECYCLE_TICKS_COLUMNS: usize = 4;
+
+/// The batched query behind [`UdmClient::get_objects_lifecycle_ticks`].
+///
+/// Columns: entity id, `HasObjectSaved` (`1` when the version's `ObjectSaved` output row exists,
+/// `0` when absent), `ObjectSaved` timestamp, `ModelEntityVersionTimestamp`.
+fn objects_lifecycle_ticks_sql(
+    model_id: i32,
+    entity_type_id: i32,
+    versions: &[(i32, i32)],
+) -> String {
+    use std::fmt::Write;
+    let mut sql = format!(
+        "SET NOCOUNT ON; SELECT \
+         m.EntityId, \
+         CASE WHEN o.OutputTypeId IS NULL THEN 0 ELSE 1 END AS HasObjectSaved, \
+         ISNULL(CONVERT(VARCHAR(33), o.OutputTimestamp, 126), ''), \
+         ISNULL(CONVERT(VARCHAR(33), m.ModelEntityVersionTimestamp, 126), '') \
+         FROM ModelEntityVersion m \
+         LEFT JOIN ModelEntityOutput o ON o.ModelId = m.ModelId AND o.EntityTypeId = m.EntityTypeId \
+            AND o.EntityId = m.EntityId AND o.OutputTypeId = 301 AND o.OutputTypeVersion = 0 \
+            AND o.OutputEntityVersionId = m.EntityVersionId \
+         WHERE m.ModelId = {model_id} AND m.EntityTypeId = {entity_type_id} \
+           AND ("
+    );
+    if versions.is_empty() {
+        sql.push_str("1 = 0");
+    } else {
+        for (idx, (entity_id, entity_version_id)) in versions.iter().enumerate() {
+            if idx > 0 {
+                sql.push_str(" OR ");
+            }
+            let _ = write!(
+                &mut sql,
+                "(m.EntityId = {entity_id} AND m.EntityVersionId = {entity_version_id})"
+            );
+        }
+    }
+    sql.push(')');
+    sql
+}
+
+/// Interprets the rows of [`objects_lifecycle_ticks_sql`].
+///
+/// Refuses duplicated entity rows and any `ObjectSaved` row whose timestamp is `NULL` or
+/// unparseable, matching [`object_read_metadata_from_rows`].
+fn objects_lifecycle_ticks_from_rows(
+    rows: &[Vec<&str>],
+) -> Result<BTreeMap<i32, Option<i64>>, String> {
+    let mut ticks_by_entity = BTreeMap::new();
+    for row in rows {
+        if row.len() != OBJECTS_LIFECYCLE_TICKS_COLUMNS {
+            return Err(format!(
+                "lifecycle metadata row has {} fields; expected {OBJECTS_LIFECYCLE_TICKS_COLUMNS}",
+                row.len()
+            ));
+        }
+        let entity_id = parse_live_int(row[0], "EntityId")?;
+        let has_object_saved = match row[1].trim() {
+            "1" | ROW_PRESENT => true,
+            "0" | ROW_ABSENT => false,
+            other => {
+                return Err(format!(
+                    "ObjectSaved presence marker for entity {entity_id} is '{other}'; expected 0 or 1"
+                ));
+            }
+        };
+        let object_saved_ticks = if has_object_saved {
+            let ticks = parse_stored_datetime_ticks(row[2], "ModelEntityOutput.OutputTimestamp")
+                .map_err(|err| {
+                    format!(
+                        "ObjectSaved row for entity {entity_id} has NULL or unparseable OutputTimestamp: {err}"
+                    )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "ObjectSaved row for entity {entity_id} has NULL or unparseable OutputTimestamp"
+                    )
+                })?;
+            Some(ticks)
+        } else {
+            if !row[2].trim().is_empty() {
+                return Err(format!(
+                    "ObjectSaved row for entity {entity_id} is absent but reports a timestamp"
+                ));
+            }
+            None
+        };
+        let model_entity_version_ticks =
+            parse_stored_datetime_ticks(row[3], "ModelEntityVersion.ModelEntityVersionTimestamp")?;
+        if ticks_by_entity
+            .insert(entity_id, object_saved_ticks.or(model_entity_version_ticks))
+            .is_some()
+        {
+            return Err(format!(
+                "lifecycle metadata of entity {entity_id} matched multiple rows; expected one"
+            ));
+        }
+    }
+    Ok(ticks_by_entity)
+}
+
+fn parse_row_marker(text: &str, row: &str) -> Result<bool, String> {
+    match text.trim() {
+        ROW_PRESENT => Ok(true),
+        ROW_ABSENT => Ok(false),
+        other => Err(format!(
+            "{row} presence marker is '{other}'; expected {ROW_PRESENT} or {ROW_ABSENT}"
+        )),
+    }
+}
+
+/// A stored `NULL` arrives as an empty `ISNULL(..., '')` field; a real value never is.
+fn non_empty(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Parses a `CONVERT(VARCHAR(33), <datetime>, 126)` value (`YYYY-MM-DDTHH:MM:SS[.fffffff]`)
+/// into raw .NET ticks, with no time-zone conversion.
+///
+/// `datetime` columns display three fraction digits and `datetime2` up to seven; padding
+/// to seven preserves the displayed value. The token was matched on stored values whose
+/// fractions were already zero, so a `datetime` column carrying a non-zero 1/300-second
+/// fraction remains uncertified rather than silently rounded here.
+fn parse_stored_datetime_ticks(text: &str, column: &str) -> Result<Option<i64>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    parse_datetime_ticks(text)
+        .map(Some)
+        .map_err(|reason| format!("{column} '{text}' is not a valid datetime: {reason}"))
+}
+
+fn parse_datetime_ticks(text: &str) -> Result<i64, String> {
+    let (date, time) = text
+        .split_once('T')
+        .ok_or_else(|| "missing 'T' separator".to_string())?;
+    let mut date_parts = date.split('-');
+    let year = fixed_digits(date_parts.next(), 4, "year")?;
+    let month = fixed_digits(date_parts.next(), 2, "month")?;
+    let day = fixed_digits(date_parts.next(), 2, "day")?;
+    if date_parts.next().is_some() {
+        return Err("date has more than three parts".to_string());
+    }
+
+    let (clock, fraction) = match time.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (time, None),
+    };
+    let mut time_parts = clock.split(':');
+    let hour = fixed_digits(time_parts.next(), 2, "hour")?;
+    let minute = fixed_digits(time_parts.next(), 2, "minute")?;
+    let second = fixed_digits(time_parts.next(), 2, "second")?;
+    if time_parts.next().is_some() {
+        return Err("time has more than three parts".to_string());
+    }
+
+    let fraction_ticks = match fraction {
+        None => 0,
+        Some(fraction) => {
+            if fraction.is_empty() || fraction.len() > 7 {
+                return Err("fraction must have 1 to 7 digits".to_string());
+            }
+            if !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("fraction contains a non-digit".to_string());
+            }
+            let mut padded = fraction.to_string();
+            while padded.len() < 7 {
+                padded.push('0');
+            }
+            padded
+                .parse::<i64>()
+                .map_err(|_| "fraction is not a number".to_string())?
+        }
+    };
+
+    if !(1..=9999).contains(&year) {
+        return Err("year is outside 1..=9999".to_string());
+    }
+    if !(1..=12).contains(&month) {
+        return Err("month is outside 1..=12".to_string());
+    }
+    if day < 1 || day > days_in_month(year, month) {
+        return Err("day is outside the month".to_string());
+    }
+    if !(0..=23).contains(&hour) {
+        return Err("hour is outside 0..=23".to_string());
+    }
+    if !(0..=59).contains(&minute) {
+        return Err("minute is outside 0..=59".to_string());
+    }
+    if !(0..=59).contains(&second) {
+        return Err("second is outside 0..=59".to_string());
+    }
+
+    let days = days_from_civil(year, month, day);
+    let seconds = hour * 3600 + minute * 60 + second;
+    let ticks =
+        621_355_968_000_000_000 + days * 864_000_000_000 + seconds * 10_000_000 + fraction_ticks;
+    crate::read_token::UtcTicks::new(ticks)
+        .map(crate::read_token::UtcTicks::get)
+        .map_err(|error| error.to_string())
+}
+
+fn fixed_digits(text: Option<&str>, len: usize, field: &str) -> Result<i64, String> {
+    let text = text.ok_or_else(|| format!("missing {field}"))?;
+    if text.len() != len || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("{field} is not {len} digits"));
+    }
+    text.parse::<i64>()
+        .map_err(|_| format!("{field} is not a number"))
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// Days since 1970-01-01 (Howard Hinnant's `days_from_civil`), valid for the proleptic
+/// Gregorian calendar the .NET tick epoch uses.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = (month + 9) % 12;
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+#[cfg(test)]
+mod tests;

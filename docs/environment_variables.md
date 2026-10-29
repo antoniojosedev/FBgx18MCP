@@ -183,7 +183,12 @@ permission.
 
 Both pins survive Worker and Gateway restarts because they live in the
 environment that launches the Worker, which is why they are the right place for
-a long-lived safety rail on a shared KB.
+a long-lived safety rail on a shared KB. The isolated Events save
+(`requireObjectSave`) additionally needs both of them: with neither set it
+refuses with `WriteDestinationPinsMissing` instead of running unguarded, and
+the pins alone do not make the SDK bundle eligible
+([Events save isolation](events-object-save-isolation.md)). The refusal reports
+the state of each pin variable (`absent`, `blank` or `present`), never a value.
 
 ## Human-in-the-loop elicitation
 
@@ -272,6 +277,7 @@ An object whose SDK read fails on two consecutive attempts is recorded in `readF
 | `GXMCP_SOURCE_ENCODING` | Encoding name (any name `System.Text.Encoding.GetEncoding` accepts) used to read and write GeneXus source. Only reachable on the legacy reflection/COM drivers; an unknown name is ignored and the detected encoding is used. | detected per KB and driver |
 | `GXMCP_SCREENSHOT_DIR` | Extra directory accepted as a source root by `screenshot_publish`. A file outside the OS temp dir, the open KB and this directory is refused with `SourceNotAllowed`. | unset (temp dir and open KB only) |
 | `GXMCP_WEBFORM_SAVE_DIAGNOSTICS` | Set to `1` to enable the WebForm save bypass experiments (`SaveModelEntityOutput`, `SaveHeader`, pre-save/bypass state dumps). Off by default: these are reflection-based diagnostics for one specific save bug, not a supported path. | off |
+| `GXMCP_WEBFORM_SDK_PROBE` | Set to `1` to write the one-time WebForm/Layout part SDK metadata dump (`webform-sdk-probe.log`) on the Worker's first visual-part read. Off by default: it reflects over the whole SDK assembly on the STA lane and delays every queued command by seconds. | off |
 | `GXMCP_LOG_SCAN_MAX_MB` | How far back `genexus_logs` will scan when a filter is supplied, in MiB. The filters (`grep`, `filterCorrelation`, `objectFilter`, `since`) are applied to each line as it is read backwards from the end of the log, so a match anywhere within this range is found while retained memory stays bounded by the number of matches returned. When the budget stops the scan the response says `scanComplete:false` with `scannedBytes` and a hint, because "no match in what we read" is not "no match in the log". Raise it for a very large log; lower it if a no-match search on a huge log is too slow. | `256` |
 | `GXMCP_SDK_NO_PROGRESS_STALL_MS` | Milliseconds a busy SDK lane may run **without ever emitting a progress notification** before it is classified `busy-stalled-unproven` and becomes a recovery candidate. The progress marker is only set by operations that emit progress (builds, bulk indexing), so a single object read, a save, an inspect, or a COM call blocked behind a modal dialog emits none and used to stay `busy-unproven` indefinitely - never recovered by `genexus_connection_recover` or shared-host supervision. Deliberately several times the 90s `sdkStallAfterMs` window: a lane that has proved it reports progress is trusted sooner. Raise it for a KB with genuinely long non-progress operations; lower it to recover wedged SDKs faster, at the cost of recycling a Worker that was about to finish. Read by both the Gateway and the shared-host broker so they cannot disagree. | `600000` |
 | `GXMCP_OCR_ENGINE` | Set to `tesseract` to select the Tesseract OCR engine (requires the Tesseract.NET dependency). | unset |
@@ -372,6 +378,12 @@ enable experimental write paths or skip discovery guards.
 | `GXMCP_PARITY_IDE_NAME` | Name of a pre-seeded object patterned in the IDE, paired with the variable below for IDE-vs-MCP parity tests. Both must be set or the test skips. | unset |
 | `GXMCP_PARITY_MCP_NAME` | Name of the matching object patterned through MCP. | unset |
 | `GXMCP_DSO_NAME` | Name of an existing Design System with nonempty `Tokens` and `Styles` parts, for the read-only preview regression. Unset skips that live test. | unset |
+| `GXMCP_NATIVE_READ_ORACLE_DIR` | Output directory where `NativeReadOnlyRoutingLiveTests` writes its captured responses. Set by `scripts/run-native-live-parity.ps1`; must be a new directory. | unset (tests throw) |
+| `GXMCP_NATIVE_EXPECT_BACKEND` | `sdk`, `auto` or `gxengine`: the backend the packaged native read-only comparison expects to have served each request. | unset (tests throw) |
+| `GXMCP_NATIVE_SDK_ORACLE_FILE` | Retained SDK response (KB version list or current environment) a packaged native comparison is checked against. | unset (tests throw) |
+| `GXMCP_NATIVE_SDK_ORACLE_DIR` | Directory of retained SDK responses (Procedure pages or minimal inspections) for the packaged native comparisons. | unset (tests throw) |
+| `GXMCP_NATIVE_CANDIDATE_EXE` | Built `gx-engine.exe` the direct native-vs-SDK environment comparison runs. | unset (test throws) |
+| `GXMCP_NATIVE_INSPECT_NAMES` | Comma-separated Procedure names whose SDK minimal inspections are captured as the oracle. | empty (nothing captured) |
 | `GXMCP_UPDATE_GOLDEN` | Set to `1` to overwrite the discovery golden fixture with the current `tools/list` response instead of asserting against it. Never set in CI. | unset |
 | `GXMCP_GXWIRE_TIMEOUT_SECONDS` | Wall-clock budget, in seconds, for one `gxwire.exe` invocation. Overrides both defaults: 30 for query actions and 900 for `action=index`. Unparsable or non-positive values fall back to those defaults rather than failing the call. | unset (per-action defaults) |
 | `GX_MCP_SDK_PROBE` | Set to `1` to run the full SDK surface probe on every pattern apply. It walks every loaded SDK assembly and writes a multi-megabyte dump; it used to run unconditionally and cost 5–15 s per apply. `genexus_sdk_probe` remains the explicit way to get a dump. | off |

@@ -195,6 +195,72 @@ fn test_webpanel_from_kb_object() {
 }
 
 #[test]
+fn test_webpanel_from_kb_object_plain_text_events() {
+    let mut kb_obj = KbObject::new(
+        ObjectId::new("WebPanel_102").unwrap(),
+        "PlainEventPanel",
+        ObjectKind::WebPanel,
+    );
+    kb_obj.source_parts.extend([
+        SourcePart {
+            name: "VARIABLES".to_string(),
+            source: r#"{"Counter": {"kind": "numeric", "precision": 10, "scale": 0}}"#.to_string(),
+        },
+        SourcePart {
+            name: "EVENTS".to_string(),
+            source: "Event Start\n    &Counter = 42\nEndEvent\n\nEvent 'DoAction'\n    &Counter = &Counter + 1\nEndEvent".to_string(),
+        },
+        SourcePart {
+            name: "RULES".to_string(),
+            source: "parm(in:&Counter);".to_string(),
+        },
+    ]);
+
+    let panel_class =
+        WebPanelClass::from_kb_object(&kb_obj).expect("from kb object with plain events");
+    let code = panel_class.emit();
+
+    for snippet in [
+        "E12_Start();",
+        "protected void E12_Start( )",
+        "/* Start Event */",
+        "AV_Counter = (long)(42);",
+        "E14_DoAction();",
+        "protected void E14_DoAction( )",
+    ] {
+        assert!(code.contains(snippet), "missing '{snippet}' in:\n{code}");
+    }
+}
+
+#[test]
+fn test_webpanel_from_kb_object_fails_closed_on_malformed_parts() {
+    for (part_name, bad_source) in [
+        ("VARIABLES", "<Variables><NotJson/></Variables>"),
+        ("EVENTS", "not valid event syntax"),
+        ("EVENTS", "/* unterminated comment"),
+        ("EVENTS", "Event Start\n&x = 1"),
+        ("EVENTS", "Event Start\nIf (\nEndEvent"),
+        ("LAYOUT", "{ not a layout control list }"),
+        ("RULES", "unknown_rule_without_semicolon"),
+        ("WEBPANEL", "{ malformed json"),
+    ] {
+        let mut bad_obj = KbObject::new(
+            ObjectId::new("WebPanel_bad").unwrap(),
+            "BadPanel",
+            ObjectKind::WebPanel,
+        );
+        bad_obj.source_parts.push(SourcePart {
+            name: part_name.to_string(),
+            source: bad_source.to_string(),
+        });
+        assert!(
+            WebPanelClass::from_kb_object(&bad_obj).is_err(),
+            "{part_name} with '{bad_source}' must fail closed"
+        );
+    }
+}
+
+#[test]
 fn test_webpanel_with_parameters_and_rules() {
     let mut panel = WebPanelClass::new("ParamWebPanel");
     panel.rules = vec!["parm(in:&ClientId, out:&Status);".to_string()];

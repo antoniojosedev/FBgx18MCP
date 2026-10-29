@@ -1,0 +1,8 @@
+# CI runs `cargo nextest run --profile ci` (.github/workflows/ci.yml, rust (gx-engine)).
+[profile.ci]
+# Report every failing test, not just the first one.
+fail-fast = false
+# Per-test time budget (CODING_STANDARDS.md, CI time budget): a test is reported
+# slow after 30s and killed - and failed - after 4 periods (120s). The slowest test
+# today is ~47s. Make a slow test faster rather than raising this limit.
+slow-timeout = { period = "30s", terminate-after = 4 }

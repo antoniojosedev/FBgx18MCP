@@ -713,15 +713,23 @@
             "type": "string"
           },
           "firstItem": {
-            "description": "object SDT/Transaction optional: name…",
+            "description": "object SDT/Transaction: seed item/key…",
             "type": "string"
           },
           "firstItemType": {
-            "description": "object SDT/Transaction optional: type…",
+            "description": "object SDT/Transaction: seed item/key…",
             "type": "string"
           },
           "folder": {
             "description": "object: Folder destination (created in…",
+            "type": "string"
+          },
+          "imagePath": {
+            "description": "object Image (or imageUrl): absolute…",
+            "type": "string"
+          },
+          "imageUrl": {
+            "description": "object Image: http(s) URL.",
             "type": "string"
           },
           "includePatternInstance": {
@@ -1619,7 +1627,7 @@
             "type": "boolean"
           },
           "verifyMode": {
-            "description": "Omitted: semantic for Structure,…",
+            "description": "Omitted: semantic for Structure and…",
             "enum": [
               "semantic",
               "normalized",
@@ -4817,7 +4825,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Versioning umbrella. action: history_list|history_get|history_save|history_restore (snapshot store; restore+discard=true is IDE 'Discard changes' parity; versionId with part=SDTStructure restores the… Full guidance: genexus://kb/tool-help/genexus_versioning",
+      "description": "Versioning umbrella. action: history_list|history_get|history_diff|history_save|history_restore (snapshot store; restore+discard=true is IDE 'Discard changes' parity; versionId with part=SDTStructure… Full guidance: genexus://kb/tool-help/genexus_versioning",
       "inputSchema": {
         "properties": {
           "action": {
@@ -4825,6 +4833,7 @@
             "enum": [
               "history_list",
               "history_get",
+              "history_diff",
               "history_save",
               "history_restore",
               "undo",
@@ -4844,7 +4853,7 @@
             "type": "string"
           },
           "async": {
-            "description": "history_get/history_list/diff/diff_gene…",
+            "description": "history_get/list/diff, diff,…",
             "type": "boolean"
           },
           "at": {
@@ -4852,7 +4861,7 @@
             "type": "string"
           },
           "context": {
-            "description": "blame: surrounding lines of context.",
+            "description": "blame/history_diff: lines of context.",
             "type": "integer"
           },
           "discard": {
@@ -4919,8 +4928,12 @@
             "description": "history_restore: snapshot label or path…",
             "type": "string"
           },
+          "toVersionId": {
+            "description": "history_diff target; omit = current.",
+            "type": "integer"
+          },
           "versionId": {
-            "description": "history_get/history_restore: numerical…",
+            "description": "history_get/diff/restore: native…",
             "type": "integer"
           }
         },

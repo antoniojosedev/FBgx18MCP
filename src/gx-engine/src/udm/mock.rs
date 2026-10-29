@@ -61,6 +61,29 @@ pub struct StateLockRecord {
     pub owner_machine_name: String,
 }
 
+/// Stored identity and last-update inputs of one active object version.
+///
+/// These are the inputs the SDK exposes through `KBObject.Guid`, `KBObject.Parent`
+/// and `KBObject.LastUpdate`; they are read without decoding any part.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ObjectReadMetadata {
+    /// `Entity.EntityGuid` of the object, as stored (canonical dashed form).
+    pub guid: Option<String>,
+    /// The holder row `(EntityTypeId, EntityId)`, or `None` when the object has no parent.
+    pub parent: Option<(i32, i32)>,
+    /// `Entity.EntityGuid` of the holder, when the holder row exists.
+    pub parent_guid: Option<String>,
+    /// `ModelEntityVersion.ModelEntityVersionName` of the holder, the Worker's fallback
+    /// when the parent GUID is unavailable.
+    pub parent_name: Option<String>,
+    /// `ModelEntityOutput.OutputTimestamp` of the active version's `ObjectSaved`
+    /// output (`OutputTypeId=301`, `OutputTypeVersion=0`), raw .NET ticks.
+    pub object_saved_ticks: Option<i64>,
+    /// `ModelEntityVersion.ModelEntityVersionTimestamp` of the exact active version,
+    /// raw .NET ticks. Used only when the `ObjectSaved` output row is absent.
+    pub model_entity_version_ticks: Option<i64>,
+}
+
 /// In-memory storage backing the UDM database for simulation and fast tests.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryDatabase {
@@ -75,6 +98,13 @@ pub struct InMemoryDatabase {
     /// `ModelEntityVersion` parent per `(ModelId, EntityTypeId, EntityId)`, as
     /// `(ModelParentEntityTypeId, ModelParentEntityId)`. `(0, 0)` is parent-less.
     pub model_parents: std::collections::BTreeMap<(i32, i32, i32), (i32, i32)>,
+    /// `ModelEntityOutput` timestamp of the active version's `ObjectSaved` output
+    /// (`OutputTypeId=301`, `OutputTypeVersion=0`) per
+    /// `(ModelId, EntityTypeId, EntityId, EntityVersionId)`, raw .NET ticks.
+    pub object_saved_timestamps: std::collections::BTreeMap<(i32, i32, i32, i32), i64>,
+    /// `ModelEntityVersion.ModelEntityVersionTimestamp` per
+    /// `(ModelId, EntityTypeId, EntityId, EntityVersionId)`, raw .NET ticks.
+    pub model_entity_version_timestamps: std::collections::BTreeMap<(i32, i32, i32, i32), i64>,
     /// The stored `GenerateObject` value of a Procedure per `(ModelId, EntityTypeId, EntityId)`, as the
     /// Knowledge Base writes it (`"True"` or `"False"`).
     pub generate_flags: std::collections::BTreeMap<(i32, i32, i32), String>,

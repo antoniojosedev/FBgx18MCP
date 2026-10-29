@@ -18,7 +18,7 @@ the same KB byte for byte: **328/328 C# files**, 24/24 web scripts, `gxcfg.js`,
 `CloudServices.config`. That is one oracle KB, not every KB: forms the engine has no SDK
 evidence for are refused by name.
 Use the SDK for workflows outside validated engine coverage; preserve unsupported-object
-refusals: planning skips yield `Partial`, while checked-emission errors yield `Failed`; neither is a successful whole-KB build. Event-bearing WebPanels are refused by the rebuild planner. The separate library-only `WebPanelClass` emitter is not used by rebuild and has no event-parity evidence.
+refusals: planning skips yield `Partial`, while checked-emission errors yield `Failed`; neither is a successful whole-KB build. Event-bearing WebPanels are refused by the rebuild planner (`EVENTS`, `RULES` and `CONDITIONS` containing only closed comments are admitted as empty; unterminated block comments or executable code are refused). The separate library-only `WebPanelClass` emitter is not used by rebuild and has no event-parity evidence.
 
 Gateway routing defaults to `Engine.Backend=gxengine`: admitted blocking builds/rebuilds
 and field-limited type-only queries use gx-engine, including directed `build` requests with `mode=compile_check`,
@@ -153,6 +153,18 @@ Legacy catalog commands (`kb-check`, `kb-emit`, `kb-build`, `kb-run`) also check
 native directory/connection-file inputs and bind the sole Design model's actual
 id. They cannot name an active version, so multi-model KBs are refused through
 their existing input-error contract. Portable JSON catalogs are unaffected.
+
+Standalone `kb-read` reads (including `--page --client mcp`) now select the active
+Design model and load their source and token metadata through one private serializable SQL
+read transaction (`read_object_scoped`, `read_object_page_scoped`), without reusing
+catalog caches. Lock waits are capped at ten seconds; a failed session is discarded
+without recreation or query replay. The read transaction is released when the private
+session closes, including on errors. This does not change database isolation settings.
+In-memory tests use a detached storage copy. Resolving names currently scans the
+active model, so its range locks can briefly block IDE/SDK writers; the writer's own
+wait time is not bounded by the reader's lock timeout. This boundary does not yet establish
+active-session scope handoff or concurrent edit/read-to-write workflow parity;
+`genexus_read` stays SDK-backed.
 
 Standalone `kb-read` projects the evidenced design-class `StyleClass:<type-guid>Name`
 wrapper to `StyleClass:Name` in tokenized source responses, preserving literals
