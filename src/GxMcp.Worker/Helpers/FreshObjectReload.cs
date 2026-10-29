@@ -48,6 +48,12 @@ namespace GxMcp.Worker.Helpers
             Func<T> resolve,
             out FreshReloadOutcome outcome) where T : class
         {
+            if (expected == null)
+            {
+                outcome = FreshReloadOutcome.NotResolved;
+                return null;
+            }
+
             if (!invalidate(expected))
             {
                 outcome = FreshReloadOutcome.InvalidationUnavailable;
@@ -119,7 +125,7 @@ namespace GxMcp.Worker.Helpers
 
             var diagnostic = new JObject
             {
-                ["code"] = DiagnosticCode,
+                ["code"] = outcome == FreshReloadOutcome.Independent ? "Independent" : DiagnosticCode,
                 ["reason"] = reason,
                 ["message"] = message
             };

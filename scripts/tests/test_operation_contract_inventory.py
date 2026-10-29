@@ -219,12 +219,12 @@ class NativeRoutingCoverageTests(unittest.TestCase):
     """The doc's natively routed counts are derived from the capability registry, never hand-kept."""
 
     COVERAGE_SENTENCES = (
-        (r"contains \*\*(\d+) tools and (\d+) operation rows", 1),
-        (r"contains \*\*(\d+) tools and (\d+) operation rows", 2),
-        (r"subset of \*\*(\d+) tools \((\d+)%\)", 1),
-        (r"subset of \*\*(\d+) tools \((\d+)%\)", 2),
-        (r"Those are \*\*(\d+) of (\d+) operation rows \((\d+)\.\d%\)", 1),
-        (r"Those are \*\*(\d+) of (\d+) operation rows \((\d+)\.\d%\)", 2),
+        (r"contains\s+\*\*(\d+)\s+tools\s+and\s+(\d+)\s+operation\s+rows", 1),
+        (r"contains\s+\*\*(\d+)\s+tools\s+and\s+(\d+)\s+operation\s+rows", 2),
+        (r"subset\s+of\s+\*\*(\d+)\s+tools\s+\((\d+)%\)", 1),
+        (r"subset\s+of\s+\*\*(\d+)\s+tools\s+\((\d+)%\)", 2),
+        (r"Those\s+are\s+\*\*(\d+)\s+of\s+(\d+)\s+operation\s+rows\s+\((\d+)\.\d%\)", 1),
+        (r"Those\s+are\s+\*\*(\d+)\s+of\s+(\d+)\s+operation\s+rows\s+\((\d+)\.\d%\)", 2),
     )
 
     def setUp(self):
@@ -309,7 +309,7 @@ class NativeRoutingCoverageTests(unittest.TestCase):
         self.assertIn("MayRouteToEngine", str(caught.exception))
 
     def test_check_command_fails_when_the_doc_disagrees_with_the_source(self):
-        stale = _bump_first_number(self.doc, r"Those are \*\*(\d+) of", 1)
+        stale = _bump_first_number(self.doc, r"Those\s+are\s+\*\*(\d+)\s+of", 1)
         self.module.ENGINE_DOC = self._doc_with(stale)
         self.module.verify_classifier_policy = lambda: None
         errors = io.StringIO()

@@ -197,6 +197,17 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void CountPatternInstances_HandlesNullObjectsWithoutThrowing()
+        {
+            var objects = new KBObject[] { null, null };
+            int count = EventsSaveIsolation.CountPatternInstances(objects, o => o?.TypeDescriptor?.Name);
+            Assert.Equal(0, count);
+
+            int nullCollectionCount = EventsSaveIsolation.CountPatternInstances((IEnumerable<KBObject>)null);
+            Assert.Equal(0, nullCollectionCount);
+        }
+
+        [Fact]
         public void MetadataAudit_DetectsOtherObjectsChangedAddedRemoved_ExcludesOnlyTarget()
         {
             var target = Guid.NewGuid(); var changed = Guid.NewGuid();

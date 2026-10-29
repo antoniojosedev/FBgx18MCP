@@ -71,8 +71,9 @@ namespace GxMcp.Worker.Helpers
         // materialize as another class (or a type an SDK renamed) is still counted and never trusted to have none.
         internal static int CountPatternInstances(IEnumerable<KBObject> objects, Func<KBObject, string> typeName = null)
         {
-            typeName = typeName ?? (o => o.TypeDescriptor?.Name);
-            return objects.Count(o => o is PatternInstance || string.Equals(typeName(o), PatternInstanceTypeName, StringComparison.OrdinalIgnoreCase));
+            typeName = typeName ?? (o => o?.TypeDescriptor?.Name);
+            return (objects ?? Enumerable.Empty<KBObject>())
+                .Count(o => o != null && (o is PatternInstance || string.Equals(typeName(o), PatternInstanceTypeName, StringComparison.OrdinalIgnoreCase)));
         }
 
         private const string PatternInstanceTypeName = "PatternInstance";

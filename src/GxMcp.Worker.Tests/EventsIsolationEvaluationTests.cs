@@ -288,6 +288,19 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ACompleteBundleVerification_ThatThrowsAnUnexpectedException_BecomesIsolationPreflightFailed()
+        {
+            var result = EventsIsolationFindings.Evaluate(Probe(new Spy(), p =>
+            {
+                p.LoadedLocations = name => new[] { @"C:\sdk\" + name + ".dll" };
+                p.VerifyCompleteBundle = hashes => throw new System.IO.IOException("Disk read failed");
+            }));
+
+            Assert.Contains("IsolationPreflightFailed", Codes(result));
+            Assert.Contains("IOException", result.Findings.First(f => f.Code == "IsolationPreflightFailed").Message);
+        }
+
+        [Fact]
         public void AnEvaluationNeverThrows_EvenWhenEveryProbeFails()
         {
             var result = EventsIsolationFindings.Evaluate(Probe(new Spy(), p =>
