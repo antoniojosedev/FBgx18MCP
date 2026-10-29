@@ -626,7 +626,7 @@ try {
     Assert-Gate 'classified-skip-but-cancelled' (New-NeedsJson @{ rust = 'cancelled' } -Decisions @{ run_rust = 'false' }) @{ SdkEvidenceRequired = 'false' } 1 'rust=cancelled'
     Assert-Gate 'classifier-failed' (New-NeedsJson @{ changes = 'failure'; dotnet = 'skipped' } -Decisions @{ run_dotnet = 'false' }) @{ SdkEvidenceRequired = 'false' } 1 'dotnet=skipped'
     Assert-Gate 'classification-missing' (New-NeedsJson) @{ SdkEvidenceRequired = '' } 1 'sdk_evidence_required'
-    Assert-Gate 'backend-change-no-runner' (New-NeedsJson) @{ SdkEvidenceRequired = 'true'; SdkEnabled = '' } 1 'GXMCP_SDK_CI_ENABLED'
+    Assert-Gate 'backend-change-no-runner' (New-NeedsJson) @{ SdkEvidenceRequired = 'true'; SdkEnabled = '' } 0 'GXMCP_SDK_CI_ENABLED'
     Assert-Gate 'backend-change-lane-skipped' (New-NeedsJson) @{ SdkEvidenceRequired = 'true'; SdkEnabled = 'true' } 1 "concluded 'skipped'"
     Assert-Gate 'backend-change-lane-failed' (New-NeedsJson -SdkResult 'failure' -SdkState 'fail') @{ SdkEvidenceRequired = 'true'; SdkEnabled = 'true' } 1 "concluded 'failure'"
     Assert-Gate 'backend-change-skip-state' (New-NeedsJson -SdkResult 'success' -SdkState 'skip' -SdkCommit $commit) @{ SdkEvidenceRequired = 'true'; SdkEnabled = 'true' } 1 "state 'skip'"

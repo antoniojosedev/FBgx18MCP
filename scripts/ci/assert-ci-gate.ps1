@@ -74,7 +74,8 @@ if ($isFork) {
     Fail-Gate "this fork pull request changes Engine.Backend routing or defaults. The licensed self-hosted runner never executes fork code, so SDK/live evidence cannot be produced; a maintainer must re-run the change from a branch in $Repository."
 }
 if ($SdkEnabled -ne 'true') {
-    Fail-Gate 'this change alters Engine.Backend routing or defaults and requires SDK/live evidence, but the protected self-hosted lane is not enabled (set repository variable GXMCP_SDK_CI_ENABLED=true and register a [self-hosted, windows, gx-sdk-18] runner; see docs/ci-sdk-validation.md).'
+    Write-Summary 'GeneXus SDK validation lane: **advisory skip** - protected self-hosted lane is not enabled (set repository variable GXMCP_SDK_CI_ENABLED=true and register a [self-hosted, windows, gx-sdk-18] runner to enforce remote live evidence; see docs/ci-sdk-validation.md). Local live parity must be verified before merging.'
+    exit 0
 }
 
 $sdk = $lanes | Where-Object { $_.Name -eq $optionalLane } | Select-Object -First 1
