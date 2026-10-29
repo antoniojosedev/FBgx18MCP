@@ -4,8 +4,9 @@
 
 use gx_engine::catalog::{KbObject, ObjectId, ObjectKind, Reference, ReferenceKind, SourcePart};
 use gx_engine::udm::{
-    DEFAULT_DESIGN_MODEL_ID, KbConnectionInfo, ModelEntityVersionRecord, UdmClient, UdmReader,
-    UdmRow, UdmWriter,
+    DEFAULT_DESIGN_MODEL_ID, EntityVersionRecord, KbConnectionInfo, ModelEntityVersionRecord,
+    UdmClient, UdmReader, UdmRow, UdmWriter, build_token_data_list, decode_blob, encode_blob,
+    extract_token_data_list,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -520,4 +521,199 @@ fn test_udm_real_kb_live_read_procedure() {
             .all(|p| !p.name.eq_ignore_ascii_case("UNKNOWN")),
         "no served part may be labelled UNKNOWN"
     );
+}
+
+fn extract_decoded_varbinary_blobs(sql: &str) -> Vec<Vec<u8>> {
+    sql.split(", 0x")
+        .skip(1)
+        .map(|segment| {
+            let hex = segment.split(')').next().expect("closing paren for VALUES");
+            hex.as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| {
+                    u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16)
+                        .expect("valid hex byte")
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn test_udm_writer_plan_save_existing_object_sql_and_hex_decoding() {
+    let client = Arc::new(UdmClient::new_in_memory());
+    let writer = UdmWriter::new(client);
+
+    let target_proc = KbObject::new(
+        ObjectId::new("pauditlog").unwrap(),
+        "PAuditLog",
+        ObjectKind::Procedure,
+    );
+    let target_id = writer
+        .create_object(&target_proc)
+        .expect("create PAuditLog");
+
+    let mut proc = KbObject::new(
+        ObjectId::new("pbillingrunner").unwrap(),
+        "PBillingRunner",
+        ObjectKind::Procedure,
+    );
+    proc.source_parts.push(SourcePart {
+        name: "SOURCE".to_string(),
+        source: "Msg('initial')".to_string(),
+    });
+    proc.source_parts.push(SourcePart {
+        name: "RULES".to_string(),
+        source: "Parm(in:&InvoiceId);".to_string(),
+    });
+
+    let v1_id = writer.create_object(&proc).expect("create PBillingRunner");
+    assert_eq!(v1_id.version_id, 1);
+
+    let v2_source = "For Each Invoice\n    Call(PAuditLog, InvoiceId)\nEndFor";
+    let v2_rules = "Parm(in:&InvoiceId, out:&Status);";
+    proc.source_parts[0].source = v2_source.to_string();
+    proc.source_parts[1].source = v2_rules.to_string();
+    proc.references.push(Reference {
+        kind: ReferenceKind::Calls,
+        target: ObjectId::new("pauditlog").unwrap(),
+    });
+
+    let (planned_id, sql) = writer
+        .plan_save_existing_object_sql(&proc, &[901, 902])
+        .expect("plan SQL batch");
+
+    assert_eq!(planned_id.entity_type_id, 38);
+    assert_eq!(planned_id.entity_id, v1_id.entity_id);
+    assert_eq!(planned_id.version_id, 2);
+    assert_eq!(planned_id.name, "PBillingRunner");
+
+    assert!(sql.starts_with(
+        "SET NOCOUNT ON; SET XACT_ABORT ON; SET LOCK_TIMEOUT 10000; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; BEGIN TRANSACTION;"
+    ));
+    assert!(sql.ends_with("COMMIT TRANSACTION;"));
+    assert!(sql.contains(&format!(
+        "IF NOT EXISTS (SELECT 1 FROM ModelEntityVersion WITH (UPDLOCK, HOLDLOCK) WHERE ModelId = 1 AND EntityTypeId = 38 AND EntityId = {} AND EntityVersionId = 1) THROW 50001, 'Optimistic concurrency conflict on ModelEntityVersion', 1;",
+        v1_id.entity_id
+    )));
+    assert!(sql.contains(&format!(
+        "UPDATE ModelEntityVersion SET EntityVersionId = 2, ModelEntityVersionName = N'PBillingRunner' WHERE ModelId = 1 AND EntityTypeId = 38 AND EntityId = {} AND EntityVersionId = 1;",
+        v1_id.entity_id
+    )));
+    assert!(sql.contains(&format!(
+        "DELETE FROM ModelCrossReference WHERE ModelId = 1 AND FromEntityTypeId = 38 AND FromEntityId = {};",
+        v1_id.entity_id
+    )));
+    assert!(sql.contains(&format!(
+        "INSERT INTO ModelCrossReference (ModelId, FromEntityTypeId, FromEntityId, ToEntityTypeId, ToEntityId, ReferenceType) VALUES (1, 38, {}, 38, {}, 1);",
+        v1_id.entity_id, target_id.entity_id
+    )));
+
+    let hex_blobs = extract_decoded_varbinary_blobs(&sql);
+    assert_eq!(hex_blobs.len(), 2);
+
+    let raw_source_tokens = decode_blob(&hex_blobs[0]).unwrap();
+    assert_eq!(
+        extract_token_data_list(&raw_source_tokens).unwrap(),
+        v2_source
+    );
+
+    let raw_rules_tokens = decode_blob(&hex_blobs[1]).unwrap();
+    assert_eq!(
+        extract_token_data_list(&raw_rules_tokens).unwrap(),
+        v2_rules
+    );
+
+    // Guard checks on plan_save_existing_object_sql
+    assert!(
+        writer.plan_save_existing_object_sql(&proc, &[901]).is_err(),
+        "wrong allocated_part_ids length must fail"
+    );
+    assert!(
+        writer
+            .plan_save_existing_object_sql(&proc, &[0, 902])
+            .is_err(),
+        "non-positive part ID must fail"
+    );
+    assert!(
+        writer
+            .plan_save_existing_object_sql(&proc, &[901, 901])
+            .is_err(),
+        "duplicate part IDs must fail"
+    );
+}
+
+#[test]
+fn test_udm_writer_save_and_verify_and_readback_tamper_detection() {
+    let client = Arc::new(UdmClient::new_in_memory());
+    let writer = UdmWriter::new(client.clone());
+
+    let mut proc = KbObject::new(
+        ObjectId::new("pverifiedflow").unwrap(),
+        "PVerifiedFlow",
+        ObjectKind::Procedure,
+    );
+    proc.source_parts.push(SourcePart {
+        name: "SOURCE".to_string(),
+        source: "Msg('verified v1')".to_string(),
+    });
+    proc.source_parts.push(SourcePart {
+        name: "RULES".to_string(),
+        source: "Parm(in:&Code);".to_string(),
+    });
+
+    let id1 = writer.save_and_verify(&proc).expect("save_and_verify v1");
+    assert_eq!(id1.version_id, 1);
+
+    proc.source_parts[0].source = "Msg('verified v2')".to_string();
+    let id2 = writer.save_and_verify(&proc).expect("save_and_verify v2");
+    assert_eq!(id2.version_id, 2);
+
+    // Tamper version ID
+    client
+        .update_model_entity_version(1, id2.entity_type_id, id2.entity_id, 7, None)
+        .unwrap();
+    assert!(writer.verify_saved_object_readback(&id2, &proc).is_err());
+    client
+        .update_model_entity_version(1, id2.entity_type_id, id2.entity_id, 2, None)
+        .unwrap();
+    writer
+        .verify_saved_object_readback(&id2, &proc)
+        .expect("restored version ID verifies cleanly");
+
+    // Tamper part content
+    let comps = client
+        .get_compositions(id2.entity_type_id, id2.entity_id, id2.version_id)
+        .unwrap();
+    let comp0 = &comps[0];
+    let saved_ev = client
+        .get_entity_version(
+            comp0.component_entity_type_id,
+            comp0.component_entity_id,
+            comp0.component_entity_version_id,
+        )
+        .unwrap()
+        .unwrap();
+    client
+        .insert_entity_version(EntityVersionRecord {
+            entity_type_id: comp0.component_entity_type_id,
+            entity_id: comp0.component_entity_id,
+            entity_version_id: comp0.component_entity_version_id,
+            data: encode_blob(&build_token_data_list("Msg('corrupted')"), true).unwrap(),
+            properties: None,
+        })
+        .unwrap();
+    assert!(writer.verify_saved_object_readback(&id2, &proc).is_err());
+    client.insert_entity_version(saved_ev).unwrap();
+    writer
+        .verify_saved_object_readback(&id2, &proc)
+        .expect("restored part content verifies cleanly");
+
+    // Tamper part count
+    client
+        .clear_compositions(id2.entity_type_id, id2.entity_id, id2.version_id)
+        .unwrap();
+    assert!(writer.verify_saved_object_readback(&id2, &proc).is_err());
 }

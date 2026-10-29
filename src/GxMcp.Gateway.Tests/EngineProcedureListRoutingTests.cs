@@ -45,7 +45,27 @@ public sealed class EngineProcedureListRoutingTests : EngineRoutingTestBase
     }
 
     [Theory]
-    [InlineData("{\"typeFilter\":\"Transaction\",\"limit\":3,\"fields\":[\"name\"]}")]
+    [InlineData("Transaction", "kb-list-objects")]
+    [InlineData("WebPanel", "kb-list-objects")]
+    [InlineData("Table", "kb-list-objects")]
+    [InlineData("DataProvider", "kb-list-objects")]
+    public async Task ExpandedTypes_StartNativeWithObjectList(string type, string expectedCliCommand)
+    {
+        string args = $"{{\"typeFilter\":\"{type}\",\"limit\":3,\"offset\":0,\"fields\":[\"name\",\"type\"]}}";
+        string page = $"{{\"objects\":[{{\"name\":\"Obj1\",\"type\":\"{type}\",\"last_update_ticks\":639276684890000000}}],\"total\":1,\"offset\":0,\"limit\":3}}";
+        var run = await RunAsync("gxengine", "error", args, page);
+        Assert.True(run.Invoked);
+        Assert.False(run.Result!["isError"]!.Value<bool>());
+        JObject payload = PayloadOf(run.Result!);
+        Assert.Equal(1, payload["count"]!.Value<int>());
+        Assert.Equal("Obj1", payload["results"]![0]!["name"]!.ToString());
+        Assert.Equal(type, payload["results"]![0]!["type"]!.ToString());
+        Assert.Contains(expectedCliCommand, run.Arguments);
+        Assert.Contains($"--type {type}", run.Arguments);
+    }
+
+    [Theory]
+    [InlineData("{\"typeFilter\":\"Folder\",\"limit\":3,\"fields\":[\"name\"]}")]
     [InlineData("{\"typeFilter\":\"Procedure,Transaction\",\"limit\":3,\"fields\":[\"name\"]}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"fields\":[\"name\"]}")]
     [InlineData("{\"typeFilter\":\"Procedure\",\"limit\":101,\"fields\":[\"name\"]}")]

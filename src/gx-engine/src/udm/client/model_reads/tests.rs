@@ -1,7 +1,8 @@
 use super::{
     ModelEntityVersionRecord, ObjectReadMetadata, SYSTEM_ROOT_MODULE_GUID, UdmClient,
-    object_read_metadata_from_rows, object_read_metadata_sql, parse_datetime_ticks,
-    parse_stored_datetime_ticks, system_root_module_from_rows, system_root_module_sql,
+    object_read_metadata_from_rows, object_read_metadata_sql, objects_lifecycle_ticks_from_rows,
+    objects_lifecycle_ticks_sql, parse_datetime_ticks, parse_stored_datetime_ticks,
+    system_root_module_from_rows, system_root_module_sql,
 };
 
 const GUID: &str = "83a55789-716f-4c13-a03c-215b167050e8";
@@ -400,4 +401,169 @@ fn a_missing_timestamp_is_absent_and_malformed_values_are_refused() {
     }
     let error = parse_stored_datetime_ticks("not-a-date", "OutputTimestamp").unwrap_err();
     assert!(error.contains("OutputTimestamp"), "{error}");
+}
+
+#[test]
+fn batched_lifecycle_sql_queries_requested_versions_in_a_single_statement() {
+    let sql = objects_lifecycle_ticks_sql(1, 3, &[(5, 9), (8, 2)]);
+    for expected in [
+        "WHERE m.ModelId = 1 AND m.EntityTypeId = 3",
+        "((m.EntityId = 5 AND m.EntityVersionId = 9) OR (m.EntityId = 8 AND m.EntityVersionId = 2))",
+        "CASE WHEN o.OutputTypeId IS NULL THEN 0 ELSE 1 END AS HasObjectSaved",
+        "o.ModelId = m.ModelId AND o.EntityTypeId = m.EntityTypeId",
+        "o.EntityId = m.EntityId AND o.OutputTypeId = 301 AND o.OutputTypeVersion = 0",
+        "o.OutputEntityVersionId = m.EntityVersionId",
+        "ISNULL(CONVERT(VARCHAR(33), o.OutputTimestamp, 126), '')",
+        "ISNULL(CONVERT(VARCHAR(33), m.ModelEntityVersionTimestamp, 126), '')",
+    ] {
+        assert!(sql.contains(expected), "missing '{expected}' in {sql}");
+    }
+    for forbidden in ["TOP", "ORDER BY"] {
+        assert!(!sql.contains(forbidden), "{forbidden} in {sql}");
+    }
+}
+
+#[test]
+fn batched_lifecycle_rows_resolve_object_saved_with_fallback_to_model_timestamp() {
+    let ticks = objects_lifecycle_ticks_from_rows(&[
+        vec!["5", "1", SAVED, MODEL],
+        vec!["6", "0", "", MODEL],
+        vec!["7", "0", "", ""],
+    ])
+    .expect("valid batch");
+    assert_eq!(ticks.len(), 3);
+    assert_eq!(ticks.get(&5), Some(&Some(SAVED_TICKS)));
+    assert_eq!(ticks.get(&6), Some(&Some(MODEL_TICKS)));
+    assert_eq!(ticks.get(&7), Some(&None));
+}
+
+#[test]
+fn batched_lifecycle_refuses_present_object_saved_with_null_or_unparseable_timestamp() {
+    for (rows, expected) in [
+        (
+            vec![vec!["5", "0", "", MODEL], vec!["6", "1", "", MODEL]],
+            "ObjectSaved row for entity 6 has NULL or unparseable OutputTimestamp",
+        ),
+        (
+            vec![vec!["6", "1", "2026-13-01T00:00:00", MODEL]],
+            "ObjectSaved row for entity 6 has NULL or unparseable OutputTimestamp",
+        ),
+        (vec![vec!["6", "0", SAVED, MODEL]], "absent but reports"),
+    ] {
+        let err = objects_lifecycle_ticks_from_rows(&rows).unwrap_err();
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn batched_lifecycle_refuses_duplicate_rows_for_an_entity() {
+    for duplicate_rows in [
+        [vec!["5", "1", SAVED, MODEL], vec!["5", "1", SAVED, MODEL]],
+        [vec!["5", "0", "", ""], vec!["5", "0", "", MODEL]],
+    ] {
+        let error = objects_lifecycle_ticks_from_rows(&duplicate_rows).unwrap_err();
+        assert!(
+            error.contains("entity 5") && error.contains("multiple rows"),
+            "{error}"
+        );
+    }
+
+    let client = UdmClient::new_in_memory();
+    let dup_request = client
+        .get_objects_lifecycle_ticks(1, 3, &[(5, 1), (5, 2)])
+        .unwrap_err();
+    assert!(dup_request.contains("duplicate entity 5"), "{dup_request}");
+}
+
+#[test]
+fn in_memory_batched_lifecycle_ticks_omit_missing_entities_and_prefer_object_saved() {
+    let client = UdmClient::new_in_memory();
+    assert!(
+        client
+            .get_objects_lifecycle_ticks(1, 3, &[])
+            .unwrap()
+            .is_empty()
+    );
+    {
+        let mut store = client.storage_for_test().write().expect("store");
+        store
+            .object_saved_timestamps
+            .insert((1, 3, 10, 1), SAVED_TICKS);
+        store
+            .model_entity_version_timestamps
+            .insert((1, 3, 10, 1), MODEL_TICKS);
+        store
+            .model_entity_version_timestamps
+            .insert((1, 3, 20, 2), MODEL_TICKS);
+        store.entity_guids.insert((3, 30), GUID.to_string());
+    }
+    let batch = client
+        .get_objects_lifecycle_ticks(1, 3, &[(10, 1), (20, 2), (30, 1), (40, 1)])
+        .expect("in-memory batch");
+    assert_eq!(batch.get(&10), Some(&Some(SAVED_TICKS)));
+    assert_eq!(batch.get(&20), Some(&Some(MODEL_TICKS)));
+    assert_eq!(batch.get(&30), Some(&None));
+    assert!(!batch.contains_key(&40));
+}
+
+#[test]
+fn listing_page_batches_lifecycle_ticks_for_the_page_slice_only() {
+    use crate::catalog::ObjectKind;
+    use crate::udm::mock::ModelEntityVersionRecord;
+
+    let client = UdmClient::new_in_memory();
+    let proc_type_id = client
+        .entity_type_resolver()
+        .unwrap()
+        .object_type_id(ObjectKind::Procedure)
+        .unwrap();
+    {
+        let mut store = client.storage_for_test().write().expect("store");
+        for (id, ver, name) in [
+            (1, 1, "Alpha"),
+            (2, 2, "Beta"),
+            (4, 1, "Delta"),
+            (3, 3, "Gamma"),
+        ] {
+            store.model_entity_versions.push(ModelEntityVersionRecord {
+                model_id: 1,
+                entity_type_id: proc_type_id,
+                entity_id: id,
+                entity_version_id: ver,
+                name: name.to_string(),
+            });
+        }
+        store
+            .object_saved_timestamps
+            .insert((1, proc_type_id, 2, 2), 200);
+        store
+            .model_entity_version_timestamps
+            .insert((1, proc_type_id, 2, 2), 100);
+        store
+            .model_entity_version_timestamps
+            .insert((1, proc_type_id, 4, 1), 400);
+        store.entity_guids.insert(
+            (proc_type_id, 3),
+            "00000000-0000-0000-0000-000000000003".into(),
+        );
+    }
+
+    let page = client.procedure_list_page(None, 1, 2).expect("page 1..3");
+    assert_eq!(page.total, 4);
+    assert_eq!(page.objects.len(), 2);
+    assert_eq!(page.objects[0].name, "Beta");
+    assert_eq!(page.objects[0].last_update_ticks, Some(200));
+    assert_eq!(page.objects[1].name, "Delta");
+    assert_eq!(page.objects[1].last_update_ticks, Some(400));
+
+    let tail = client.procedure_list_page(None, 3, 2).expect("page 3..4");
+    assert_eq!(tail.objects.len(), 1);
+    assert_eq!(tail.objects[0].name, "Gamma");
+    assert_eq!(tail.objects[0].last_update_ticks, None);
+
+    let missing_alpha = client.procedure_list_page(None, 0, 2).unwrap_err();
+    assert!(
+        missing_alpha.contains("Procedure lifecycle metadata is missing"),
+        "{missing_alpha}"
+    );
 }

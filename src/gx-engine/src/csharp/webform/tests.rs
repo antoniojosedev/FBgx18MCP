@@ -548,3 +548,23 @@ fn section_divs_are_balanced_for_every_matched_row_count() {
         assert_eq!(opens, closes, "rows={rows}");
     }
 }
+
+#[test]
+fn check_no_code_admits_closed_comments_and_refuses_unterminated_or_code() {
+    for comment_only in [
+        "",
+        "   \t\r\n  ",
+        "// single line comment",
+        "// line 1\n/* block\ncomment */\n// line 2\n",
+    ] {
+        assert!(!has_non_comment_code(comment_only), "{comment_only:?}");
+    }
+    for non_comment in [
+        "/* unterminated",
+        "/*/",
+        "/* closed */ /* unclosed",
+        "// comment\nEvent Start\nEndEvent",
+    ] {
+        assert!(has_non_comment_code(non_comment), "{non_comment:?}");
+    }
+}

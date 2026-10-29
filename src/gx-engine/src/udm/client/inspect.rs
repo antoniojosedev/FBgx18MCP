@@ -17,7 +17,7 @@ const MAX_MODULE_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProcedureInspection {
+pub struct ObjectInspection {
     pub name: String,
     pub guid: String,
     pub entity_id: i32,
@@ -29,6 +29,8 @@ pub struct ProcedureInspection {
     /// The SDK display names of the stored parts, ordered like `OrdinalIgnoreCase`.
     pub available_parts: Vec<String>,
 }
+
+pub type ProcedureInspection = ObjectInspection;
 
 /// The model row of the inspected object, with the entity version it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,18 +55,29 @@ impl UdmClient {
         active: Option<ActiveVersion>,
         name: &str,
     ) -> Result<ProcedureInspection, String> {
+        self.object_inspect_minimal(active, ObjectKind::Procedure, name)
+    }
+
+    /// One object's minimal inspection for `kind`, read with the active scope in one view.
+    pub fn object_inspect_minimal(
+        &self,
+        active: Option<ActiveVersion>,
+        kind: ObjectKind,
+        name: &str,
+    ) -> Result<ObjectInspection, String> {
         if !self.is_live() {
             return Err("the in-memory store has no inspection metadata".into());
         }
         if name.is_empty() || !name.is_ascii() || name.chars().any(|c| c.is_control()) {
             return Err("native inspection requires a nonempty ASCII object name".into());
         }
+        let kind_name = crate::kb_ops::type_name(kind);
         self.with_read_view(|view| {
             let model = select_design_model(&view.model_topology()?, active, ScopeUse::Read)
                 .map_err(|refusal| refusal.0)?;
             let client = view.clone().with_design_model_id(model);
             let rows = UdmReader::new(Arc::new(client.clone())).list_objects()?;
-            let row = select_procedure(&rows, &client.get_active_objects(model)?, name)?;
+            let row = select_object_of_kind(&rows, &client.get_active_objects(model)?, kind, name)?;
             let metadata = client
                 .get_object_read_metadata(
                     model,
@@ -72,7 +85,7 @@ impl UdmClient {
                     row.entity_id,
                     row.entity_version_id,
                 )?
-                .ok_or("Procedure lifecycle metadata is missing")?;
+                .ok_or_else(|| format!("{kind_name} lifecycle metadata is missing"))?;
             let detail = client.object_detail(
                 model,
                 row.entity_type_id,
@@ -85,6 +98,7 @@ impl UdmClient {
             let parts =
                 client.part_type_names(row.entity_type_id, row.entity_id, row.entity_version_id)?;
             assemble(
+                kind_name,
                 row.name.clone(),
                 row.entity_id,
                 metadata.guid,
@@ -178,16 +192,20 @@ impl UdmClient {
 
 /// The only Procedure named `name` (ASCII case-insensitively). Any other model entity with that
 /// name is refused: the SDK discloses same-named objects of other types from its index.
-fn select_procedure<'a>(
+fn select_object_of_kind<'a>(
     objects: &'a [ObjectRow],
     entities: &[ModelEntityVersionRecord],
+    kind: ObjectKind,
     name: &str,
 ) -> Result<&'a ObjectRow, String> {
+    let kind_name = crate::kb_ops::type_name(kind);
     let mut matches = objects
         .iter()
-        .filter(|row| row.kind == ObjectKind::Procedure && row.name.eq_ignore_ascii_case(name));
+        .filter(|row| row.kind == kind && row.name.eq_ignore_ascii_case(name));
     let (Some(row), None) = (matches.next(), matches.next()) else {
-        return Err("exactly one Procedure must carry the requested name".into());
+        return Err(format!(
+            "exactly one {kind_name} must carry the requested name"
+        ));
     };
     if entities.iter().any(|other| {
         other.name.eq_ignore_ascii_case(name)
@@ -200,6 +218,7 @@ fn select_procedure<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn assemble(
+    kind_name: &str,
     name: String,
     entity_id: i32,
     guid: Option<String>,
@@ -208,26 +227,27 @@ fn assemble(
     modules: &BTreeMap<(i32, i32), ModuleRow>,
     users: &BTreeMap<i32, String>,
     parts: &[(String, String)],
-) -> Result<ProcedureInspection, String> {
+) -> Result<ObjectInspection, String> {
     let guid = guid
         .filter(|guid| !guid.is_empty())
-        .ok_or("the Procedure GUID is missing")?;
-    let last_update_ticks = last_update_ticks.ok_or("the Procedure has no stored last update")?;
+        .ok_or_else(|| format!("the {kind_name} GUID is missing"))?;
+    let last_update_ticks =
+        last_update_ticks.ok_or_else(|| format!("the {kind_name} has no stored last update"))?;
     if detail.model_user_id != detail.entity_user_id
         || detail.model_description != detail.entity_description
     {
-        return Err(
-            "model and entity metadata disagree on the Procedure's user or description".into(),
-        );
+        return Err(format!(
+            "model and entity metadata disagree on the {kind_name}'s user or description"
+        ));
     }
     let user_name = users
         .get(&detail.model_user_id)
         .filter(|user| !user.trim().is_empty())
-        .ok_or("the Procedure's user is not stored")?
+        .ok_or_else(|| format!("the {kind_name}'s user is not stored"))?
         .clone();
-    let mut segments = module_chain(detail.parent, modules)?;
+    let mut segments = module_chain(kind_name, detail.parent, modules)?;
     segments.push(name.clone());
-    Ok(ProcedureInspection {
+    Ok(ObjectInspection {
         name,
         guid,
         entity_id,
@@ -241,6 +261,7 @@ fn assemble(
 
 /// Module names from the root module down to `parent`. Folders or any other holder are refused.
 fn module_chain(
+    kind_name: &str,
     parent: (i32, i32),
     modules: &BTreeMap<(i32, i32), ModuleRow>,
 ) -> Result<Vec<String>, String> {
@@ -252,7 +273,7 @@ fn module_chain(
         }
         let module = modules
             .get(&current)
-            .ok_or("the parent chain contains a holder that is not a stored module")?;
+            .ok_or_else(|| format!("the {kind_name} is held by a non-module object"))?;
         if module.name.trim().is_empty() || module.name.chars().any(char::is_control) {
             return Err("a module name is empty or malformed".into());
         }
@@ -260,15 +281,14 @@ fn module_chain(
         current = module.parent;
     }
     if names.is_empty() {
-        return Err("the Procedure is not held by a module".into());
+        return Err(format!("the {kind_name} is not held by a module"));
     }
     names.reverse();
     Ok(names)
 }
 
-/// The SDK's display names (`PartAccessor.GetAvailableParts`) for a Procedure's stored parts: every
-/// source-like part (`Procedure`, `Rules`, `Conditions`) displays as `Source`, `Rules` is also
-/// addressable by name, and the rest keep their type name.
+/// The SDK's display names (`PartAccessor.GetAvailableParts`) for stored parts: every source-like
+/// part displays as `Source` (and `Rules`/`Events` also addressable by name), and structure/forms keep their type name.
 fn available_parts(parts: &[(String, String)]) -> Result<Vec<String>, String> {
     let mut names = BTreeSet::new();
     for (name, namespace) in parts {
@@ -281,7 +301,12 @@ fn available_parts(parts: &[(String, String)]) -> Result<Vec<String>, String> {
                 names.insert("Rules".to_ascii_uppercase());
                 "Source"
             }
-            "Variables" | "Documentation" | "Help" | "Layout" => name.as_str(),
+            "Events" => {
+                names.insert("Events".to_ascii_uppercase());
+                "Source"
+            }
+            "Structure" | "Variables" | "Documentation" | "Help" | "Layout" | "WebForm"
+            | "WinForm" => name.as_str(),
             other => return Err(format!("part type {other} has no proven SDK display name")),
         };
         names.insert(display.to_ascii_uppercase());
@@ -293,10 +318,14 @@ fn available_parts(parts: &[(String, String)]) -> Result<Vec<String>, String> {
             [
                 "Source",
                 "Rules",
+                "Events",
+                "Structure",
                 "Variables",
                 "Documentation",
                 "Help",
                 "Layout",
+                "WebForm",
+                "WinForm",
             ]
             .into_iter()
             .find(|display| display.to_ascii_uppercase() == upper)
@@ -344,6 +373,7 @@ mod tests {
     #[test]
     fn library_and_user_procedures_render_like_the_sdk() {
         let library = assemble(
+            "Procedure",
             "AddDeviceGroups".into(),
             1,
             Some("83a55789-716f-4c13-a03c-215b167050e8".into()),
@@ -384,7 +414,10 @@ mod tests {
                 "Variables"
             ]
         );
-        assert_eq!(module_chain((12, 1), &modules()).unwrap(), ["Root Module"]);
+        assert_eq!(
+            module_chain("Procedure", (12, 1), &modules()).unwrap(),
+            ["Root Module"]
+        );
     }
 
     #[test]
@@ -394,6 +427,7 @@ mod tests {
                     guid: Option<String>,
                     ticks: Option<i64>| {
             assemble(
+                "Procedure",
                 "P".into(),
                 1,
                 guid,
@@ -409,7 +443,7 @@ mod tests {
         let guid = || Some("g".to_string());
         assert!(!base(&detail((12, 1)), &ok, guid(), Some(1)), "baseline");
         assert!(
-            base(&detail((12, 1)), &[part("Events")], guid(), Some(1)),
+            base(&detail((12, 1)), &[part("BogusPart")], guid(), Some(1)),
             "unknown part"
         );
         assert!(
@@ -451,7 +485,10 @@ mod tests {
                 parent: (12, 1),
             },
         )]);
-        assert!(module_chain((12, 1), &cyclic).is_err(), "cycle");
+        assert!(
+            module_chain("Procedure", (12, 1), &cyclic).is_err(),
+            "cycle"
+        );
     }
 
     #[test]
@@ -475,17 +512,35 @@ mod tests {
         let objects = [proc_row.clone(), other.clone()];
         let entities = [entity(&proc_row), entity(&other)];
         assert_eq!(
-            select_procedure(&objects, &entities, "proc")
+            select_object_of_kind(&objects, &entities, ObjectKind::Procedure, "proc")
                 .unwrap()
                 .entity_id,
             1
         );
-        assert!(select_procedure(&objects, &entities, "Missing").is_err());
+        assert!(
+            select_object_of_kind(&objects, &entities, ObjectKind::Procedure, "Missing").is_err()
+        );
         let twin = object("PROC", ObjectKind::Procedure, 3);
         let twins = [proc_row.clone(), twin.clone()];
-        assert!(select_procedure(&twins, &[entity(&proc_row), entity(&twin)], "Proc").is_err());
+        assert!(
+            select_object_of_kind(
+                &twins,
+                &[entity(&proc_row), entity(&twin)],
+                ObjectKind::Procedure,
+                "Proc"
+            )
+            .is_err()
+        );
         let table = object("proc", ObjectKind::Transaction, 4);
-        assert!(select_procedure(&objects, &[entity(&proc_row), entity(&table)], "Proc").is_err());
+        assert!(
+            select_object_of_kind(
+                &objects,
+                &[entity(&proc_row), entity(&table)],
+                ObjectKind::Procedure,
+                "Proc"
+            )
+            .is_err()
+        );
     }
 
     #[test]

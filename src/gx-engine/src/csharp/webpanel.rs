@@ -27,6 +27,200 @@ fn collect_all_controls<'a>(controls: &'a [LayoutControl], out: &mut Vec<&'a Lay
     }
 }
 
+fn skip_quoted_prefix(rest: &str, quote: char) -> &str {
+    let mut escaped = false;
+    for (idx, ch) in rest.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == quote {
+            return &rest[idx + ch.len_utf8()..];
+        }
+    }
+    ""
+}
+
+fn has_unterminated_block_comment(mut rest: &str) -> bool {
+    while !rest.is_empty() {
+        if let Some(after_line) = rest.strip_prefix("//") {
+            rest = after_line.find('\n').map_or("", |nl| &after_line[nl + 1..]);
+        } else if let Some(after_block) = rest.strip_prefix("/*") {
+            let Some(end) = after_block.find("*/") else {
+                return true;
+            };
+            rest = &after_block[end + 2..];
+        } else if rest.starts_with('\'') {
+            rest = skip_quoted_prefix(rest, '\'');
+        } else if rest.starts_with('"') {
+            rest = skip_quoted_prefix(rest, '"');
+        } else {
+            let step = rest.chars().next().map_or(1, char::len_utf8);
+            rest = &rest[step..];
+        }
+    }
+    false
+}
+
+fn validate_plain_events_source(object_name: &str, source: &str) -> Result<(), String> {
+    if has_unterminated_block_comment(source) {
+        return Err(format!(
+            "events of '{object_name}' contain an unterminated block comment"
+        ));
+    }
+    let clean = crate::dataview::strip_comments(source);
+    let trimmed = clean.trim();
+    let event_body = if let Some(rest) = trimmed.strip_prefix("events") {
+        let rest = rest.trim();
+        rest.strip_prefix('{')
+            .and_then(|inner| inner.strip_suffix('}'))
+            .ok_or_else(|| {
+                format!("events of '{object_name}' have malformed 'events {{ ... }}' block")
+            })?
+    } else {
+        trimmed
+    };
+
+    let mut in_event = false;
+    let mut event_count = 0usize;
+    for line in event_body.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        if !in_event {
+            if let Some(rest) = l.strip_prefix("Event ") {
+                let event_name = rest.trim().trim_matches('\'').trim_matches('"').trim();
+                if event_name.is_empty() {
+                    return Err(format!(
+                        "events of '{object_name}' contain an Event declaration without a name"
+                    ));
+                }
+                in_event = true;
+                event_count += 1;
+            } else {
+                return Err(format!(
+                    "events of '{object_name}' contain unexpected text outside Event...EndEvent: '{l}'"
+                ));
+            }
+        } else if l.eq_ignore_ascii_case("EndEvent") {
+            in_event = false;
+        } else if l.starts_with("Event ") {
+            return Err(format!(
+                "events of '{object_name}' contain a nested or unclosed Event before '{l}'"
+            ));
+        }
+    }
+
+    if in_event {
+        return Err(format!(
+            "events of '{object_name}' contain an unclosed Event block (missing EndEvent)"
+        ));
+    }
+    if event_count == 0 {
+        return Err(format!(
+            "events of '{object_name}' contain no Event...EndEvent blocks"
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_events_part(object_name: &str, source: &str) -> Result<Vec<WebPanelEvent>, String> {
+    if !super::webform::has_non_comment_code(source) {
+        return Ok(Vec::new());
+    }
+
+    let events = if let Ok(events) = serde_json::from_str::<Vec<WebPanelEvent>>(source) {
+        events
+    } else {
+        validate_plain_events_source(object_name, source)?;
+        let parsed = match WebPanel::parse(object_name, source) {
+            Ok(wp) if !wp.events.is_empty() => wp,
+            _ => WebPanel::parse(object_name, &format!("events {{\n{source}\n}}"))
+                .map_err(|e| format!("events of '{object_name}': {e}"))?,
+        };
+        if parsed.events.is_empty() {
+            return Err(format!(
+                "events of '{object_name}' contain non-comment text that parsed to zero events"
+            ));
+        }
+        parsed.events
+    };
+
+    for ev in &events {
+        if ev.name.trim().is_empty() {
+            return Err(format!(
+                "events of '{object_name}' contain an event with an empty name"
+            ));
+        }
+        if super::webform::has_non_comment_code(&ev.body) {
+            crate::frontend::parse_body(ev.body.trim())
+                .map_err(|e| format!("events of '{object_name}' ({}): {e}", ev.name))?;
+        }
+    }
+
+    Ok(events)
+}
+
+fn parse_variables_part(object_name: &str, source: &str) -> Result<Vec<ScreenVariable>, String> {
+    if source.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Ok(vars) = serde_json::from_str::<Vec<ScreenVariable>>(source) {
+        return Ok(vars);
+    }
+    if let Ok(vars_map) = serde_json::from_str::<BTreeMap<String, DataType>>(source) {
+        return Ok(vars_map
+            .into_iter()
+            .map(|(k, v)| ScreenVariable::new(k, v))
+            .collect());
+    }
+    Err(format!(
+        "variables of '{object_name}' are not valid JSON ScreenVariable list or DataType map"
+    ))
+}
+
+fn apply_webpanel_part(
+    wp: &mut WebPanel,
+    object_name: &str,
+    part: &crate::catalog::SourcePart,
+) -> Result<(), String> {
+    match part.name.as_str() {
+        "VARIABLES" => {
+            wp.variables = parse_variables_part(object_name, &part.source)?;
+        }
+        "EVENTS" => {
+            wp.events = parse_events_part(object_name, &part.source)?;
+        }
+        "LAYOUT" if !part.source.trim().is_empty() => {
+            wp.controls =
+                serde_json::from_str::<Vec<LayoutControl>>(&part.source).map_err(|e| {
+                    format!("layout of '{object_name}' is not valid JSON LayoutControl list: {e}")
+                })?;
+        }
+        "RULES" => {
+            crate::rules::parse_rules(&part.source)
+                .map_err(|e| format!("rules of '{object_name}': {e}"))?;
+            if !part.source.trim().is_empty() {
+                wp.rules.push(part.source.clone());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_webpanel_rules(object_name: &str, wp: &WebPanel) -> Result<(), String> {
+    wp.rules.iter().try_for_each(|rule_str| {
+        crate::rules::parse_rules(rule_str)
+            .map(|_| ())
+            .map_err(|e| format!("rules of '{object_name}': {e}"))
+    })?;
+    wp.validate()
+        .map_err(|e| format!("webpanel '{object_name}': {e}"))
+}
+
 /// Normalizes a UI control name to GeneXus C# control field convention.
 pub fn to_csharp_control_name(name: &str, kind: &ControlKind) -> String {
     let clean = clean_ident(name);
@@ -242,13 +436,11 @@ impl WebPanelClass {
         }
 
         for part in &object.source_parts {
-            match part.name.as_str() {
-                "WEBPANEL" | "SOURCE" => {
-                    if let Ok(wp) = WebPanel::parse(&object.name, &part.source) {
-                        return Ok(Self::from_webpanel(&wp));
-                    }
-                }
-                _ => {}
+            if matches!(part.name.as_str(), "WEBPANEL" | "SOURCE") {
+                let wp = WebPanel::parse(&object.name, &part.source)
+                    .map_err(|e| format!("{} of '{}': {e}", part.name, object.name))?;
+                validate_webpanel_rules(&object.name, &wp)?;
+                return Ok(Self::from_webpanel(&wp));
             }
         }
 
@@ -258,35 +450,10 @@ impl WebPanelClass {
         };
 
         for part in &object.source_parts {
-            match part.name.as_str() {
-                "VARIABLES" => {
-                    if let Ok(vars) = serde_json::from_str::<Vec<ScreenVariable>>(&part.source) {
-                        wp.variables = vars;
-                    } else if let Ok(vars_map) =
-                        serde_json::from_str::<BTreeMap<String, DataType>>(&part.source)
-                    {
-                        wp.variables = vars_map
-                            .into_iter()
-                            .map(|(k, v)| ScreenVariable::new(k, v))
-                            .collect();
-                    }
-                }
-                "EVENTS" => {
-                    if let Ok(events) = serde_json::from_str::<Vec<WebPanelEvent>>(&part.source) {
-                        wp.events = events;
-                    }
-                }
-                "LAYOUT" => {
-                    if let Ok(controls) = serde_json::from_str::<Vec<LayoutControl>>(&part.source) {
-                        wp.controls = controls;
-                    }
-                }
-                "RULES" => {
-                    wp.rules.push(part.source.clone());
-                }
-                _ => {}
-            }
+            apply_webpanel_part(&mut wp, &object.name, part)?;
         }
+
+        validate_webpanel_rules(&object.name, &wp)?;
 
         Ok(Self::from_webpanel(&wp))
     }

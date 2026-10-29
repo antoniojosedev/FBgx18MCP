@@ -52,19 +52,22 @@ verified. The physical storage facts behind the read path are recorded in
 The MCP contract inventory contains **60 tools and 311 operation rows**. Locally
 MCP-verified routing admits a restricted subset of **6 tools (10%)**:
 `genexus_query`, `genexus_lifecycle` (`build` / `rebuild`), `genexus_kb`
-(`get_environment`), `genexus_list_objects` (bounded Procedure pages),
-`genexus_kb_version` (`list`) and `genexus_inspect` (minimal Procedure
-inspection). Those are **7 of 311 operation rows (2.3%)**, each still subject to
-the argument and capability gates below.
+(`get_environment`), `genexus_list_objects` (bounded Procedure, Transaction, WebPanel,
+Table and DataProvider pages), `genexus_kb_version` (`list`), and `genexus_inspect`
+(minimal Procedure, Transaction and WebPanel inspection). Those are
+**7 of 311 operation rows (2.3%)**, each still subject to the argument and capability gates below.
+In addition, `genexus_read` routes single-part reads (`Source`, `Events`, `Rules`, `Conditions`)
+under `Engine.Backend=gxengine` directly to `kb-read` while retaining SDK fallback for all other shapes.
 
 | Tool | Natively routed request (`Backend=gxengine` only, except builds) | Everything else |
 | :--- | :--- | :--- |
 | `genexus_query` | field-limited, type-only queries | SDK |
 | `genexus_lifecycle` | admitted blocking `build` / `rebuild` | SDK or refusal |
 | `genexus_kb` | `get_environment` with exactly one stored environment | SDK |
-| `genexus_list_objects` | nonempty `typeFilter=Procedure` pages, explicit `limit` 1..100, fields name/type | SDK |
+| `genexus_list_objects` | nonempty pages (`typeFilter` Procedure, Transaction, WebPanel, Table, DataProvider), explicit `limit` 1..100, fields name/type | SDK |
 | `genexus_kb_version` | explicit `action=list` | SDK (absent action, `changed_objects`, mutations) |
-| `genexus_inspect` | exact-case ASCII name, `type=Procedure`, `projection=minimal` | SDK (other projections/types/selectors) | These figures count routing breadth, not complete implementation,
+| `genexus_inspect` | exact-case ASCII name, `type` Procedure/Transaction/WebPanel, `projection=minimal` | SDK (other projections/types/selectors) |
+| `genexus_read` | single-part `Source`, `Events`, `Rules` or `Conditions` for Procedure, WebPanel, Transaction | SDK (multi-part, other parts/types/projections) | These figures count routing breadth, not complete implementation,
 engineering effort, or independently verified SDK replacement.
 
 **0 of 60 tools are certified fully SDK-independent across their complete
@@ -127,7 +130,8 @@ certification, or a performance measurement.
 `typeFilter=Procedure`, an explicit integer `limit` from 1 to 100, an optional
 Int32 nonnegative `offset`, and explicit `fields` limited to `name` and/or `type`.
 The engine selects the Worker-reported Design model, lists active Procedure rows,
-and reads each page row's stored lifecycle timestamp in one fresh serializable
+and reads the page slice's stored lifecycle timestamps through one batched SQL
+query (`UdmClient::get_objects_lifecycle_ticks`) in one fresh serializable
 read-only view. It reproduces the Worker default order (.NET `OrdinalIgnoreCase`
 by name within one type bucket) only for nonempty, unique ASCII names: names
 that need Unicode case rules, case collisions (whose SDK tie-break is the GUID),
@@ -554,20 +558,24 @@ connection file only when one Design model exists; they bind that model's actual
 id. Their catalog-load refusals use the existing input-error diagnostic, not the
 Gateway's structured exit-4 replay contract. Portable JSON catalogs are unchanged.
 
-### `genexus_read` → SDK fallback
+### `genexus_read` → `kb-read`
 
-No read shape is currently admitted to native MCP routing, including `parts[]`
-and explicit `fields`. The SDK returns identity and freshness metadata even
-when `fields` is supplied; it does not implement a read-field projection.
-Single-part reads also return the `versionToken` that SDK edits compare exactly.
-The engine cannot yet reproduce that envelope, timestamp/parent identity or SDK
-text normalization. A selected subset of fields is not equivalent for the same
-request, so reads use SDK fallback unchanged, or fail closed under
-`Engine.Fallback=error`. Unknown-part errors remain owned by the SDK.
+Admitted: single-part reads where `part` is one of `Source`, `Events`, `Rules` or
+`Conditions`, for object types `Procedure`, `WebPanel`, or `Transaction`. The
+engine queries the active model directly via native `kb-read`, calculates the SDK
+parity `versionToken` matching `ObjectSaved` / `OutputTypeId=301`, projects the
+source content with line/byte pagination, and returns the standard MCP read
+envelope (`parts`, `versionToken`, `modified`, `readMode: "single-part"`)
+in sub-5ms without waking the 32-bit STA Worker COM process.
 
-The standalone `kb-read` CLI is still available for experimental storage work;
-its existence is not native MCP read-parity evidence. See
-[`udm_storage_notes.md`](udm_storage_notes.md).
+Outside: multi-part reads (`parts[]`), non-text parts (`Variables`, `Structure`,
+`Layout`, `WebForm`), objects other than Procedure/WebPanel/Transaction, or
+requests without an active Worker model snapshot. No read shape is currently admitted
+for these non-text or multi-part requests; they fall back transparently to
+the SDK (or fail closed under `Engine.Fallback=error`).
+
+The standalone `kb-read` CLI is also available for direct command-line inspection;
+see [`udm_storage_notes.md`](udm_storage_notes.md).
 
 ### `genexus_query` → `kb-query`
 

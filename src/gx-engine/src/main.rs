@@ -88,6 +88,7 @@ fn execute(
             | "kb-write"
             | "kb-environment"
             | "kb-list-procedures"
+            | "kb-list-objects"
             | "kb-versions"
             | "kb-inspect"
     ) {
@@ -331,6 +332,19 @@ fn execute_kb_ops(
     run_kb_operation(operation, active, category)
 }
 
+fn lift_kb_read<T>(
+    result: Result<T, gx_engine::kb_ops::KbReadError>,
+    category: &mut DiagnosticCategory,
+) -> Result<T, String> {
+    result.map_err(|error| match error {
+        gx_engine::kb_ops::KbReadError::VersionScope(message) => {
+            *category = DiagnosticCategory::VersionScope;
+            message
+        }
+        gx_engine::kb_ops::KbReadError::Operation(message) => message,
+    })
+}
+
 /// Runs an admitted operation; its Knowledge Base is connected only now.
 fn run_kb_operation(
     operation: kb_command::KbOperation,
@@ -344,12 +358,12 @@ fn run_kb_operation(
             object,
             parts,
         } => {
-            let client = connect_selected_kb(&kb_path, active, category)?;
-            print_json(&gx_engine::kb_ops::read_object(
-                &client,
-                &object,
-                parts.as_deref(),
-            )?)
+            let client = connect_udm_kb(&kb_path)?;
+            let read = lift_kb_read(
+                gx_engine::kb_ops::read_object_scoped(&client, active, &object, parts.as_deref()),
+                category,
+            )?;
+            print_json(&read)
         }
         KbOperation::ReadPage {
             kb_path,
@@ -359,15 +373,20 @@ fn run_kb_operation(
             limit,
             client: client_kind,
         } => {
-            let client = connect_selected_kb(&kb_path, active, category)?;
-            print_json(&gx_engine::kb_ops::read_object_page(
-                &client,
-                &object,
-                &part,
-                offset,
-                limit,
-                client_kind,
-            )?)
+            let client = connect_udm_kb(&kb_path)?;
+            let page = lift_kb_read(
+                gx_engine::kb_ops::read_object_page_scoped(
+                    &client,
+                    active,
+                    &object,
+                    &part,
+                    offset,
+                    limit,
+                    client_kind,
+                ),
+                category,
+            )?;
+            print_json(&page)
         }
         KbOperation::Query {
             kb_path,
@@ -414,11 +433,27 @@ fn run_scoped_read(
             offset,
             limit,
         } => print_json(&connect_udm_kb(&kb_path)?.procedure_list_page(active, offset, limit)?),
+        KbOperation::ObjectList {
+            kb_path,
+            kind,
+            offset,
+            limit,
+        } => print_json(&connect_udm_kb(&kb_path)?.object_list_page(active, kind, offset, limit)?),
         KbOperation::Environment { kb_path } => print_json(&serde_json::json!({
             "environment": connect_udm_kb(&kb_path)?.sole_environment_name(active)?
         })),
-        KbOperation::Inspect { kb_path, name } => {
-            print_json(&connect_udm_kb(&kb_path)?.procedure_inspect_minimal(active, &name)?)
+        KbOperation::Inspect {
+            kb_path,
+            name,
+            kind,
+        } => {
+            let client = connect_udm_kb(&kb_path)?;
+            let json = if kind == gx_engine::catalog::ObjectKind::Procedure {
+                client.procedure_inspect_minimal(active, &name)?
+            } else {
+                client.object_inspect_minimal(active, kind, &name)?
+            };
+            print_json(&json)
         }
         KbOperation::VersionList { kb_path } => {
             print_json(&connect_udm_kb(&kb_path)?.kb_version_list(active)?)
@@ -1000,6 +1035,31 @@ mod tests {
         let args = ["kb", "--design-model", "3"].map(String::from);
         let error = execute_kb_ops("kb-query", &args, &mut category).unwrap_err();
         assert!(error.starts_with("--design-model and --kb-version name"));
+        assert_eq!(category, DiagnosticCategory::Input);
+    }
+
+    #[test]
+    fn lift_kb_read_maps_version_scope_errors_to_version_scope_category() {
+        let mut category = DiagnosticCategory::Input;
+        let error = lift_kb_read::<()>(
+            Err(gx_engine::kb_ops::KbReadError::VersionScope(
+                "model 4 is not a Design model".into(),
+            )),
+            &mut category,
+        )
+        .unwrap_err();
+        assert_eq!(error, "model 4 is not a Design model");
+        assert_eq!(category, DiagnosticCategory::VersionScope);
+
+        let mut category = DiagnosticCategory::Input;
+        let error = lift_kb_read::<()>(
+            Err(gx_engine::kb_ops::KbReadError::Operation(
+                "object 'PAlpha' was not found in the active model".into(),
+            )),
+            &mut category,
+        )
+        .unwrap_err();
+        assert_eq!(error, "object 'PAlpha' was not found in the active model");
         assert_eq!(category, DiagnosticCategory::Input);
     }
 }

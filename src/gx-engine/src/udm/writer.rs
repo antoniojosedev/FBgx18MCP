@@ -11,8 +11,13 @@ use crate::udm::client::{
     EntityVersionCompositionRecord, EntityVersionRecord, ModelCrossReferenceRecord,
     ModelEntityVersionRecord, StateLockRecord, UdmClient,
 };
-use crate::udm::decoder::{UdmPartKind, build_token_data_list, encode_blob};
+use crate::udm::decoder::{
+    UdmPartKind, build_token_data_list, decode_blob, encode_blob, extract_token_data_list,
+};
 use crate::udm::entity_types::EntityTypeResolver;
+use crate::udm::reader::UdmReader;
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 /// The stored part rows of an object, in write order: the Knowledge Base's own
@@ -65,6 +70,31 @@ fn reference_target(
                 "'{object_name}' references '{target}', which is not an object of this model; refusing to store a dangling reference"
             )
         })
+}
+
+fn validate_object_name_for_sql(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("object name must not be empty".to_string());
+    }
+    if name.chars().any(|ch| ch.is_control() || ch == '\u{FFFD}') {
+        return Err(format!(
+            "object name '{name}' contains control or invalid UTF-8 replacement characters; refusing SQL generation"
+        ));
+    }
+    Ok(())
+}
+
+fn format_sql_varbinary_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + bytes.len() * 2);
+    out.push_str("0x");
+    for &byte in bytes {
+        let _ = write!(&mut out, "{byte:02X}");
+    }
+    out
+}
+
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 /// Identifies an object entity and active version in the UDM database.
@@ -257,7 +287,9 @@ impl UdmWriter {
             .cloned();
 
         let Some(existing_record) = existing else {
-            return self.create_object(object);
+            let identity = self.create_object(object)?;
+            self.verify_saved_object_readback(&identity, object)?;
+            return Ok(identity);
         };
 
         let resolver = self.client.entity_type_resolver()?;
@@ -357,6 +389,7 @@ impl UdmWriter {
         match result {
             Ok(identity) => {
                 self.client.commit_transaction()?;
+                self.verify_saved_object_readback(&identity, object)?;
                 Ok(identity)
             }
             Err(err) => {
@@ -364,6 +397,351 @@ impl UdmWriter {
                 Err(err)
             }
         }
+    }
+
+    /// Saves an object and verifies read-back consistency through `UdmReader`.
+    pub fn save_and_verify(&self, object: &KbObject) -> Result<UdmObjectIdentity, String> {
+        let identity = self.save_object(object)?;
+        self.verify_saved_object_readback(&identity, object)?;
+        Ok(identity)
+    }
+
+    /// Plans and builds a deterministic, fail-closed transactional SQL Server batch for saving an
+    /// existing object in the active model.
+    pub fn plan_save_existing_object_sql(
+        &self,
+        object: &KbObject,
+        allocated_part_ids: &[i32],
+    ) -> Result<(UdmObjectIdentity, String), String> {
+        validate_object_name_for_sql(&object.name)?;
+
+        let active = self.client.get_active_objects(self.model_id)?;
+        let existing_record = active
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&object.name))
+            .ok_or_else(|| {
+                format!(
+                    "Object '{}' does not exist in Model {}; refusing to plan existing-object SQL save",
+                    object.name, self.model_id
+                )
+            })?;
+
+        let resolver = self.client.entity_type_resolver()?;
+        if resolver.object_kind(existing_record.entity_type_id) != Some(object.kind) {
+            return Err(format!(
+                "'{}' exists as a different object kind; refusing to save it as {:?}",
+                object.name, object.kind
+            ));
+        }
+
+        let parts = stored_parts(&resolver, object)?;
+        if allocated_part_ids.len() != parts.len() {
+            return Err(format!(
+                "allocated_part_ids length ({}) does not match stored parts count ({}) for '{}'",
+                allocated_part_ids.len(),
+                parts.len(),
+                object.name
+            ));
+        }
+
+        let mut seen_part_ids = BTreeSet::new();
+        for &part_id in allocated_part_ids {
+            if part_id <= 0 {
+                return Err(format!(
+                    "allocated part entity ID {part_id} for '{}' must be positive (> 0)",
+                    object.name
+                ));
+            }
+            if !seen_part_ids.insert(part_id) {
+                return Err(format!(
+                    "duplicate allocated part entity ID {part_id} for '{}'; part entity IDs must be distinct",
+                    object.name
+                ));
+            }
+        }
+
+        let entity_type_id = existing_record.entity_type_id;
+        let entity_id = existing_record.entity_id;
+        let expected_old_version = existing_record.entity_version_id;
+        if expected_old_version <= 0 {
+            return Err(format!(
+                "invalid current EntityVersionId {} for '{}'",
+                expected_old_version, object.name
+            ));
+        }
+        let new_version_id = expected_old_version
+            .checked_add(1)
+            .ok_or_else(|| format!("EntityVersionId overflow for '{}'", object.name))?;
+
+        let mut encoded_parts = Vec::with_capacity(parts.len());
+        for (&(component_type_id, part_kind, part), &component_id) in
+            parts.iter().zip(allocated_part_ids.iter())
+        {
+            let payload = if part_kind.is_tokenized_source() {
+                build_token_data_list(&part.source)
+            } else {
+                part.source.clone()
+            };
+            let blob = encode_blob(&payload, true)?;
+            let hex_blob = format_sql_varbinary_hex(&blob);
+            encoded_parts.push((component_type_id, component_id, hex_blob));
+        }
+
+        let mut resolved_refs = Vec::with_capacity(object.references.len());
+        let mut seen_refs = BTreeSet::new();
+        for r in &object.references {
+            let (to_type_id, to_id) = reference_target(
+                &active,
+                (entity_type_id, entity_id),
+                &object.name,
+                r.target.as_str(),
+            )?;
+            let ref_type = match r.kind {
+                ReferenceKind::Calls => 1,
+                ReferenceKind::Uses => 2,
+                ReferenceKind::BasedOn => 3,
+                ReferenceKind::Contains => 4,
+            };
+            if seen_refs.insert((to_type_id, to_id, ref_type)) {
+                resolved_refs.push((to_type_id, to_id, ref_type));
+            }
+        }
+
+        let model_id = self.model_id;
+        let escaped_name = escape_sql_literal(&object.name);
+        let mut sql = String::new();
+        let _ = write!(
+            &mut sql,
+            "SET NOCOUNT ON; SET XACT_ABORT ON; SET LOCK_TIMEOUT 10000; SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; BEGIN TRANSACTION; \
+IF NOT EXISTS (SELECT 1 FROM ModelEntityVersion WITH (UPDLOCK, HOLDLOCK) WHERE ModelId = {model_id} AND EntityTypeId = {entity_type_id} AND EntityId = {entity_id} AND EntityVersionId = {expected_old_version}) \
+THROW 50001, 'Optimistic concurrency conflict on ModelEntityVersion', 1; \
+UPDATE ModelEntityVersion SET EntityVersionId = {new_version_id}, ModelEntityVersionName = N'{escaped_name}' WHERE ModelId = {model_id} AND EntityTypeId = {entity_type_id} AND EntityId = {entity_id} AND EntityVersionId = {expected_old_version};"
+        );
+
+        for (component_type_id, component_id, hex_blob) in &encoded_parts {
+            let _ = write!(
+                &mut sql,
+                " INSERT INTO EntityVersion (EntityTypeId, EntityId, EntityVersionId, EntityVersionData) VALUES ({component_type_id}, {component_id}, {new_version_id}, {hex_blob}); \
+INSERT INTO EntityVersionComposition (CompoundEntityTypeId, CompoundEntityId, CompoundEntityVersionId, ComponentEntityTypeId, ComponentEntityId, ComponentEntityVersionId) VALUES ({entity_type_id}, {entity_id}, {new_version_id}, {component_type_id}, {component_id}, {new_version_id});"
+            );
+        }
+
+        let _ = write!(
+            &mut sql,
+            " DELETE FROM ModelCrossReference WHERE ModelId = {model_id} AND FromEntityTypeId = {entity_type_id} AND FromEntityId = {entity_id};"
+        );
+
+        for &(to_type_id, to_id, ref_type) in &resolved_refs {
+            let _ = write!(
+                &mut sql,
+                " INSERT INTO ModelCrossReference (ModelId, FromEntityTypeId, FromEntityId, ToEntityTypeId, ToEntityId, ReferenceType) VALUES ({model_id}, {entity_type_id}, {entity_id}, {to_type_id}, {to_id}, {ref_type});"
+            );
+        }
+
+        sql.push_str(" COMMIT TRANSACTION;");
+
+        let identity = UdmObjectIdentity {
+            entity_type_id,
+            entity_id,
+            version_id: new_version_id,
+            name: object.name.clone(),
+        };
+
+        Ok((identity, sql))
+    }
+
+    /// Verifies that reading a saved object back from the active model via `UdmReader`
+    /// matches `expected_identity` and `expected_object` in kind, version, parts, and references.
+    pub fn verify_saved_object_readback(
+        &self,
+        expected_identity: &UdmObjectIdentity,
+        expected_object: &KbObject,
+    ) -> Result<(), String> {
+        if !expected_identity
+            .name
+            .eq_ignore_ascii_case(&expected_object.name)
+        {
+            return Err(format!(
+                "read-back verification failed: expected identity name '{}' does not match object name '{}'",
+                expected_identity.name, expected_object.name
+            ));
+        }
+
+        let resolver = self.client.entity_type_resolver()?;
+        let expected_parts = stored_parts(&resolver, expected_object)?;
+
+        let active_objects = self.client.get_active_objects(self.model_id)?;
+        let active_record = active_objects
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&expected_object.name))
+            .ok_or_else(|| {
+                format!(
+                    "read-back verification failed for '{}': object not found in active ModelEntityVersion of Model {}",
+                    expected_object.name, self.model_id
+                )
+            })?;
+
+        if active_record.entity_type_id != expected_identity.entity_type_id
+            || active_record.entity_id != expected_identity.entity_id
+            || active_record.entity_version_id != expected_identity.version_id
+        {
+            return Err(format!(
+                "read-back verification failed for '{}': active ModelEntityVersion (type={}, id={}, version={}) does not match expected identity (type={}, id={}, version={})",
+                expected_object.name,
+                active_record.entity_type_id,
+                active_record.entity_id,
+                active_record.entity_version_id,
+                expected_identity.entity_type_id,
+                expected_identity.entity_id,
+                expected_identity.version_id
+            ));
+        }
+
+        let compositions = self.client.get_compositions(
+            expected_identity.entity_type_id,
+            expected_identity.entity_id,
+            expected_identity.version_id,
+        )?;
+        if compositions.len() != expected_parts.len() {
+            return Err(format!(
+                "read-back verification failed for '{}': stored composition count ({}) does not match expected part count ({})",
+                expected_object.name,
+                compositions.len(),
+                expected_parts.len()
+            ));
+        }
+
+        let reader = if self.model_id == self.client.design_model_id() {
+            UdmReader::new(self.client.clone())
+        } else {
+            UdmReader::with_model_id(self.client.clone(), self.model_id)
+        };
+        let read_back = reader
+            .read_object_by_name(&expected_object.name)?
+            .ok_or_else(|| {
+                format!(
+                    "read-back verification failed for '{}': UdmReader::read_object_by_name returned None",
+                    expected_object.name
+                )
+            })?;
+
+        if read_back.kind != expected_object.kind {
+            return Err(format!(
+                "read-back verification failed for '{}': read-back kind {:?} does not match expected {:?}",
+                expected_object.name, read_back.kind, expected_object.kind
+            ));
+        }
+
+        if !read_back.name.eq_ignore_ascii_case(&expected_object.name) {
+            return Err(format!(
+                "read-back verification failed for '{}': read-back name '{}' does not match expected '{}'",
+                expected_object.name, read_back.name, expected_object.name
+            ));
+        }
+
+        if read_back.source_parts.len() != expected_parts.len() {
+            return Err(format!(
+                "read-back verification failed for '{}': read-back part count ({}) does not match expected part count ({})",
+                expected_object.name,
+                read_back.source_parts.len(),
+                expected_parts.len()
+            ));
+        }
+
+        for (idx, ((expected_type_id, expected_kind, expected_part), actual_part)) in expected_parts
+            .iter()
+            .zip(read_back.source_parts.iter())
+            .enumerate()
+        {
+            let actual_kind = UdmPartKind::from_name(&actual_part.name);
+            if actual_kind != *expected_kind
+                || !actual_part.name.eq_ignore_ascii_case(expected_kind.name())
+            {
+                return Err(format!(
+                    "read-back verification failed for '{}' at part #{idx}: read-back part '{}' does not match expected '{}'",
+                    expected_object.name,
+                    actual_part.name,
+                    expected_kind.name()
+                ));
+            }
+
+            let comp = &compositions[idx];
+            if comp.component_entity_type_id != *expected_type_id {
+                return Err(format!(
+                    "read-back verification failed for '{}' part '{}': composition entity type {} does not match expected {}",
+                    expected_object.name,
+                    expected_kind.name(),
+                    comp.component_entity_type_id,
+                    expected_type_id
+                ));
+            }
+
+            let ev = self
+                .client
+                .get_entity_version(
+                    comp.component_entity_type_id,
+                    comp.component_entity_id,
+                    comp.component_entity_version_id,
+                )?
+                .ok_or_else(|| {
+                    format!(
+                        "read-back verification failed for '{}' part '{}': missing EntityVersion row ({}, {}, {})",
+                        expected_object.name,
+                        expected_kind.name(),
+                        comp.component_entity_type_id,
+                        comp.component_entity_id,
+                        comp.component_entity_version_id
+                    )
+                })?;
+
+            let decoded_raw = if ev.data.is_empty() {
+                String::new()
+            } else {
+                let raw = decode_blob(&ev.data)?;
+                if expected_kind.is_tokenized_source() && raw.contains("<TokenDataList") {
+                    extract_token_data_list(&raw)?
+                } else {
+                    raw
+                }
+            };
+
+            if decoded_raw != expected_part.source {
+                return Err(format!(
+                    "read-back verification failed for '{}' part '{}': decoded stored payload does not match expected content",
+                    expected_object.name,
+                    expected_kind.name()
+                ));
+            }
+
+            let reader_transforms_variables = matches!(
+                expected_object.kind,
+                crate::catalog::ObjectKind::Procedure | crate::catalog::ObjectKind::DataProvider
+            ) && *expected_kind == UdmPartKind::Variables
+                && expected_part.source.trim_start().starts_with('<');
+
+            if !reader_transforms_variables && actual_part.source != expected_part.source {
+                return Err(format!(
+                    "read-back verification failed for '{}' part '{}': reader part content does not match expected content",
+                    expected_object.name,
+                    expected_kind.name()
+                ));
+            }
+        }
+
+        let mut expected_refs = Vec::with_capacity(expected_object.references.len());
+        for r in &expected_object.references {
+            if !expected_refs.contains(r) {
+                expected_refs.push(r.clone());
+            }
+        }
+        if read_back.references != expected_refs {
+            return Err(format!(
+                "read-back verification failed for '{}': read-back references {:?} do not match expected {:?}",
+                expected_object.name, read_back.references, expected_refs
+            ));
+        }
+
+        Ok(())
     }
 
     /// Deletes an object by name from the active model in the UDM database.

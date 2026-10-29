@@ -288,6 +288,80 @@ impl UdmClient {
         object_read_metadata_from_rows(entity_id, &rows)
     }
 
+    /// The last-update ticks of a batch of active object versions in `model_id` of `entity_type_id`,
+    /// keyed by `entity_id`.
+    ///
+    /// Each requested `(entity_id, entity_version_id)` resolves
+    /// `object_saved_ticks.or(model_entity_version_ticks)` under the same rules as
+    /// [`Self::get_object_read_metadata`]: an `ObjectSaved` row (`OutputTypeId=301`,
+    /// `OutputTypeVersion=0`) that exists with a `NULL` or unparseable timestamp, or a duplicated
+    /// row for an entity, fails closed with an error. An entity with no stored metadata row is
+    /// omitted from the returned map so the caller can refuse missing lifecycle metadata.
+    pub fn get_objects_lifecycle_ticks(
+        &self,
+        model_id: i32,
+        entity_type_id: i32,
+        versions: &[(i32, i32)],
+    ) -> Result<BTreeMap<i32, Option<i64>>, String> {
+        if versions.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut seen_entities = std::collections::BTreeSet::new();
+        for &(entity_id, _) in versions {
+            if !seen_entities.insert(entity_id) {
+                return Err(format!(
+                    "lifecycle metadata batch contains duplicate entity {entity_id}"
+                ));
+            }
+        }
+        if self.connection_info.is_none() {
+            let store = self
+                .storage
+                .read()
+                .map_err(|e| format!("Storage lock poisoned: {e}"))?;
+            let mut ticks_by_entity = BTreeMap::new();
+            for &(entity_id, entity_version_id) in versions {
+                let has_metadata = store
+                    .entity_guids
+                    .contains_key(&(entity_type_id, entity_id))
+                    || store
+                        .model_parents
+                        .contains_key(&(model_id, entity_type_id, entity_id))
+                    || store.object_saved_timestamps.contains_key(&(
+                        model_id,
+                        entity_type_id,
+                        entity_id,
+                        entity_version_id,
+                    ))
+                    || store.model_entity_version_timestamps.contains_key(&(
+                        model_id,
+                        entity_type_id,
+                        entity_id,
+                        entity_version_id,
+                    ));
+                if !has_metadata {
+                    continue;
+                }
+                let object_saved_ticks = store
+                    .object_saved_timestamps
+                    .get(&(model_id, entity_type_id, entity_id, entity_version_id))
+                    .copied();
+                let model_entity_version_ticks = store
+                    .model_entity_version_timestamps
+                    .get(&(model_id, entity_type_id, entity_id, entity_version_id))
+                    .copied();
+                ticks_by_entity
+                    .insert(entity_id, object_saved_ticks.or(model_entity_version_ticks));
+            }
+            return Ok(ticks_by_entity);
+        }
+
+        let sql = objects_lifecycle_ticks_sql(model_id, entity_type_id, versions);
+        let raw = self.execute_live_sql(&sql)?;
+        let rows = parse_live_rows(&raw, OBJECTS_LIFECYCLE_TICKS_COLUMNS)?;
+        objects_lifecycle_ticks_from_rows(&rows)
+    }
+
     /// Retrieves part compositions for a compound entity version.
     pub fn get_compositions(
         &self,
@@ -785,6 +859,108 @@ fn object_read_metadata_from_rows(
             "ModelEntityVersion.ModelEntityVersionTimestamp",
         )?,
     }))
+}
+
+const OBJECTS_LIFECYCLE_TICKS_COLUMNS: usize = 4;
+
+/// The batched query behind [`UdmClient::get_objects_lifecycle_ticks`].
+///
+/// Columns: entity id, `HasObjectSaved` (`1` when the version's `ObjectSaved` output row exists,
+/// `0` when absent), `ObjectSaved` timestamp, `ModelEntityVersionTimestamp`.
+fn objects_lifecycle_ticks_sql(
+    model_id: i32,
+    entity_type_id: i32,
+    versions: &[(i32, i32)],
+) -> String {
+    use std::fmt::Write;
+    let mut sql = format!(
+        "SET NOCOUNT ON; SELECT \
+         m.EntityId, \
+         CASE WHEN o.OutputTypeId IS NULL THEN 0 ELSE 1 END AS HasObjectSaved, \
+         ISNULL(CONVERT(VARCHAR(33), o.OutputTimestamp, 126), ''), \
+         ISNULL(CONVERT(VARCHAR(33), m.ModelEntityVersionTimestamp, 126), '') \
+         FROM ModelEntityVersion m \
+         LEFT JOIN ModelEntityOutput o ON o.ModelId = m.ModelId AND o.EntityTypeId = m.EntityTypeId \
+            AND o.EntityId = m.EntityId AND o.OutputTypeId = 301 AND o.OutputTypeVersion = 0 \
+            AND o.OutputEntityVersionId = m.EntityVersionId \
+         WHERE m.ModelId = {model_id} AND m.EntityTypeId = {entity_type_id} \
+           AND ("
+    );
+    if versions.is_empty() {
+        sql.push_str("1 = 0");
+    } else {
+        for (idx, (entity_id, entity_version_id)) in versions.iter().enumerate() {
+            if idx > 0 {
+                sql.push_str(" OR ");
+            }
+            let _ = write!(
+                &mut sql,
+                "(m.EntityId = {entity_id} AND m.EntityVersionId = {entity_version_id})"
+            );
+        }
+    }
+    sql.push(')');
+    sql
+}
+
+/// Interprets the rows of [`objects_lifecycle_ticks_sql`].
+///
+/// Refuses duplicated entity rows and any `ObjectSaved` row whose timestamp is `NULL` or
+/// unparseable, matching [`object_read_metadata_from_rows`].
+fn objects_lifecycle_ticks_from_rows(
+    rows: &[Vec<&str>],
+) -> Result<BTreeMap<i32, Option<i64>>, String> {
+    let mut ticks_by_entity = BTreeMap::new();
+    for row in rows {
+        if row.len() != OBJECTS_LIFECYCLE_TICKS_COLUMNS {
+            return Err(format!(
+                "lifecycle metadata row has {} fields; expected {OBJECTS_LIFECYCLE_TICKS_COLUMNS}",
+                row.len()
+            ));
+        }
+        let entity_id = parse_live_int(row[0], "EntityId")?;
+        let has_object_saved = match row[1].trim() {
+            "1" | ROW_PRESENT => true,
+            "0" | ROW_ABSENT => false,
+            other => {
+                return Err(format!(
+                    "ObjectSaved presence marker for entity {entity_id} is '{other}'; expected 0 or 1"
+                ));
+            }
+        };
+        let object_saved_ticks = if has_object_saved {
+            let ticks = parse_stored_datetime_ticks(row[2], "ModelEntityOutput.OutputTimestamp")
+                .map_err(|err| {
+                    format!(
+                        "ObjectSaved row for entity {entity_id} has NULL or unparseable OutputTimestamp: {err}"
+                    )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "ObjectSaved row for entity {entity_id} has NULL or unparseable OutputTimestamp"
+                    )
+                })?;
+            Some(ticks)
+        } else {
+            if !row[2].trim().is_empty() {
+                return Err(format!(
+                    "ObjectSaved row for entity {entity_id} is absent but reports a timestamp"
+                ));
+            }
+            None
+        };
+        let model_entity_version_ticks =
+            parse_stored_datetime_ticks(row[3], "ModelEntityVersion.ModelEntityVersionTimestamp")?;
+        if ticks_by_entity
+            .insert(entity_id, object_saved_ticks.or(model_entity_version_ticks))
+            .is_some()
+        {
+            return Err(format!(
+                "lifecycle metadata of entity {entity_id} matched multiple rows; expected one"
+            ));
+        }
+    }
+    Ok(ticks_by_entity)
 }
 
 fn parse_row_marker(text: &str, row: &str) -> Result<bool, String> {
