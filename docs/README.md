@@ -45,6 +45,7 @@ also read [`AGENTS.md`](../AGENTS.md).
 ### WorkWithPlus, patterns and K2B
 
 - [Buttons and variable grids on an Empty WebPanel](wwp-empty-webpanel.md) — typed WorkWithPlus operations.
+- [Native WebPanel layout authoring](wwp-webpanel-authoring.md) — typed `add_layout` for WorkWithPlus panels.
 - [WorkWithPlus template objects](wwp-template-objects.md) — templates stored outside `PatternSettingsPart`.
 - [Raw pattern XML property edits](pattern-xml-property-edits.md) — what raw `PatternInstance` edits may change.
 - [K2B WebPanel Designer bridge](k2b-ide-bridge.md) — the opt-in `genexus_k2b_designer` IDE bridge.
@@ -75,6 +76,7 @@ also read [`AGENTS.md`](../AGENTS.md).
 ## Testing and validation
 
 - [Live KB test harness](live-kb-test-harness.md) and the [live-KB validation matrix](live-kb-validation-matrix.md).
+- [Local SDK build outside the MCP](sdk-local-msbuild.md): specify, generate and compile a test KB with the SDK's MSBuild tasks, without `BuildOne`/`BuildAll` or Cloud.
 - [SDK CI validation lane](ci-sdk-validation.md).
 - [Agent evaluation corpus](agent-evals.md).
 - [Release build warning baseline](build_warning_baseline.md).

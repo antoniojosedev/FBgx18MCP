@@ -1981,6 +1981,8 @@ namespace GxMcp.Gateway
                 // issue #542: Structure writer rollback evidence (which members the SDK
                 // refused, whether a revert was attempted, and why it could not be verified).
                 "unappliedMembers", "rollbackAttempted", "rollbackError",
+                // genexus_properties set: which written properties the rollback put back (names only).
+                "propertiesRestored", "propertiesNotRestored",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
                 "matchedCount", "implicitOperations", "diagnosticContext",
                 // Patch safety evidence: retain the distinction between a save attempt
@@ -2000,6 +2002,16 @@ namespace GxMcp.Gateway
                 "savePhase", "verificationPhase", "innerMessages", "innerExceptionTypes", "sdkMessages",
                 "sourceValidationErrors", "originalError", "sdkMessagesTruncated", "sdkMessagesError",
                 "verificationFailure", "saveFailureMessage",
+                // Other objects that differ between the save's inventories: the ones it cannot clear
+                // (unexpectedChangedObjects/Details), the ones the pre-commit inventory showed before a
+                // rollback undid them (preCommitUnexpectedChangedObjects/Details), the ones another process
+                // wrote outside the save window (concurrentChanges), the window itself and the verdict on
+                // the target alone. Without them the caller knows that something else changed, not what.
+                "unexpectedChangedObjects", "unexpectedChangedObjectDetails", "unexpectedChangedObjectDetailsTruncated",
+                "preCommitUnexpectedChangedObjects", "preCommitUnexpectedChangedObjectDetails",
+                "preCommitUnexpectedChangedObjectDetailsTruncated",
+                "concurrentChanges", "concurrentChangeCount", "concurrentChangesTruncated",
+                "saveWindow", "writeVerifiedForTarget", "retrySafe",
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
@@ -2010,9 +2022,15 @@ namespace GxMcp.Gateway
                 "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId",
                 // object_atomic pre-flight: the hint tells the caller to read fieldErrors.
                 "fieldErrors",
+                // Results per item of a variable batch that failed (VariableBatchValidationFailed,
+                // VariableNotPersisted), with the counts: which item to fix.
+                "outcomes", "counts",
                 // Optimistic-concurrency retry contract: a refused token is only useful if the
                 // caller can see the token that is current.
                 "currentVersion", "expectedVersion",
+                // genexus_wwp add_layout: the stage a failure stopped at and the verification checks it failed.
+                // Small on purpose; the full verification receipts stay in verbose_errors.
+                "nativeOperation", "failureStage", "failedChecks",
                 // genexus_wwp regenerate_derived: which objects were stale or missing a token, the
                 // paste-ready token map, and the evidence of the unit's rollback.
                 "staleObjects", "expectedVersions", "missing",
@@ -2083,6 +2101,31 @@ namespace GxMcp.Gateway
                     JToken? value = ResolveErrorField(error, key);
                     if (value != null) trimmed[key] = value;
                 }
+            }
+            string receiptCode = code?.ToString() ?? string.Empty;
+            if ((receiptCode.StartsWith("Pattern", StringComparison.Ordinal)
+                    || receiptCode.StartsWith("WwpLayout", StringComparison.Ordinal)
+                    || receiptCode.StartsWith("WwpProjection", StringComparison.Ordinal))
+                && (ResolveErrorField(error, "commitCompleted") != null || ResolveErrorField(error, "persistenceState") != null))
+            {
+                // PatternInstance write receipt: whether the commit happened, what an independent re-read
+                // observed, and the parent projection and restoration evidence the caller inspects before
+                // retrying. Gated on the receipt itself so unrelated errors keep their terse shape.
+                // Patch, visual-write, WebForm and TransactionRecords errors report persistenceState too; the
+                // Pattern* codes of the pattern writers and the WwpLayout*/WwpProjection* codes of add_layout
+                // keep their snapshot path and hashes out of the terse shape.
+                foreach (string key in new[] { "persistenceState", "commitCompleted", "snapshot", "stateRestoredExactly",
+                    "rollbackPerformed", "beforeHash", "projection", "restorationVerification",
+                    "hostHashBefore", "parentHashBefore", "transactionFinalizationError", "verificationError",
+                    "flushError", "readCacheInvalidationError", "applyOnSaveReenabled" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
+                }
+                // The WorkWithPlus flow records the cause of a part save it swallowed as one sanitized line;
+                // the generic writer keeps the raw exception text in an object, which stays verbose-only.
+                if (ResolveErrorField(error, "sdkSaveError") is { Type: JTokenType.String } sdkSaveError)
+                    trimmed["sdkSaveError"] = sdkSaveError;
             }
             if (code?.ToString().StartsWith("ControlConditionCarriers", StringComparison.Ordinal) == true)
             {
