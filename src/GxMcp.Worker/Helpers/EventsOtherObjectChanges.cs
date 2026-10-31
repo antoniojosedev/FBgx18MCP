@@ -84,6 +84,9 @@ namespace GxMcp.Worker.Helpers
         /// <summary>The middle of the measured offset between the stamp clock and the Worker's UTC clock.</summary>
         internal long OffsetTicks { get; }
 
+        /// <summary>The evidence the window was made from, when a save made it; null for a window built from plain values.</summary>
+        internal SaveEvidence Evidence { get; private set; }
+
         internal static EventsSaveWindow Unavailable(string reason) => new EventsSaveWindow(false, reason, 0, null, 0);
 
         /// <param name="transactionStartTicks">Worker UTC clock when the transaction opened.</param>
@@ -105,15 +108,147 @@ namespace GxMcp.Worker.Helpers
             long offsetLow = targetStampTicks - writeSpanEndTicks;
             long offsetHigh = targetStampTicks - writeSpanStartTicks;
             long tolerance = ClockTolerance.Ticks;
-            if (!Covers(offsetLow, offsetHigh, 0, tolerance) && !Covers(offsetLow, offsetHigh, localUtcOffsetTicks, tolerance))
+            bool onUtcClock = Covers(offsetLow, offsetHigh, 0, tolerance);
+            if (!onUtcClock && !Covers(offsetLow, offsetHigh, localUtcOffsetTicks, tolerance))
                 return Unavailable("StampClockNotComparable");
+
+            // The measured middle of the offset, before it is widened: that is the clock reading the stamp carries.
+            long measuredOffset = offsetLow + (offsetHigh - offsetLow) / 2;
+
+            // The known clock the anchor matched, with the tolerance on both sides, always lies inside the offset range. An
+            // anchor stamped a little before the write span, or a clock step inside it, must not close the window before the
+            // writes this save made. Widening only turns a concurrent verdict into a blocking one, never the reverse.
+            long matchedClock = onUtcClock ? 0 : localUtcOffsetTicks;
+            offsetLow = Math.Min(offsetLow, matchedClock - tolerance);
+            offsetHigh = Math.Max(offsetHigh, matchedClock + tolerance);
 
             return new EventsSaveWindow(
                 true, null,
                 transactionStartTicks + offsetLow - Margin.Ticks,
                 transactionEndTicks.HasValue ? transactionEndTicks.Value + offsetHigh + Margin.Ticks : (long?)null,
-                offsetLow + (offsetHigh - offsetLow) / 2);
+                measuredOffset);
         }
+
+        /// <summary>
+        /// What the protected save recorded about its own clocks and its target. Plain values, so the production steps and
+        /// the offline double build the window through the same <see cref="FromSaveEvidence"/>.
+        /// </summary>
+        internal sealed class SaveEvidence
+        {
+            /// <summary>The Worker clock when the transaction opened.</summary>
+            internal long TransactionStartTicks { get; set; }
+
+            /// <summary>The Worker clock when the transaction closed; null while it is open or when its end was never recorded.</summary>
+            internal long? TransactionEndTicks { get; set; }
+
+            /// <summary>The Worker clock before the first call that can write the target.</summary>
+            internal long WriteSpanStartTicks { get; set; }
+
+            /// <summary>The Worker clock after the object save returned.</summary>
+            internal long ObjectSavedTicks { get; set; }
+
+            /// <summary>The target's stamp after the object save, normalized; null when the object save did not return.</summary>
+            internal long? StampAfterObjectSave { get; set; }
+
+            /// <summary>The target's stamp before the save, normalized.</summary>
+            internal long LastUpdateBeforeTicks { get; set; }
+
+            /// <summary>The Worker's local offset from UTC.</summary>
+            internal long LocalUtcOffsetTicks { get; set; }
+
+            /// <summary>The Kind the SDK gave the target's stamp after the save (diagnostic only; the window never reads it).</summary>
+            internal string AnchorKind { get; set; }
+        }
+
+        /// <summary>
+        /// The window of one verdict, from the save's evidence alone. The checks run in this order: no object save, a target
+        /// stamp that did not advance, a closed transaction whose end was not recorded. Anything else is <see cref="Calibrate"/>.
+        /// </summary>
+        internal static EventsSaveWindow FromSaveEvidence(SaveEvidence evidence, bool transactionClosed)
+        {
+            EventsSaveWindow window = Decide(evidence, transactionClosed);
+            window.Evidence = evidence;
+            return window;
+        }
+
+        private static EventsSaveWindow Decide(SaveEvidence evidence, bool transactionClosed)
+        {
+            if (evidence.StampAfterObjectSave == null) return Unavailable("TargetNotSaved");
+            if (evidence.StampAfterObjectSave.Value <= evidence.LastUpdateBeforeTicks) return Unavailable("TargetStampNotAdvanced");
+            if (transactionClosed && evidence.TransactionEndTicks == null) return Unavailable("TransactionNotClosed");
+            return Calibrate(
+                evidence.TransactionStartTicks, transactionClosed ? evidence.TransactionEndTicks : null,
+                evidence.WriteSpanStartTicks, evidence.ObjectSavedTicks, evidence.StampAfterObjectSave.Value,
+                evidence.LocalUtcOffsetTicks);
+        }
+
+        /// <summary>
+        /// The check on the stamp the committed target carries: a committed save must have persisted the stamp its window was
+        /// calibrated with. When it did not, the window is unavailable and no object is cleared.
+        /// </summary>
+        internal static EventsSaveWindow ConfirmPersistedStamp(
+            EventsSaveWindow window, bool committed, long persistedStampTicks, long? saveStampTicks)
+        {
+            if (window.Calibrated && committed && persistedStampTicks != saveStampTicks)
+            {
+                EventsSaveWindow unavailable = Unavailable("PersistedStampDiffersFromSaveStamp");
+                unavailable.Evidence = window.Evidence;
+                return unavailable;
+            }
+            return window;
+        }
+
+        /// <summary>
+        /// The window the pre-commit check uses: the save's own window, checked against the target's stamp as the open transaction
+        /// reads it after the object save (see <see cref="ConfirmPreCommitStamp"/>). The production steps and the offline double
+        /// both decide through this function.
+        /// </summary>
+        internal static EventsSaveWindow ForPreCommit(SaveEvidence evidence, long? saveStampTicks, long? freshStampTicks)
+            => ConfirmPreCommitStamp(
+                FromSaveEvidence(evidence, transactionClosed: false), saveStampTicks, freshStampTicks, evidence.LastUpdateBeforeTicks);
+
+        /// <summary>
+        /// The window of the final verdict. A save rolled back after the pre-commit check made its window unavailable keeps that
+        /// reason and its evidence: the final window is calibrated from the same evidence, so it would otherwise vouch for a
+        /// rollback the check had refused to trust. Every other save gets the window and the persisted-stamp check it always had.
+        /// </summary>
+        internal static EventsSaveWindow ForFinal(
+            SaveEvidence evidence, bool committed, long persistedStampTicks, long? saveStampTicks, string preCommitReason)
+        {
+            if (!committed && IsPreCommitGuardReason(preCommitReason))
+            {
+                EventsSaveWindow guarded = Unavailable(preCommitReason);
+                guarded.Evidence = evidence;
+                return guarded;
+            }
+            return ConfirmPersistedStamp(FromSaveEvidence(evidence, transactionClosed: true), committed, persistedStampTicks, saveStampTicks);
+        }
+
+        /// <summary>
+        /// The pre-commit check on the target's stamp read inside the open transaction after the object save. A reading equal to
+        /// the save's own stamp keeps the window. A reading equal to the stamp the target carried before the save proves neither
+        /// clock representation, so it decides nothing and keeps the window too. Any other reading, earlier or later than that
+        /// stamp, is not in the representation of the save's stamp, so the pre-commit window is unavailable (fail closed). So is
+        /// a reading that failed.
+        /// </summary>
+        internal static EventsSaveWindow ConfirmPreCommitStamp(
+            EventsSaveWindow window, long? saveStampTicks, long? freshStampTicks, long lastUpdateBeforeTicks)
+        {
+            if (!window.Calibrated || saveStampTicks == null) return window;
+            if (freshStampTicks == null)
+            {
+                EventsSaveWindow notRead = Unavailable("PreCommitStampNotRead");
+                notRead.Evidence = window.Evidence;
+                return notRead;
+            }
+            if (freshStampTicks.Value == saveStampTicks.Value || freshStampTicks.Value == lastUpdateBeforeTicks) return window;
+            EventsSaveWindow unavailable = Unavailable("PreCommitStampRepresentationMismatch");
+            unavailable.Evidence = window.Evidence;
+            return unavailable;
+        }
+
+        private static bool IsPreCommitGuardReason(string reason)
+            => reason == "PreCommitStampNotRead" || reason == "PreCommitStampRepresentationMismatch";
 
         private static bool Covers(long offsetLow, long offsetHigh, long clockOffset, long tolerance)
             => offsetLow - tolerance <= clockOffset && clockOffset <= offsetHigh + tolerance;
@@ -121,11 +256,9 @@ namespace GxMcp.Worker.Helpers
         internal JObject Describe()
         {
             var window = new JObject { ["calibrated"] = Calibrated };
-            if (!Calibrated)
-            {
-                window["reason"] = Reason;
-                return window;
-            }
+            if (!Calibrated) window["reason"] = Reason;
+            DescribeAnchor(window);
+            if (!Calibrated) return window;
             window["stampClockOffsetSeconds"] = Math.Round(TimeSpan.FromTicks(OffsetTicks).TotalSeconds, 1);
             window["from"] = Iso(LowTicks);
             if (HighTicks.HasValue)
@@ -135,6 +268,31 @@ namespace GxMcp.Worker.Helpers
             }
             else window["open"] = true;
             return window;
+        }
+
+        /// <summary>
+        /// The stamps the window was made from: the anchor (the target's stamp after the object save) against the start of the
+        /// write span, so a misplaced anchor shows in the receipt. Written only when a save made the window. An instant the save
+        /// did not record (its write span or its object save never started or returned) is left out, not written as the minimum
+        /// date. <c>anchorMinusWriteStartSeconds</c> is the raw difference: where the SDK stamps the local wall clock labelled as
+        /// UTC it is about ±10,800 s, which is that clock's offset and not a misplaced anchor (docs/events-object-save-isolation.md).
+        /// </summary>
+        private void DescribeAnchor(JObject window)
+        {
+            if (Evidence == null) return;
+            if (Evidence.WriteSpanStartTicks != 0) window["writeStartUtc"] = Iso(Evidence.WriteSpanStartTicks);
+            if (Evidence.ObjectSavedTicks != 0) window["objectSavedUtc"] = Iso(Evidence.ObjectSavedTicks);
+            window["lastUpdateBeforeUtc"] = Iso(Evidence.LastUpdateBeforeTicks);
+            if (Evidence.AnchorKind != null) window["anchorKind"] = Evidence.AnchorKind;
+            if (Evidence.StampAfterObjectSave is long anchor)
+            {
+                window["anchorStampUtc"] = Iso(anchor);
+                if (Evidence.WriteSpanStartTicks != 0)
+                {
+                    double seconds = TimeSpan.FromTicks(anchor - Evidence.WriteSpanStartTicks).TotalSeconds;
+                    window["anchorMinusWriteStartSeconds"] = Math.Round(seconds, 3);
+                }
+            }
         }
 
         internal static string Iso(long ticks)
@@ -271,11 +429,14 @@ namespace GxMcp.Worker.Helpers
         /// <summary>The GUIDs of the blocking changes: the <c>unexpectedChangedObjects</c> field of the receipt.</summary>
         internal JArray BlockingGuids() => new JArray(Blocking.Select(c => c.Guid.ToString()));
 
-        internal JArray BlockingDetails() => Describe(Blocking);
+        internal JArray BlockingDetails() => Describe(Blocking, MaxDescribed);
 
-        internal JArray ConcurrentDetails() => Describe(Concurrent);
+        internal JArray ConcurrentDetails() => ConcurrentDetails(MaxDescribed);
 
-        private static JArray Describe(IReadOnlyList<EventsOtherObjectChange> changes)
-            => new JArray(changes.Take(MaxDescribed).Select(c => c.ToJson()));
+        /// <summary>The first <paramref name="limit"/> changes another process made outside the window, in full.</summary>
+        internal JArray ConcurrentDetails(int limit) => Describe(Concurrent, limit);
+
+        private static JArray Describe(IReadOnlyList<EventsOtherObjectChange> changes, int limit)
+            => new JArray(changes.Take(limit).Select(c => c.ToJson()));
     }
 }

@@ -2012,6 +2012,10 @@ namespace GxMcp.Gateway
                 "preCommitUnexpectedChangedObjectDetailsTruncated",
                 "concurrentChanges", "concurrentChangeCount", "concurrentChangesTruncated",
                 "saveWindow", "writeVerifiedForTarget", "retrySafe",
+                // The window the pre-commit check used, what another process changed outside it, and the fresh read of the
+                // target before commit with its Kind: a refused or committed save explains why it went the way it did.
+                "preCommitSaveWindow", "preCommitConcurrentChanges", "preCommitConcurrentChangeCount",
+                "preCommitConcurrentChangesTruncated", "freshStampAtPreCommit", "freshStampAtPreCommitKind", "freshStampError",
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
@@ -2127,6 +2131,12 @@ namespace GxMcp.Gateway
                 if (ResolveErrorField(error, "sdkSaveError") is { Type: JTokenType.String } sdkSaveError)
                     trimmed["sdkSaveError"] = sdkSaveError;
             }
+            // genexus_wwp add_grid_variable refusal (WwpProjectionNotConfirmed): the WebForm the write was verified against, so
+            // the caller sees the grids and columns the form actually holds (#638). The lists are capped in the terse envelope,
+            // with their totals; the verbose envelope keeps them whole.
+            if (receiptCode.StartsWith("WwpProjection", StringComparison.Ordinal)
+                && ResolveErrorField(error, "webFormProjection") is JObject webFormProjection)
+                trimmed["webFormProjection"] = BoundWebFormProjection(webFormProjection);
             if (code?.ToString().StartsWith("ControlConditionCarriers", StringComparison.Ordinal) == true)
             {
                 // Issue #711: a refused WebForm write that would leave a control's Conditions
@@ -2151,6 +2161,25 @@ namespace GxMcp.Gateway
             JToken? existing = error["suggested_next_step"] ?? AttachSuggestedNextStep(error);
             if (existing != null) trimmed["suggested_next_step"] = existing;
             return trimmed;
+        }
+
+        // The lists of a WebForm projection (grids and columns) keep this many entries in the terse envelope.
+        private const int WebFormProjectionListLimit = 50;
+
+        // A copy of the projection whose long lists keep their first entries, with the length they had as <name>Total.
+        private static JObject BoundWebFormProjection(JObject projection)
+        {
+            var bounded = new JObject();
+            foreach (var property in projection.Properties())
+            {
+                if (property.Value is JArray items && items.Count > WebFormProjectionListLimit)
+                {
+                    bounded[property.Name] = new JArray(items.Take(WebFormProjectionListLimit).Select(item => item.DeepClone()));
+                    bounded[property.Name + "Total"] = items.Count;
+                }
+                else bounded[property.Name] = property.Value.DeepClone();
+            }
+            return bounded;
         }
 
         /// <summary>
