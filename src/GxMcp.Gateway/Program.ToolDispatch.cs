@@ -171,6 +171,10 @@ namespace GxMcp.Gateway
             // genexus_edit used to serialize its full source payload into a key
             // for that doomed lookup on every call.
             bool isMutating = IsMutatingTool(tName, tArgs);
+            // READ-ONLY MODE: fails closed, so it is checked against the classifier's proof of a
+            // read rather than against isMutating (an unclassified tool is not a proven read).
+            if (ReadOnlyMode.FromEnvironment().Refuses(tName, tArgs))
+                return BuildToolResultContent(ReadOnlyMode.BuildRefusal(tName), isError: true, toolName: tName, toolArgs: tArgs);
             if (isMutating && !IsMutationPreview(tArgs))
             {
                 var writeAllowlist = WriteKbAllowlist.FromEnvironment();
@@ -377,10 +381,8 @@ namespace GxMcp.Gateway
             // therefore benefit from the short-circuit. Gateway-served tools
             // (whoami, recipe, kb_diff, sandbox, etc.) bypass naturally because they
             // never hit the worker dispatcher. genexus_doctor is deliberately NOT
-            // listed: it runs off the STA thread (worker "health" method) and reads
-            // the on-disk snapshot, returning its own SearchIndexMissing/Empty report
-            // with retry hints — far more useful than a generic IndexNotReady while
-            // indexing, and it doubles as an escape hatch when the mirror is wrong.
+            // listed: the Gateway answers it from its own state, and its one Worker
+            // read, the WorkWithPlus template block, does not go through the index.
             if (IsIndexDependentTool(tName, tArgs))
             {
                 IndexStateSnapshot idxSnap = GetLastKnownIndexState(_currentKb.Value?.NormalizedAlias);
@@ -1064,15 +1066,15 @@ namespace GxMcp.Gateway
                 return BuildToolResultContent(whoami, false, tName, tArgs);
             }
 
-            // Doctor is a Gateway-owned health snapshot. Calling the Worker
-            // version here made the result stale after a reload because the
-            // health payload was tied to the old process and its counters.
-            // The Gateway already has the current pool PID, index mirror and
-            // operation tracker, and can answer even when startup failed.
+            // Doctor is answered by the Gateway from its own state (pool PID, index
+            // mirror, operation tracker), so it still answers when startup failed.
+            // Its one Worker read, the WorkWithPlus template block, is asked only of
+            // a Worker that is already running; see ProbeDoctorWwpTemplatesAsync.
             if (string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase))
             {
-                JObject doctor = BuildGatewayDoctorEnvelope(
-                    sessionContextEnabled ? sessionId : null);
+                string? doctorSessionId = sessionContextEnabled ? sessionId : null;
+                JObject wwpTemplates = await ProbeDoctorWwpTemplatesAsync(doctorSessionId);
+                JObject doctor = BuildGatewayDoctorEnvelope(doctorSessionId, wwpTemplates);
                 return BuildToolResultContent(doctor, false, tName, tArgs);
             }
 

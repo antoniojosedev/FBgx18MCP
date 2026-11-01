@@ -2042,7 +2042,9 @@ namespace GxMcp.Gateway
                 // destination resolved or stopped, the parent the SDK actually left, the persist path it
                 // answered to, what changed, and the compensation that proves nothing was left behind.
                 "placement", "expectedParent", "actualParent", "strategy", "strategyDetail",
-                "changedParts", "propertyDifferences", "compensation"
+                "changedParts", "propertyDifferences", "compensation",
+                // genexus_delete_object refusal and dryRun: wouldDelete=false says the object was not deleted.
+                "wouldDelete"
             };
             foreach (var k in diagnosticKeys)
             {
@@ -2105,6 +2107,13 @@ namespace GxMcp.Gateway
                     JToken? value = ResolveErrorField(error, key);
                     if (value != null) trimmed[key] = value;
                 }
+            }
+            if (code?.ToString().StartsWith("WwpTemplate", StringComparison.Ordinal) == true)
+            {
+                // genexus_properties WorkWithPlus template refusal: each check the type or the XML failed, so the caller
+                // corrects the template and sends it again.
+                JToken? violations = ResolveErrorField(error, "violations");
+                if (violations != null) trimmed["violations"] = violations;
             }
             string receiptCode = code?.ToString() ?? string.Empty;
             if ((receiptCode.StartsWith("Pattern", StringComparison.Ordinal)

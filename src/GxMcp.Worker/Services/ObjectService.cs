@@ -497,6 +497,15 @@ namespace GxMcp.Worker.Services
             bool dryRun = options?["dryRun"]?.ToObject<bool?>() ?? false;
             try
             {
+                // A WorkWithPlus template is refused by name first, whatever the state of the Knowledge Base.
+                if (ObjectCreateTypes.IsWorkWithPlusTemplate(type))
+                {
+                    return McpResponse.Err(
+                        code: "UnsupportedObjectType",
+                        message: "Unsupported object type: " + type,
+                        hint: ObjectCreateTypes.WorkWithPlusTemplateHint);
+                }
+
                 var kb = _kbService.GetKB();
                 if (kb == null) return McpResponse.Err(code: "NoKb", message: "No KB open");
 
@@ -528,7 +537,7 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Err(
                         code: "UnsupportedObjectType",
                         message: "Unsupported object type: " + type,
-                        hint: "Known types: Transaction, Procedure, WebPanel, SDPanel, SDT, DataProvider, DataSelector, Domain, Attribute, Table, Index, ExternalObject, Image, Theme, ThemeClass, DesignSystem, ColorPalette, Menu, Menubar, Stencil, UserControl, WorkPanel, Report, Dashboard, Query, WorkflowDiagram, ConversationalFlows, TestSuite, API, URLRewrite, MiniApp, SuperApp, OfflineDatabase, DataView, Group, Language, TranslationMessage, WorkWithDevices, WorkWithWeb.");
+                        hint: ObjectCreateTypes.SupportedTypesHint);
                 }
 
                 // Pre-flight duplicate check: gives a clear, structured error before the SDK throws.
@@ -872,6 +881,10 @@ namespace GxMcp.Worker.Services
         {
             seededDescription = null;
             typedMeta = null;
+
+            // A WorkWithPlus template is refused by name first, as in CreateObject. The atomic create path reaches it here.
+            if (ObjectCreateTypes.IsWorkWithPlusTemplate(type))
+                throw new ArgumentException("Unsupported object type: " + type + ". " + ObjectCreateTypes.WorkWithPlusTemplateHint);
 
             var kb = _kbService.GetKB();
             if (kb == null) throw new Exception("KB not opened");
@@ -1366,6 +1379,104 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Types the generic delete path refuses: a WorkWithPlus template is removed only with the WorkWithPlus
+        /// Settings Editor. Only the template type is listed today; its name is matched without white space and in
+        /// any case.
+        /// </summary>
+        internal static bool IsDeleteRefusedForType(string typeName)
+        {
+            return string.Equals(CompactTypeName(typeName), "workwithplusforwebtemplate", StringComparison.Ordinal);
+        }
+
+        /// <summary>The type name without white space and in lower case.</summary>
+        internal static string CompactTypeName(string typeName)
+        {
+            return string.Concat((typeName ?? string.Empty).Where(c => !char.IsWhiteSpace(c))).ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// The refusal for a type <see cref="IsDeleteRefusedForType"/> lists. It is the same for dryRun and for
+        /// the real call: nothing is written, so <c>wouldDelete</c> and <c>persisted</c> are both false.
+        /// </summary>
+        internal static string DeleteNotSupportedForTypeResponse(string target, string typeName)
+        {
+            return McpResponse.Err(
+                code: "DeleteNotSupportedForType",
+                message: "WorkWithPlus templates cannot be deleted with genexus_delete_object. Delete them with the WorkWithPlus Settings Editor. Nothing was deleted.",
+                hint: "Delete the template with the WorkWithPlus Settings Editor in the IDE. genexus_delete_object does not remove WorkWithPlus templates.",
+                target: target,
+                extra: new JObject
+                {
+                    ["type"] = typeName,
+                    ["wouldDelete"] = false,
+                    ["persisted"] = false
+                });
+        }
+
+        /// <summary>
+        /// What a delete learns from the KB before it writes anything: the envelope that ends the call (KB not open,
+        /// or confirm missing), or whether the target was found and the identity of what was found.
+        /// </summary>
+        internal sealed class DeleteResolution
+        {
+            public string Error { get; set; }
+            public bool Found { get; set; }
+            public dynamic Kb { get; set; }
+            public KBObject Object { get; set; }
+            public string Name { get; set; }
+            public string TypeName { get; set; }
+            public Guid Guid { get; set; }
+        }
+
+        private Func<string, string, bool, bool, DeleteResolution> _deleteTargetResolver;
+
+        /// <summary>Test seam: replaces the KB lookup and the target resolution that <see cref="DeleteObject"/> makes.</summary>
+        internal void SetDeleteTargetResolverForTest(Func<string, string, bool, bool, DeleteResolution> resolver)
+        {
+            _deleteTargetResolver = resolver;
+        }
+
+        /// <summary>
+        /// Reads what a delete needs before it writes, in this order: the KB (KbNotOpen when none is open), the confirm
+        /// rule (ConfirmRequired when neither a dry run nor confirm is given), then the target lookup.
+        /// </summary>
+        internal DeleteResolution ResolveDeleteTarget(string target, string typeFilter, bool dryRun, bool confirm)
+        {
+            var kb = _kbService.GetKB();
+            if (kb == null)
+                return new DeleteResolution
+                {
+                    Error = Models.McpResponse.Err(code: "KbNotOpen", message: "No KB open.",
+                        hint: "Open a KB first with genexus_kb action=open.",
+                        nextSteps: new JArray(KbOpenNextStep.Step("Open the target KB before deleting.")))
+                };
+
+            if (!dryRun && !confirm)
+                return new DeleteResolution
+                {
+                    Error = Models.McpResponse.Err(code: "ConfirmRequired",
+                        message: "Delete requires explicit confirm=true (irreversible operation).",
+                        hint: "Re-issue genexus_delete_object with confirm=true. Consider dryRun=true first to preview the impact.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_delete_object", new JObject { ["name"] = target, ["confirm"] = true }, "Re-issue with confirm=true to perform the irreversible delete.")),
+                        target: target)
+                };
+
+            var obj = FindObject(target, typeFilter);
+            if (obj == null)
+                return new DeleteResolution { Kb = kb };
+
+            return new DeleteResolution
+            {
+                Found = true,
+                Kb = kb,
+                Object = obj,
+                Name = obj.Name,
+                TypeName = obj.TypeDescriptor?.Name ?? "Unknown",
+                Guid = obj.Guid
+            };
+        }
+
         public string DeleteObject(string target, string typeFilter, bool confirm, bool dryRun = false, string expectedVersion = null)
         {
             Guid objGuid = Guid.Empty;
@@ -1377,23 +1488,17 @@ namespace GxMcp.Worker.Services
             IReadOnlyList<Guid> candidateGuids = new Guid[0];
             try
             {
-                var kb = _kbService.GetKB();
-                if (kb == null)
-                    return Models.McpResponse.Err(code: "KbNotOpen", message: "No KB open.",
-                        hint: "Open a KB first with genexus_kb action=open.",
-                        nextSteps: new JArray(KbOpenNextStep.Step("Open the target KB before deleting.")));
+                // A WorkWithPlus template named by its type is refused before the KB is read and before any transaction.
+                if (IsDeleteRefusedForType(typeFilter))
+                    return DeleteNotSupportedForTypeResponse(target, typeFilter);
 
-                if (!dryRun && !confirm)
-                {
-                    return Models.McpResponse.Err(code: "ConfirmRequired",
-                        message: "Delete requires explicit confirm=true (irreversible operation).",
-                        hint: "Re-issue genexus_delete_object with confirm=true. Consider dryRun=true first to preview the impact.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_delete_object", new JObject { ["name"] = target, ["confirm"] = true }, "Re-issue with confirm=true to perform the irreversible delete.")),
-                        target: target);
-                }
+                var resolution = _deleteTargetResolver != null
+                    ? _deleteTargetResolver(target, typeFilter, dryRun, confirm)
+                    : ResolveDeleteTarget(target, typeFilter, dryRun, confirm);
+                if (resolution.Error != null)
+                    return resolution.Error;
 
-                var obj = FindObject(target, typeFilter);
-                if (obj == null)
+                if (!resolution.Found)
                 {
                     // A prior delete_object call may have timed out at the gateway pipe
                     // while the worker's obj.Delete() completed successfully a few seconds
@@ -1430,9 +1535,15 @@ namespace GxMcp.Worker.Services
                     return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
                 }
 
-                objName = obj.Name;
-                objType = obj.TypeDescriptor?.Name ?? "Unknown";
-                objGuid = obj.Guid;
+                var kb = resolution.Kb;
+                var obj = resolution.Object;
+                objName = resolution.Name;
+                objType = resolution.TypeName;
+                objGuid = resolution.Guid;
+                // The type the SDK reports decides too: a template found without a type filter, or named in another
+                // spelling, is refused here, before the version check and any transaction.
+                if (IsDeleteRefusedForType(objType))
+                    return DeleteNotSupportedForTypeResponse(objName, objType);
                 string qualifiedName = GetQualifiedObjectName(obj);
                 string versionBefore = WriteService.ComputeVersionToken(obj);
                 if (!string.IsNullOrWhiteSpace(expectedVersion)
@@ -2520,7 +2631,7 @@ namespace GxMcp.Worker.Services
         /// then falls back to reading the matching static Guid field on
         /// <c>Artech.Genexus.Common.ObjClass</c> via reflection. Returns Guid.Empty when unknown.
         /// </summary>
-        private static Guid ResolveObjectTypeGuid(string type)
+        internal static Guid ResolveObjectTypeGuid(string type)
         {
             if (string.IsNullOrWhiteSpace(type)) return Guid.Empty;
             string key = NormalizeTypeAlias(type);
@@ -2559,46 +2670,59 @@ namespace GxMcp.Worker.Services
                 || ResolutionTypeMatches(obj.GetType().Name, requestedType));
         }
 
+        /// <summary>
+        /// The object types with a typed SDK wrapper, each read through its KBObjectDescriptor when it is looked up. A name
+        /// outside this table falls back to ObjClass. The lookup is case-insensitive. ObjectCreateTypesTests checks that
+        /// every name here is in the supported-type list.
+        /// </summary>
+        internal static readonly IReadOnlyDictionary<string, Func<Guid>> TypedDescriptorIds =
+            new Dictionary<string, Func<Guid>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Module"] = () => KBObjectDescriptor.Get<Artech.Architecture.Common.Objects.Module>().Id,
+                ["Procedure"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Procedure>().Id,
+                ["Transaction"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Transaction>().Id,
+                ["WebPanel"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.WebPanel>().Id,
+                ["SDT"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.SDT>().Id,
+                ["DataProvider"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DataProvider>().Id,
+                ["Attribute"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Attribute>().Id,
+                ["Table"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Table>().Id,
+                ["Domain"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Domain>().Id,
+                ["DataSelector"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DataSelector>().Id,
+                ["DataView"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DataView>().Id,
+                ["Index"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Index>().Id,
+                ["ExternalObject"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.ExternalObject>().Id,
+                ["Theme"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Theme>().Id,
+                ["Image"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Image>().Id,
+                ["Menu"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Menu>().Id,
+                ["Menubar"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Menubar>().Id,
+                ["Stencil"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Stencil>().Id,
+                ["UserControl"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.UserControl>().Id,
+                ["WorkPanel"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.WorkPanel>().Id,
+                ["Report"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Report>().Id,
+                ["API"] = () => ResolveOptionalDescriptorId("API"),
+                ["URLRewrite"] = () => ResolveOptionalDescriptorId("URLRewrite"),
+                ["MiniApp"] = () => ResolveOptionalDescriptorId("MiniApp"),
+                ["SuperApp"] = () => ResolveOptionalDescriptorId("SuperApp"),
+                ["DesignSystem"] = () => ResolveOptionalDescriptorId("DesignSystem"),
+                ["ColorPalette"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.ColorPalette>().Id,
+                ["OfflineDatabase"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.OfflineDatabase>().Id,
+                ["Group"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Group>().Id,
+                ["Language"] = () => KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Language>().Id,
+            };
+
         private static Guid ResolveFromTypedDescriptor(string type)
         {
+            if (!TypedDescriptorIds.TryGetValue(type, out Func<Guid> descriptorId)) return Guid.Empty;
+
             try
             {
-                if (type.Equals("Module", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Architecture.Common.Objects.Module>().Id;
-                if (type.Equals("Procedure", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Procedure>().Id;
-                if (type.Equals("Transaction", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Transaction>().Id;
-                if (type.Equals("WebPanel", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.WebPanel>().Id;
-                if (type.Equals("SDT", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.SDT>().Id;
-                if (type.Equals("DataProvider", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DataProvider>().Id;
-                if (type.Equals("Attribute", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Attribute>().Id;
-                if (type.Equals("Table", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Table>().Id;
-                if (type.Equals("Domain", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Domain>().Id;
-                if (type.Equals("DataSelector", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DataSelector>().Id;
-                if (type.Equals("DataView", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DataView>().Id;
-                if (type.Equals("Index", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Index>().Id;
-                if (type.Equals("ExternalObject", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.ExternalObject>().Id;
-                if (type.Equals("Theme", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Theme>().Id;
-                if (type.Equals("Image", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Image>().Id;
-                if (type.Equals("Menu", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Menu>().Id;
-                if (type.Equals("Menubar", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Menubar>().Id;
-                if (type.Equals("Stencil", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Stencil>().Id;
-                if (type.Equals("UserControl", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.UserControl>().Id;
-                if (type.Equals("WorkPanel", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.WorkPanel>().Id;
-                if (type.Equals("Report", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Report>().Id;
-                if (type.Equals("API", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("API");
-                if (type.Equals("URLRewrite", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("URLRewrite");
-                if (type.Equals("MiniApp", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("MiniApp");
-                if (type.Equals("SuperApp", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("SuperApp");
-                if (type.Equals("DesignSystem", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("DesignSystem");
-                if (type.Equals("ColorPalette", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.ColorPalette>().Id;
-                if (type.Equals("OfflineDatabase", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.OfflineDatabase>().Id;
-                if (type.Equals("Group", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Group>().Id;
-                if (type.Equals("Language", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Language>().Id;
+                return descriptorId();
             }
             catch (Exception ex)
             {
                 Logger.Error("ResolveFromTypedDescriptor failed for " + type + ": " + ex.Message);
+                return Guid.Empty;
             }
-            return Guid.Empty;
         }
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Guid> _optionalDescriptorIds =
@@ -3048,6 +3172,20 @@ namespace GxMcp.Worker.Services
                 (!string.IsNullOrWhiteSpace(entityKey) ? entityKey : guid);
         }
 
+        // An EntityKey given as the target names one object by identity, as an explicit entityKey does. It is
+        // refused when an explicit entityKey names another object, as a conflicting GUID is in NormalizeResolutionTarget.
+        internal static bool NormalizeEntityKeyTarget(string target, ref string entityKey)
+        {
+            string value = target?.Trim();
+            if (!TryParseEntityKey(value, out _, out _)) return true;
+            if (string.IsNullOrWhiteSpace(entityKey))
+            {
+                entityKey = value;
+                return true;
+            }
+            return TextSelectorParser.SameEntityKey(entityKey, value);
+        }
+
         internal static bool NormalizeResolutionTarget(ref string target, ref string type, ref string guid)
         {
             target = target?.Trim();
@@ -3157,6 +3295,7 @@ namespace GxMcp.Worker.Services
             // Parse name syntax once before every resolution strategy, including
             // explicit identities; conflicting selectors must not select a homonym.
             if (!NormalizeResolutionTarget(ref target, ref typeFilter, ref guid)) return null;
+            if (!NormalizeEntityKeyTarget(target, ref entityKey)) return null;
             var sw = Stopwatch.StartNew();
             var kb = _kbService.GetKB();
             if (kb == null) return null;
@@ -4233,6 +4372,8 @@ namespace GxMcp.Worker.Services
                     ["parts"] = partsObj
                 };
                 if (variablesProjection != null) result["variables"] = variablesProjection;
+                // With no part read, the parts the object lists tell a type without text parts from a failed read.
+                if (partsObj.Count == 0) WithAvailableParts(result, () => GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj));
                 return result.ToString();
             }
             catch (Exception ex)
@@ -5188,24 +5329,55 @@ namespace GxMcp.Worker.Services
         /// Batch text projections use this seam to plan all output files first and write them in
         /// one controlled pass, while keeping SDK resolution and STA ownership in ObjectService.
         /// </summary>
-        internal string ReadObjectPartText(string target, string partName = null, string typeFilter = null)
+        internal string ReadObjectPartText(string target, string partName = null, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
             try
             {
-                var obj = FindObject(target, typeFilter);
-                if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
-                return ReadObjectSourceInternal(
+                // Resolves like ReadObjectSourceParts (identity included) and reports a miss the same way.
+                var obj = FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatReadNotFound(target);
+                return WithObjectIdentity(ReadObjectSourceInternal(
                     obj,
                     string.IsNullOrWhiteSpace(partName) ? "Source" : partName,
                     0,
                     int.MaxValue,
                     "mcp",
-                    false);
+                    false), obj.Name, obj.TypeDescriptor?.Name);
             }
             catch (Exception ex)
             {
                 return McpResponse.Err(code: "ReadPartFailed", message: "Part read failed: " + ex.Message, target: target);
             }
+        }
+
+        // The export compares the object a read resolved with its index entry, so the reply names that object.
+        internal static string WithObjectIdentity(string reply, string objectName, string objectType)
+        {
+            try
+            {
+                JObject response = JObject.Parse(reply);
+                response["objectName"] = objectName;
+                response["objectType"] = objectType;
+                return response.ToString();
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                return reply;
+            }
+        }
+
+        // The parts an object lists, as the reply's availableParts. A listing that fails, or gives no list, leaves the
+        // field out: the reply then says nothing about the object's parts, so it is never taken for a type without parts.
+        internal static JObject WithAvailableParts(JObject reply, Func<IEnumerable<string>> listParts)
+        {
+            try
+            {
+                IEnumerable<string> parts = listParts();
+                if (parts != null) reply["availableParts"] = new JArray(parts);
+            }
+            catch { }
+            return reply;
         }
 
         /// <summary>
@@ -5633,15 +5805,9 @@ namespace GxMcp.Worker.Services
                     result["error"] = $"Part '{partName}' not found in {obj.Name}";
                     result["objectName"] = obj.Name;
                     result["objectType"] = obj.TypeDescriptor?.Name;
-                    try
-                    {
-                        var avail = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
-                        if (avail != null && avail.Length > 0)
-                        {
-                            result["availableParts"] = new JArray(avail);
-                        }
-                    }
-                    catch { }
+                    // The list is there whenever the object can be read, empty for a type without parts: a reply without it
+                    // cannot tell a type without parts from a part name that does not exist.
+                    WithAvailableParts(result, () => GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj));
                     string typeName = obj.TypeDescriptor?.Name ?? "object";
                     string available = result["availableParts"] is JArray parts && parts.Count > 0
                         ? $" Valid parts for {typeName}: {string.Join(", ", parts.Values<string>())}."
