@@ -56,8 +56,8 @@ namespace GxMcp.Worker.Tests
         {
             string src = PropertySource();
 
-            // Three sites read the object independently: the reconciliation read, the preview /
-            // version-checked write, and the refresh inside the write transaction.
+            // Three sites read the object independently: the preview / version-checked write, the refresh inside the write
+            // transaction, and the reconciliation read of the write path.
             Assert.Equal(3, SourceAssert.Count(src, "return FreshReadUnavailableEnvelope(target,"));
             Assert.Equal(3, SourceAssert.Count(src, "_objectService.GetLastResolutionDiagnostic()"));
             Assert.DoesNotContain("code: \"FreshReadUnavailable\"", src);
@@ -80,8 +80,8 @@ namespace GxMcp.Worker.Tests
         {
             string body = SourceAssert.MethodBody(PropertySource(), "public string SetProperties(string target, JObject properties");
 
-            int precondition = body.IndexOf("if (dryRun || !string.IsNullOrWhiteSpace(expectedVersion))", StringComparison.Ordinal);
-            Assert.True(precondition >= 0, "the independent read must cover dryRun as well as expectedVersion");
+            int precondition = body.IndexOf("if (dryRun || patching || !string.IsNullOrWhiteSpace(expectedVersion))", StringComparison.Ordinal);
+            Assert.True(precondition >= 0, "the independent read must cover dryRun, a template patch and expectedVersion");
 
             int firstRead = body.IndexOf("FindFreshTarget(obj)", StringComparison.Ordinal);
             int preview = body.IndexOf("if (dryRun)", StringComparison.Ordinal);
