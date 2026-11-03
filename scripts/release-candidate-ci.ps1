@@ -12,6 +12,18 @@ function Test-ReleaseRequiredChecksQuiet {
     return Get-GxMcpReleaseRequiredChecksReport -Commit $Commit
 }
 
+# Commit SHA of a remote branch, or $null when it does not exist. Throws on a failed read: the
+# callers decide whether that is a failure (Ensure) or only undo noise (Remove-OwnReleaseCandidate).
+function Get-ReleaseCandidateRemoteSha {
+    param([Parameter(Mandatory = $true)][string]$Branch)
+
+    $lines = @(& git ls-remote --heads origin "refs/heads/$Branch" 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "Could not read remote branch $Branch." }
+    $match = @($lines | Where-Object { ([string]$_) -match "\srefs/heads/$([regex]::Escape($Branch))$" })
+    if ($match.Count -eq 0) { return $null }
+    return (([string]$match[0]).Trim() -split '\s+')[0]
+}
+
 function Ensure-ReleaseCandidateCi {
     param(
         [Parameter(Mandatory = $true)][string]$Commit,
@@ -24,19 +36,30 @@ function Ensure-ReleaseCandidateCi {
         $statusState.candidate.branch = $candidateBranch
     }
 
-    if ($DryRun) {
-        Warn "[DRY-RUN] would push $Commit to refs/heads/$candidateBranch and ensure a PR exists to trigger CI."
-        return
+    # candidate/<tag> belongs to this release. A copy left by an earlier run points at another
+    # commit: it is replaced, never pushed over (a non-fast-forward push would fail the run).
+    $remoteSha = Get-ReleaseCandidateRemoteSha -Branch $candidateBranch
+    if ($remoteSha -ceq $Commit) {
+        if (-not $DryRun) { Ok "Candidate branch $candidateBranch already points at $Commit; reusing it." }
+    } else {
+        Step "Pushing candidate branch $candidateBranch for CI"
+        if ($remoteSha) {
+            Warn "Replacing the stale candidate branch $candidateBranch ($remoteSha) with $Commit."
+            Invoke-Cmd 'git' @('push', 'origin', ":refs/heads/$candidateBranch")
+        }
+        Invoke-Cmd 'git' @('push', 'origin', "$($Commit):refs/heads/$candidateBranch")
+        if (-not $DryRun) {
+            $script:releaseCandidateCreatedThisRun = $true
+            Ok "Pushed candidate branch $candidateBranch ($Commit)."
+        }
     }
 
-    Step "Pushing candidate branch $candidateBranch for CI"
-    Invoke-Cmd 'git' @('push', 'origin', "$($Commit):refs/heads/$candidateBranch")
-    Ok "Pushed candidate branch $candidateBranch ($Commit)."
-
     $prListRaw = @(gh pr list --head $candidateBranch --state all --json number,state,url 2>$null)
-    $prs = if ($LASTEXITCODE -eq 0 -and $prListRaw.Count -gt 0) {
+    # @() keeps an empty '[]' list an array: ConvertFrom-Json enumerates it to $null,
+    # and StrictMode callers then fail on .Count.
+    $prs = @(if ($LASTEXITCODE -eq 0 -and $prListRaw.Count -gt 0) {
         ($prListRaw -join [Environment]::NewLine) | ConvertFrom-Json
-    } else { @() }
+    })
 
     $openPr = @($prs | Where-Object { [string]$_.state -ieq 'OPEN' } | Select-Object -First 1)
     if ($openPr.Count -gt 0) {
@@ -47,30 +70,47 @@ function Ensure-ReleaseCandidateCi {
             $statusState.candidate.prUrl = $prUrl
         }
         Ok "Candidate PR already open: #$prNum ($prUrl)."
-    } elseif ($prs.Count -gt 0) {
+        return
+    }
+
+    if ($prs.Count -gt 0) {
         $closedPr = $prs[0]
         $prNum = [int]$closedPr.number
         $prUrl = [string]$closedPr.url
-        Invoke-Cmd 'gh' @('pr', 'reopen', [string]$prNum)
-        if ($null -ne $statusState -and $statusState.Contains('candidate')) {
-            $statusState.candidate.prNumber = $prNum
-            $statusState.candidate.prUrl = $prUrl
+        if ($DryRun) {
+            Warn "[DRY-RUN] would reopen candidate PR #$prNum or create a new one."
+            return
         }
-        Ok "Reopened candidate PR #$prNum for CI."
-    } else {
-        $prOut = @(gh pr create --head $candidateBranch --base main --title "release candidate: $Tag" --body "Automated release candidate verification for $Tag ($Commit)." 2>$null)
-        if ($LASTEXITCODE -ne 0 -or $prOut.Count -eq 0) {
-            Fail "Could not create candidate PR for $candidateBranch to trigger required CI."
+        # A closed PR whose branch was deleted and pushed again cannot be reopened;
+        # GitHub answers 'Could not open the pull request', so a new PR is created.
+        gh pr reopen ([string]$prNum) 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            if ($null -ne $statusState -and $statusState.Contains('candidate')) {
+                $statusState.candidate.prNumber = $prNum
+                $statusState.candidate.prUrl = $prUrl
+            }
+            Ok "Reopened candidate PR #$prNum for CI."
+            return
         }
-        $createdUrl = ($prOut -join ' ').Trim()
-        $prNumMatch = [regex]::Match($createdUrl, '/pull/(\d+)')
-        $prNum = if ($prNumMatch.Success) { [int]$prNumMatch.Groups[1].Value } else { $null }
-        if ($null -ne $statusState -and $statusState.Contains('candidate')) {
-            $statusState.candidate.prNumber = $prNum
-            $statusState.candidate.prUrl = $createdUrl
-        }
-        Ok "Created candidate PR for CI: $createdUrl"
+        Warn "Could not reopen candidate PR #$prNum; creating a new one."
     }
+
+    if ($DryRun) {
+        Warn "[DRY-RUN] would create the candidate PR for $candidateBranch."
+        return
+    }
+    $prOut = @(gh pr create --head $candidateBranch --base main --title "release candidate: $Tag" --body "Automated release candidate verification for $Tag ($Commit)." 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $prOut.Count -eq 0) {
+        Fail "Could not create candidate PR for $candidateBranch to trigger required CI."
+    }
+    $createdUrl = ($prOut -join ' ').Trim()
+    $prNumMatch = [regex]::Match($createdUrl, '/pull/(\d+)')
+    $prNum = if ($prNumMatch.Success) { [int]$prNumMatch.Groups[1].Value } else { $null }
+    if ($null -ne $statusState -and $statusState.Contains('candidate')) {
+        $statusState.candidate.prNumber = $prNum
+        $statusState.candidate.prUrl = $createdUrl
+    }
+    Ok "Created candidate PR for CI: $createdUrl"
 }
 
 function Wait-ReleaseRequiredChecksGreen {
@@ -109,6 +149,29 @@ function Wait-ReleaseRequiredChecksGreen {
     }
 
     Fail "Timed out waiting for candidate CI on $Commit after $TimeoutSeconds seconds ($lastError)."
+}
+
+# Undo of a failed run: closes the candidate PR this run opened (its branch goes with it) and
+# deletes the candidate branch if it survived. Direct commands and no Fail, because undo must not
+# exit the run it is cleaning up after.
+function Remove-OwnReleaseCandidate {
+    param([Parameter(Mandatory = $true)][string]$Tag)
+
+    $candidateBranch = "candidate/$Tag"
+    $prNumber = if ($null -ne $statusState -and $statusState.Contains('candidate')) { $statusState.candidate.prNumber } else { $null }
+    if ($prNumber) {
+        & gh pr close ([string]$prNumber) --delete-branch 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Ok "Closed candidate PR #$prNumber and deleted $candidateBranch."
+            return
+        }
+        Warn "Could not close candidate PR #$prNumber; deleting the branch directly."
+    }
+    if (Get-ReleaseCandidateRemoteSha -Branch $candidateBranch) {
+        & git push origin ":refs/heads/$candidateBranch" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not delete remote branch $candidateBranch." }
+        Ok "Deleted remote candidate branch $candidateBranch."
+    }
 }
 
 function Cleanup-ReleaseCandidate {

@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $wrapper = Get-Content -LiteralPath (Join-Path $root 'scripts\release.ps1') -Raw
@@ -57,6 +57,59 @@ foreach ($funcName in @('Ensure-ReleaseCandidateCi', 'Wait-ReleaseRequiredChecks
     $fnDef = $ciAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $funcName }, $true)
     if (-not $fnDef) { throw "Candidate CI script is missing function: $funcName" }
 }
+
+# Regression (v4.3.0): under StrictMode an empty `gh pr list` ('[]') must not make
+# Ensure-ReleaseCandidateCi throw "property 'Count' cannot be found"; it creates the PR.
+$candidateProbe = {
+    param($ScriptPath)
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version Latest
+    $script:created = $false
+    function Step($m) {}
+    function Ok($m) {}
+    function Warn($m) {}
+    function Fail($m) { throw "Fail: $m" }
+    function Invoke-Cmd { }
+    function git { $global:LASTEXITCODE = 0 }
+    function gh {
+        $global:LASTEXITCODE = 0
+        if ($args[0] -eq 'pr' -and $args[1] -eq 'list') { return '[]' }
+        if ($args[0] -eq 'pr' -and $args[1] -eq 'create') { $script:created = $true; return 'https://github.com/o/r/pull/9' }
+    }
+    $statusState = $null
+    . $ScriptPath
+    Ensure-ReleaseCandidateCi -Commit 'abc' -Tag 'v0.0.1'
+    $script:created
+}
+$probeResult = & $candidateProbe $candidateCiScript
+if (-not $probeResult) { throw 'Ensure-ReleaseCandidateCi did not create a candidate PR when none existed.' }
+
+# Regression (v4.3.0): a closed candidate PR whose branch was deleted and pushed again
+# cannot be reopened (GraphQL 'Could not open the pull request'); create a new one.
+$reopenProbe = {
+    param($ScriptPath)
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version Latest
+    $script:created = $false
+    function Step($m) {}
+    function Ok($m) {}
+    function Warn($m) {}
+    function Fail($m) { throw "Fail: $m" }
+    function Invoke-Cmd { }
+    function git { $global:LASTEXITCODE = 0 }
+    function gh {
+        $global:LASTEXITCODE = 0
+        if ($args[0] -eq 'pr' -and $args[1] -eq 'list') { return '[{"number":841,"state":"CLOSED","url":"https://github.com/o/r/pull/841"}]' }
+        if ($args[0] -eq 'pr' -and $args[1] -eq 'reopen') { $global:LASTEXITCODE = 1; return }
+        if ($args[0] -eq 'pr' -and $args[1] -eq 'create') { $script:created = $true; return 'https://github.com/o/r/pull/843' }
+    }
+    $statusState = $null
+    . $ScriptPath
+    Ensure-ReleaseCandidateCi -Commit 'abc' -Tag 'v0.0.1'
+    $script:created
+}
+$reopenResult = & $reopenProbe $candidateCiScript
+if (-not $reopenResult) { throw 'Ensure-ReleaseCandidateCi did not create a new candidate PR when the closed one could not be reopened.' }
 $minorPatchRun = & pwsh -NoProfile -File (Join-Path $root 'release.ps1') -Minor -Patch -DryRun 2>&1
 if ($LASTEXITCODE -eq 0 -or ($minorPatchRun -join "`n") -notmatch 'Cannot specify both -Minor and -Patch') {
     throw 'Running release.ps1 with -Minor and -Patch must fail with conflict guidance.'
