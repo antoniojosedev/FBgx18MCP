@@ -68,3 +68,110 @@ fn webpanel_type(properties: Option<&str>) -> Result<&'static str, String> {
         Some(_) => Err("unsupported WEB_COMP value".into()),
     }
 }
+
+/// Matches an object name against a query pattern.
+/// If `pattern` does not contain '*', performs an exact case-insensitive match.
+/// If `pattern` contains '*', supports prefix ('P*'), suffix ('*trn'), substring ('*cust*'), or multi-wildcard globs.
+pub(super) fn matches_name_pattern(name: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim();
+    let name = name.trim();
+    if !pattern.contains('*') {
+        return name.eq_ignore_ascii_case(pattern);
+    }
+
+    if let Some((prefix, suffix)) = pattern.split_once('*') {
+        if !suffix.contains('*') {
+            if name.len() < prefix.len() + suffix.len() {
+                return false;
+            }
+            return starts_with_ignore_ascii_case(name, prefix)
+                && ends_with_ignore_ascii_case(name, suffix);
+        }
+    }
+
+    let mut remainder = name;
+    let mut parts = pattern.split('*').peekable();
+    let mut is_first = true;
+    while let Some(part) = parts.next() {
+        let is_last = parts.peek().is_none();
+        if part.is_empty() {
+            is_first = false;
+            continue;
+        }
+        if is_first {
+            if !starts_with_ignore_ascii_case(remainder, part) {
+                return false;
+            }
+            remainder = &remainder[part.len()..];
+        } else if is_last && !pattern.ends_with('*') {
+            return ends_with_ignore_ascii_case(remainder, part);
+        } else if let Some(idx) = find_ignore_ascii_case(remainder, part) {
+            remainder = &remainder[idx + part.len()..];
+        } else {
+            return false;
+        }
+        is_first = false;
+    }
+    true
+}
+
+fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .get(..needle.len())
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+fn ends_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .len()
+        .checked_sub(needle.len())
+        .and_then(|start| haystack.as_bytes().get(start..))
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+fn find_ignore_ascii_case(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let needle_bytes = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle_bytes.len())
+        .position(|window| window.eq_ignore_ascii_case(needle_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_name_pattern;
+
+    #[test]
+    fn test_exact_matches() {
+        assert!(matches_name_pattern("Customer", "Customer"));
+        assert!(matches_name_pattern("customer", "CUSTOMER"));
+        assert!(!matches_name_pattern("Customer", "Vendor"));
+    }
+
+    #[test]
+    fn test_prefix_matches() {
+        assert!(matches_name_pattern("CustomerList", "Customer*"));
+        assert!(matches_name_pattern("customerlist", "CUSTOMER*"));
+        assert!(!matches_name_pattern("VendorList", "Customer*"));
+    }
+
+    #[test]
+    fn test_suffix_matches() {
+        assert!(matches_name_pattern("CustomerTrn", "*Trn"));
+        assert!(matches_name_pattern("customertrn", "*TRN"));
+        assert!(!matches_name_pattern("CustomerTrn", "*Pr"));
+    }
+
+    #[test]
+    fn test_substring_matches() {
+        assert!(matches_name_pattern("PGetCustomerData", "*Customer*"));
+        assert!(matches_name_pattern("pgetcustomerdata", "*CUSTOMER*"));
+        assert!(!matches_name_pattern("PVendorData", "*Customer*"));
+        assert!(matches_name_pattern("  CustomerList  ", "  Customer*  "));
+        assert!(matches_name_pattern("PGetCustomerData", "*Get*Data*"));
+    }
+}

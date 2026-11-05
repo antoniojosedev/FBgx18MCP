@@ -65,10 +65,9 @@ Primary SDK: **GeneXus 18**.
 Source of truth: `config/gx-versions.json`.
 <!-- END GENERATED: gx-compatibility -->
 
-- **Basic legacy GeneXus support (not native SDK support):** In addition to the primary native SDK majors (GX 16, 17, 18), the server supports every legacy version declared in `legacyMajors` via driver-specific degradation:
-  - GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15 via `dotnet-reflection` (using `DynamicSdkBridge` and `OptionalSdkInvoker` for module-less vs `QualifiedName` and API differences).
-  - GeneXus 8.0 and 9.0 via `com-gxpublic` (`ComGxPublicDriver` connecting to classic Win32 `GXPublic.GXPublic` COM automation on an STA thread for `.gxi` KBs).
-  - Modern tools unsupported in earlier versions return structured degradation envelopes (`UNSUPPORTED_IN_GENEXUS_VERSION`).
+- Legacy drivers (`DynamicSdkBridge`, `ComGxPublicDriver`) and their
+  `UNSUPPORTED_IN_GENEXUS_VERSION` envelopes:
+  [`docs/agent-operations.md`](docs/agent-operations.md#basic-legacy-genexus-support).
 
 ## gx-engine development
 
@@ -76,8 +75,10 @@ Source of truth: `config/gx-versions.json`.
   for MCP routing, read [`docs/engine_backend.md`](docs/engine_backend.md).
   The objective is independent full SDK replacement; current bounded coverage
   is not that outcome. `Engine.Backend` defaults to `gxengine`: admitted blocking
-  builds and field-limited type-only queries use gx-engine. Reads and edits use
-  SDK fallback until native identity, freshness and token parity is verified.
+  builds, field-limited type-only queries, and single-part reads (`kb-read`) can be
+  served natively. Native UDM writes (`kb-write` / `UdmWriter`) support transactional
+  live T-SQL persistence in `gx-engine`; Gateway MCP `genexus_edit` retains SDK
+  fallback to safeguard IDE pattern synchronization and cross-reference integrity.
   `auto` routes only builds; explicit `sdk` opts out entirely. Preserve capability/argument
   gates, SDK fallback before build start, and reconciliation instead of replay
   after a started build fails or has an uncertain outcome.
@@ -106,21 +107,18 @@ Source of truth: `config/gx-versions.json`.
   output when behavior changes. Preserve the final `build.ps1` ordering below;
   identify the exact packaged binary in postchecks rather than borrowing timings
   from another target directory.
+- **Current native capabilities (Plan 133 & 134 parity roadmap):** listed in
+  [`docs/agent-operations.md`](docs/agent-operations.md#native-gx-engine-capabilities).
 
 ## KB and harness contracts
 
-- KB resolution order is explicit `kb` → MCP-session selection (`genexus_kb action=select` / `set_session_default`) → strict/legacy resolution policy.
-- In strict mode (`ResolutionPolicy: "strict"`, default), persisted `DefaultKb`/`ActiveKb` does NOT auto-seed sessions. When 1 KB is open, it resolves as `single-open` only if it does not conflict with a configured default (mismatches yield `KB_CONTEXT_REQUIRED` with `DefaultConflict`). When 0 KBs are open, declared catalog entries are never auto-opened (`KB_CONTEXT_REQUIRED` or `KB_AMBIGUOUS`).
-- In legacy mode (`ResolutionPolicy: "legacy"`), the legacy fallback chain (`config-default` → `single-open` → `declared-first`) remains active.
-- `genexus_kb action=open` starts/registers a Worker; `action=select` or `set_session_default` sets an in-memory session selection without mutating config files; `action=set_persistent_default` mutates the startup fallback on disk and returns `persistedTo`. `action=set_default` remains as a legacy persistent operation returning `persistedTo`.
-- `genexus_whoami` and `genexus_kb action=list` expose alias auditability state:
-  `sessionSelection`, `selectionSource` (`session-select`, `single-open`, `config-default`, `declared-first`, `explicit-arg`, `none`), `selectionState` (`valid`, `absent`, `invalid`, `conflicting`), `startupDefault`, `resolutionPolicy`, `config.resolvedFrom`, open, known, and declared KBs.
-  KB-bound results carry `kbAlias` in-band and in MCP `_meta`.
-- `genexus-mcp init` configures detected clients with neutral configurations by default (no hardcoded KB path). OpenCode must preserve both
-  `mcp.<name>` and `mcp.servers.<name>` layouts and unrelated servers.
-- Sessionless HTTP clients must use an explicit `kb` or persisted fallback; `select` on sessionless HTTP returns `KB_SESSION_UNAVAILABLE`. Do
-  not introduce shared server-side selection between independent clients.
-- `genexus_whoami` and `genexus_doctor` must preserve actionable Worker diagnostics: effective sharing mode, physical identity, pipe/host/Worker identity, generation, attachment/connection state, startup/failure detail, and the likely failing stage. Keep credentials, tokens, connection strings, and other sensitive values redacted.
+KB resolution order (explicit `kb` → session selection → strict/legacy policy),
+`open`/`select`/`set_persistent_default` semantics, alias audit fields, client
+`init` layouts and the `genexus_whoami`/`genexus_doctor` diagnostic contract are in
+[`docs/agent-operations.md`](docs/agent-operations.md#kb-and-harness-contracts); read it
+before changing KB selection, sessions or diagnostics. Never introduce shared
+server-side selection between independent clients, and keep credentials, tokens
+and connection strings redacted in diagnostics.
 
 ## Source of truth and tool changes
 
@@ -174,65 +172,15 @@ Known test limitations live in [`docs/agent_playbook.md`](docs/agent_playbook.md
 
 ## Live Knowledge Bases for validation
 
-Disposable test Knowledge Bases live under `C:\KBs`. Any directory whose name
-contains `teste` is a scratch KB that may be written to, retargeted and left in
-a modified state — it is not user data, and a lane that needs to reproduce a
-write, a rollback or a persistence failure should use one rather than asking
-for a KB. Full end-to-end validation with the real SDK on these available test
-KBs is standing-authorized; choose a compatible test KB and run the required
-live flow without requesting permission again. A pending live validation is
-work to complete, not a permission blocker. This authorization covers test-KB
-mutations needed by that flow, not production KBs, Cloud, release or deployment;
-keep Cloud off and preserve the existing isolation and provenance checks.
-
-To build a test KB with the SDK outside the MCP (SDK oracle, refreshed
-generated code, or a Worker build stopped at GeneXus Cloud), use
-`scripts/sdk-local-build.ps1`: SDK `SpecifyOneOnly`/`GenerateOnly` under 32-bit
-MSBuild, then `dotnet msbuild -t:Build;Publish` on the generated projects. Never
-hand-write `BuildOne`/`BuildAll` projects for this: the Trial install forces
-Deploy-to-Cloud and they can reorganize the database. See
-[`docs/sdk-local-msbuild.md`](docs/sdk-local-msbuild.md).
-
-The paths below are this maintainer's machine, not a requirement: the portable
-rule is the `teste` name. The release preflight resolves its live KB as
-`GXMCP_TEST_KB` first, then (single-major mode only) autodetects
-`C:\KBs\KBTeste` for GeneXus 18, `C:\KBs\KBTeste17` for 17 and
-`C:\KBs\KBTeste<major>` otherwise (`Get-GxMcpLocalLiveKbPath` in
-`scripts/release-contract.ps1`). With no KB found the live gate is skipped,
-unless `-RequireLive` or Build All evidence is required, which make it fail. See
-`docs/environment_variables.md`.
-
-| Path | GeneXus major | Notes |
-| :--- | :--- | :--- |
-| `C:\KBs\KBTeste` | 18 | Largest (~1,800 files); the default target for SDK-level read/write lanes |
-| `C:\KBs\KBTeste17` | 17 | ~66 files; also carries `.gx` and `.gx_mirror` |
-| `C:\KBs\KBTeste16` | 16 | Smallest (~10 files); fast for smoke-level checks |
-| `C:\KBs\KBTesteProbe2` | 18 | ~122 files; used by probe/conversion work |
-
-Two properties must not be conflated, because they decide which tools can be
-validated where:
-
-- **These are native Knowledge Bases.** `GXLOCK`, `DATA*` and `.gx` are
-  present, so object sources live in the Knowledge Base database and are read
-  through the SDK. `genexus_read`, `genexus_edit`, `genexus_analyze` and the
-  `mode=ops` authoring paths work against them normally.
-- **`genexus_wire` cannot analyse them, except `pack_task`.** GxWire indexes
-  files on disk, so on a native KB it walks generated output and infers a graph
-  from whatever text is there. Validating a gxwire change needs a *text tree
-  export* of a KB (a directory of `.txt`/`.trn`/`.wp`/`.xml` object files), not a
-  native KB directory. This is the defect filed as
-  [#499](https://github.com/lennix1337/Genexus18MCP/issues/499), and it is why
-  gxwire parser work cannot be confirmed on these paths alone. `pack_task` on
-  the open native KB does not use gxwire at all: the Gateway falls through to
-  the Worker (`WirePackTaskService`), which resolves `targets[]` and the
-  identifiers named in `task` through the SDK-backed index, so it *can* be
-  validated live on these KBs, read-only.
-
-A live KB opens on demand:
-
-```text
-genexus_kb action=open path=<KB root>   then   action=select to bind the session
-```
+Any directory under `C:KBs` whose name contains `teste` is a disposable scratch
+KB: full end-to-end validation with the real SDK on it, including the mutations
+that flow needs, is standing-authorized, so run the live flow instead of asking.
+It does not cover production KBs, Cloud, release or deployment; keep Cloud off.
+To build a test KB outside the MCP use only `scripts/sdk-local-build.ps1`; never
+hand-write `BuildOne`/`BuildAll` projects (the Trial install forces
+Deploy-to-Cloud and they can reorganize the database). The KB table, release
+preflight KB resolution and what `genexus_wire` can or cannot validate on native
+KBs are in [`docs/agent-operations.md`](docs/agent-operations.md#live-knowledge-bases-for-validation).
 
 ## Debugging and validation gates
 
@@ -270,33 +218,12 @@ genexus_kb action=open path=<KB root>   then   action=select to bind the session
 If a build/test fails with `MSB3027` or `MSB3021` naming the Gateway/Worker exe,
 use the scoped permission below; do not kill unrelated processes.
 
-- Codex Windows sandbox caveat: `npm test` may report `EPERM` when
-  `applyLauncherConfigOrExit` creates `os.homedir()\.genexus-mcp`. The test
-  uses a temporary working directory but does not isolate the user-home target.
-  Reproduce this case outside the sandbox with a temporary `USERPROFILE` before
-  classifying it as a product failure. Do not touch an existing user
-  `.genexus-mcp` configuration during reproduction.
-- When the same run also fails `quiet flag suppresses launcher stderr noise`
-  with an `Unhandled CLI failure` envelope, treat it as a secondary symptom
-  of the user-home setup failure until the isolated test passes outside the
-  sandbox.
-
 ## Runtime iteration
 
-The gateway serves MCP over stdio by default (`McpStdio: true`). Streamable HTTP is bound at `http://<BindAddress>:<HttpPort>/mcp` only with a shared gateway (`GatewayMode: http-shared` with `McpStdio: false`, or `Server.SharedGateway: true` / `GXMCP_SHARED_GATEWAY=1`). With `HttpPort: 5000` and `McpStdio: true` alone, nothing listens on 5000; the Gateway logs this at startup. Job output is read with `genexus_lifecycle action=result target=op:<id>`, not over HTTP.
-Use the handshake and scratch-KB procedure in `docs/agent_playbook.md` or
-`docs/mcp_debugging_guide.md` when validating SDK behavior. After Worker edits,
-hot-swap with:
-
-```text
-genexus_worker_reload mode=hard sourceDir=<repoRoot>\src\GxMcp.Worker\bin\Debug
-```
-
-- `GxMcp.Gateway.exe` is a long-running stdio JSON-RPC server and does not accept interactive CLI flags such as `--help`. Running it directly without redirected stdio or via an unsupported command hangs waiting on stdin. Use `genexus-mcp` CLI commands or test harness entry points (`LiveGatewayHarness`, `scripts/test-live.ps1`) to interact with the Gateway.
-If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
-For a version smoke, call `genexus_whoami` and verify
-`geneXus.versionMatches=true`, `matchedMajor`, and `supportedMajors`; the
-legacy `supportedMajor` field remains the catalog-primary compatibility alias.
+The Gateway is a stdio JSON-RPC server: never run `GxMcp.Gateway.exe` directly
+(it waits on stdin). Use the `genexus-mcp` CLI or the test harnesses. Transport
+modes, Worker hot-swap and version smoke fields are in
+[`docs/agent-operations.md`](docs/agent-operations.md#runtime-iteration).
 
 ## Required workflow
 
@@ -307,98 +234,13 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
     `ripwire <dir> --for="<task in words>"`.
   - Before changing a contract: `ripwire <dir> --callers=SYM` and
     `--impact=SYM` for the transitive caller set.
-  - Reviewing an incoming diff: `ripwire . --pr-context=<BaseRef>` (for this
-    checkout, normally `origin/main`; this is also the form used by
-    `scripts/pr-preflight.ps1 -PullRequest <N>`, which only **fails** the run
-    when called with `-RequireRipwire`).
-  - On Windows, `ripwire.cmd` delegates to WSL. `Wsl/Service/E_ACCESSDENIED` or
-    `Wsl/EnumerateDistros/Service/E_ACCESSDENIED` means the WSL launcher was
-    blocked by the execution context; it does not prove that `ripwire` is
-    unavailable or failed. Re-run in an authorized context, capture the emitted
-    bundle and exit code, and report the environment restriction separately.
-  - The PR bundle is budgeted and may report `trimmed`/`truncated` nested lists;
-    treat its counts and caps as evidence boundaries and use targeted
-    `--callers`, `--impact`, `--edit-check`, or `--offset` follow-ups when deeper
-    coverage is required.
+  - Reviewing an incoming diff: `ripwire . --pr-context`. This is the path
+    `scripts/pr-preflight.ps1 -PullRequest <N>` gates, and it only **fails** the
+    run when called with `-RequireRipwire`, so pass that flag when the review must
+    not proceed without it.
 
   On a branch you own and are pushing directly, no gate invokes this for you;
   the trigger above is the whole obligation.
-- **Shared peer-review assets:** `C:\Dev\Knowledge\GeneXus-XPZ-Skills` is the canonical root for the shared `xpz-llm-delegate` skill, its `15-revisao-por-pares.md` methodology, and its `scripts\` directory. Do not copy those scripts into this fork. If that root is inaccessible, report the limitation and do not invent an alternative path or label an informal consultation as peer review.
-- **Peer review and reinforced pre-push:** When the user requests a peer review or a reinforced pre-push review, load and follow the `xpz-llm-delegate` skill. Do not label informal subagent feedback as a peer review.
-  - Load `C:\Dev\Knowledge\GeneXus-XPZ-Skills\xpz-llm-delegate\SKILL.md` and `C:\Dev\Knowledge\GeneXus-XPZ-Skills\15-revisao-por-pares.md` before responding.
-  - Resolve the preferred reviewers with `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePreferredReviewers.ps1 -Orchestrator codex`; a resolved list is a human preference, not authorization.
-  - Classify the payload and run `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegateAuthorization.ps1` for every destination. Announce each destination before dispatch; `kb-sensitive` material requires the gate outcome and any required human authorization.
-  - Before dispatch, evaluate the full preferred list with `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePanelDiversity.ps1`. A peer-review panel needs at least two *effectively consulted* known model-creator families; an unavailable, errored, empty, or off-task response does not count.
-  - Use one identical manuscript and explicit reviewer-only prompt. Record every preferred reviewer's final state, including technical failures; do not silently reduce the panel to the diversity minimum.
-  - Dispatch CLI reviewers only through `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Invoke-LlmDelegatePanelDispatch.ps1`; adapters and support scripts remain in the same shared root.
-  - Before reporting the round as complete, run `C:\Dev\Knowledge\GeneXus-XPZ-Skills\scripts\Resolve-LlmDelegatePeerReviewCloseout.ps1` with the initial preference snapshot, selected reviewers, actual reviewer states, diversity state, and vNext state. If drafting a revised vNext from the feedback, it is pending resubmission until the panel reviews it again or the human explicitly declines that resubmission.
-- **Mechanical pre-push (this fork):** When the user asks for a pre-push routine
-  without peer review, run the local checker after refreshing the comparison
-  ref. Canonical forms from the repo root:
-  `git fetch origin` then
-  `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson`
-  (default), or, to force both Rust lanes,
-  `pwsh -NoProfile -File scripts/Invoke-PrePushMechanicalChecks.ps1 -AsJson -IncludeRustLane`.
-  Outside the repo root, use the absolute path quoted with backslashes:
-  `pwsh -NoProfile -File "C:\Dev\Fork\FBgx18MCP\scripts\Invoke-PrePushMechanicalChecks.ps1" -AsJson`
-  or the same form followed by ` -IncludeRustLane`. These are the literal forms
-  the operator's global strict-invocation rule defers to; any other variant can
-  trigger a permission prompt. Without `-IncludeRustLane`, a changed range
-  touching `src/gx-engine/` or `src/gxwire/` auto-enables only the matching
-  lane. `-CargoExecutable` is a test seam, not an operator form.
-  This script is **fork-local** (not upstream); it never runs `git push`.
-  Every phase that produced output writes its output, with recognized secrets
-  redacted (the set is defined once in `scripts/release-contract.ps1`,
-  `Protect-GxMcpReleaseText`; the checker delegates to it), to a per-run log
-  directory under `%TEMP%` (`gxmcp-pre-push-<guid>`),
-  exposed as `outputPath` per phase and printed by the text summary when run
-  without `-AsJson`; a failing release-preflight summary is retained
-  as `details.summaryPath` and each failed phase's `reason`/`exitCode`/`command`
-  travels in `details.failedPhaseDetails`. So a red run leaves evidence on disk
-  even when the console tail (last 60 lines per phase) drops the cause. Artifacts
-  older than 7 days are pruned on the next run (`-ArtifactRetentionDays`).
-  `pushReadiness=readyLocal` means only the mechanical gates and checkout state
-  are ready — semantic review, real-KB/IDE behavior, remote CI, and publication
-  remain separate. Follow with the semantic coherence search required by the
-  global pre-push rules; do not treat mechanical `exit 0` as authorization to
-  push.
-  The checker validates `scripts/release-contract.ps1` before dot-sourcing it
-  (top-level statements, blocks, `using`, and function-name collisions), so a
-  refused contract never runs; the guard is structural, not a sandbox. A
-  preflight that exits non-zero without any failed phase is reported as
-  `details.aggregateFailure`, not as an empty phase list. `-IncludeRustLane`
-  forces the advisory `gx-engine` and `gxwire` fmt/clippy/test lanes. Without
-  it, a changed range touching `src/gx-engine/` or `src/gxwire/` auto-enables
-  only the matching lane and records `auto-enabled-by-changed-paths`; neither
-  lane changes `pushReadiness`, and a lane that did not run appears in
-  `notCovered`, so `readyLocal` is not a claim about the Rust crates. Detailed
-  limits live in `FORK_CHANGELOG.md`; non-blocking gaps in this fork-owned
-  routine are tracked in `FORK_BACKLOG.md`.
-- **Fork policy — report, do not patch (this fork):** A pre-push finding,
-  mechanical or semantic, that points at upstream-authored code is reported and
-  filed as an issue in `lennix1337/Genexus18MCP` (prefer `pt-BR`, per the issue
-  rules above); the local tree is left untouched and the routine ends at
-  diagnosis, reproduction evidence and a proposed change. Writing anything is a
-  separate, explicitly approved step. The class this fork does fix locally is
-  what the fork itself introduced or owns by construction:
-  `scripts/Invoke-PrePushMechanicalChecks.ps1` and its `scripts/tests/`
-  coverage, the `LOCAL POLICY` block below, and fork-local regressions.
-  Attribute before acting. `git log upstream/main..HEAD -- <file>` counts the
-  fork's own commits on a path; `git show upstream/main:<file>` shows whether
-  the offending bytes already exist upstream. A `git diff --check
-  origin/main..HEAD` report mixes both cases, because content that arrived
-  through a merge is measured against this fork's older `origin/main` and reads
-  as local. Fixing an upstream defect here is not a resolution — it only hides
-  it from the maintainer. `pushReadiness=blocked` caused by an upstream defect
-  is then a correct terminal state, not a backlog item.
-- **Hygiene advisories (this fork):** Whitespace-hygiene findings
-  (`trailing whitespace`, `new blank line at EOF`) are surfaced as **advisories**
-  and create **no block of their own**: they do not set `pushReadiness=blocked` by
-  themselves and are printed in text, JSON and log. All other blocking conditions
-  (missing base, branch behind, dirty working tree, mechanical phase failure)
-  remain fully in force. The advisories are the visible record, not a resolution:
-  a hygiene finding in upstream-authored bytes is still reported under the fork
-  policy above, never patched locally.
 - Inspect the actual input/request/route/function/query/response path before
   fixing behavior. Add a regression test when technically viable.
 - Edit tracked text with the native edit tools (keep LF line endings), not by piping it through a shell or text-mode script:
@@ -427,14 +269,9 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   cache rules in `docs/agent_playbook.md`.
 - Do not claim completion without fresh validation. Review the final diff for
   scope, logic, edge cases, compatibility, security, tests, and docs.
-- Pull requests are always allowed upstream: create a branch, commit to it,
-  push it and open or update the PR without asking. This fork works directly on
-  `main`, so the stricter rule applies here: do not commit, push, merge,
-  release, deploy, or close an issue unless the user explicitly asks. Issue
-  closure requires a released fix and release link.
-- When creating issues, submit them to the upstream repository
-  (`lennix1337/Genexus18MCP`), with a preference for Brazilian Portuguese
-  (`pt-BR`).
+- Pull requests are always allowed: create a branch, commit to it, push it and
+  open or update the PR without asking. Do not merge, commit or push to `main`,
+  release, deploy, or close an issue unless the user explicitly asks. Issue closure requires a released fix and release link.
 - After pushing a merged fix that is not yet released, mark each fixed issue
   with `pwsh -NoProfile -File scripts/release-issues.ps1 -Action MarkFixedPendingRelease -Issue <N>`;
   the release entrypoint closes labeled issues on publish. Do not post issue
@@ -442,127 +279,25 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
 
 ## MCP update and harness synchronization
 
-Before creating or proposing any new script for build, installation, upgrade, or agent registration, inspect existing tooling:
-- `install.ps1` (local checkout orchestrator)
-- `build.ps1` (compiler & artifact packager)
-- `scripts/install.ps1` (fixed-path release installer)
-- `cli/run.js` & `cli/lib/config.js` (client registry & discovery)
-- `cli/lib/update-check.js` (update planning)
-- `docs/llm_cli_mcp_playbook.md` (authoritative CLI playbook)
+Before creating any script for build, install, upgrade or client registration,
+read the decision matrix in
+[`docs/agent-operations.md`](docs/agent-operations.md#mcp-update-and-harness-synchronization)
+and reuse `install.ps1`, `build.ps1`, `scripts/install.ps1` or `cli/`.
+`install.ps1` rewrites `config.json` and client configs (an installer, not a
+build); `.
+elease.ps1` runs only on explicit user request. A rewritten client
+config or green build does not reload the current session's MCP: a full client
+restart is required before new tools take effect. Prefer `build.ps1`'s scoped
+process termination over machine-wide `Stop-Process`.
 
-### Decision matrix
+## Fork-local policy (this checkout)
 
-| Scenario | Recommended flow | Notes |
-|---|---|---|
-| Updated local checkout | `.\install.ps1` | Updates `config.json`, runs `build.ps1`, and registers every writable client against the checkout gateway: it sets `GENEXUS_MCP_GATEWAY_EXE` to `publish\GxMcp.Gateway.exe` and runs `clients add --all-clients` (not `init --write-clients`). Parameters: `-GeneXusPath`, `-SkipClientConfig` (there is no `-KBPath`); the neutral config it writes defines no `Environment.KBPath`. |
-| Compile local checkout only | `.\build.ps1` | Regenerates `publish/` without modifying `config.json` or client registrations. |
-| Fixed-path release install / upgrade | `powershell -File scripts/install.ps1` | Downloads release `publish.zip` into fixed location. Parameters: `-Kb`, `-Gx`. |
-| npx / npm global upgrade | Run `genexus-mcp update` plan | Follow returned guidance and fully restart the AI client. |
-| Local checkout: stale launcher | From the repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repoRoot>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --clients <id>` (or re-run `.\install.ps1`) | Do not reach for `npx @latest clients add` here: it rewrites the client to the npm-cache launcher and silently moves the harness off the checkout gateway. |
-| Local checkout: post-sync validation | From the repo root: `node cli\run.js clients --format json`<br>`node cli\run.js doctor --mcp-smoke --format json` (same env as `install.ps1`) | Validation only — neither command rewrites a launcher. A client pointing at a *different* existing gateway is reported as `launcherPathDrift` (informational, `commandStale: false`), so a checkout registration read back by an `npx` CLI is no longer a false stale; `doctor`'s `client_config_sync` still warns that the exe is not the packaged one. |
-| Distributed package: stale Antigravity launcher | `npx genexus-mcp clients add --clients antigravity` | Re-points the launcher to current direct gateway or package cache. For a local checkout use the checkout branch above instead. |
-| Distributed package: post-sync validation | `npx genexus-mcp clients --format json`<br>`npx genexus-mcp doctor --mcp-smoke --format json` | Validates registration, gateway HTTP loopback, and live MCP protocol smoke. |
-| Release publication | `.\release.ps1` | Only upon explicit user request. See `docs/release_protocol.md`. |
-
-### LOCAL POLICY — checkout operators (this fork)
-
-> **Permanent preference** for sessions whose cwd is this checkout
-> (`FBgx18MCP`). It does not replace the upstream matrix above; it sets the
-> **agent default** when working from this tree. On `git pull` / sync,
-> re-check that this block survived.
-
-This checkout keeps harnesses on `publish\GxMcp.Gateway.exe` (not the npm
-cache). The Antigravity-style target applies to **all writable clients**:
-`command` = `<repo>\publish\GxMcp.Gateway.exe`, empty `args`, server key
-`genexus18mcp` (not the official `genexus` HTTP entry).
-
-**Default (complete path):** when the user asks to install, update, refresh, or
-re-register MCP on this machine's harnesses/clients — including after an
-upstream sync, and including phrasing such as “atualize o mcp nos harnesses” /
-“atualize os clientes” / “instale o mcp” — run `.\install.ps1` at the repo
-root. That path updates `config.json`, runs `build.ps1`, sets
-`GENEXUS_MCP_GATEWAY_EXE` to `publish\GxMcp.Gateway.exe`, and runs
-`clients add --all-clients`. Do **not** interpret those requests as a cue for
-the no-rebuild re-point row.
-
-**No-rebuild re-point only when explicit:** use
-`$env:GENEXUS_MCP_GATEWAY_EXE=…; node cli\run.js clients add …` **only** if the
-user clearly asks to re-point without compiling (e.g. “só reapontar”, “sem
-rebuild”, “sem build”, “não recompile”). Ambiguous or incomplete requests
-default to `.\install.ps1`.
-
-**Engine backend override (upstream #649, verified on this checkout
-2026-10-25):** this checkout deliberately runs with `Engine.Backend=sdk` in
-`publish\config.json`, keeping the experimental `gx-engine` out of the way.
-Upstream now carries the section across the rebuild instead of discarding it:
-`build.ps1 -PreserveEngineConfig` keeps `Engine.Backend`, `Engine.Fallback` and
-`Engine.TimeoutSeconds` (never `Engine.Executable`, which is machine-specific),
-and `install.ps1` passes the switch, so `.\install.ps1` preserves the choice on
-its own. A plain `build.ps1` still drops the section, but it now warns and names
-the switch instead of doing it silently; `release.ps1` calls `build.ps1` without
-the switch, so a release build returns to `gxengine` with that warning.
-Environment variables are not an escape hatch: strict documents reject
-`GXMCP_ENGINE_*` at load. Evidence: the upstream #649 guard
-(`scripts/tests/test-build-publish-config.ps1`) passes, and the build's real
-clean/config steps executed against this checkout's `publish\config.json` kept
-`Engine.Backend=sdk` with the switch and dropped it with the warning without it.
-
-- `.\install.ps1` no longer needs a wrapper. Run
-  `build.ps1 -PreserveEngineConfig` when invoking the build directly;
-  `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1` (`-Install`,
-  `-EngineBackend`, `-InstallerArgs`) remains valid and re-applies the backend
-  after the entry point.
-- After a direct `build.ps1` without the switch, or after `release.ps1`, confirm
-  `Engine.Backend` in `publish\config.json` and run
-  `pwsh -NoProfile -File scripts\Set-GxMcpLocalEngineBackend.ps1` if it fell back
-  to `gxengine`.
-- Do not “fix” this with `GXMCP_ENGINE_BACKEND`; adjust the file only. Per fork
-  policy neither `build.ps1` nor `install.ps1` is patched here.
-
-For local-checkout work in this fork, **prefer** the rows below over matrix
-rows that recommend `npx … clients add` / `npx … clients` / `npx … doctor`:
-
-| Scenario (checkout) | Use this instead of the npx matrix rows |
-|---|---|
-| **Default:** install / update / refresh MCP harnesses (after sync or otherwise) | `.\install.ps1` at repo root (it passes `-PreserveEngineConfig`); `pwsh -NoProfile -File scripts\Invoke-GxMcpLocalBuild.ps1 -Install` is the equivalent wrapper |
-| Explicit no-rebuild re-point of **all** writable harnesses | From repo root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` |
-| Stale / wrong launcher (one client) | Prefer `.\install.ps1`; or the same env + `node cli\run.js clients add --clients <id>` only if the user forbade rebuild |
-| Post-sync validation | From repo root: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json` (**same** CLI/env as install) |
-
-Acceptance for a harness refresh: every registered writable client lists that
-`publish\GxMcp.Gateway.exe` path with no `commandStale`, and `doctor` reports
-`client_config_sync` pass on this same CLI/env (not via `npx`).
-
-**Do not** (for this checkout workflow):
-
-- Choose the no-rebuild `clients add` path from surface wording about
-  “harnesses” / “clientes” alone — that is still the `.\install.ps1` default
-- `npx genexus-mcp@latest clients add …` — rewrites harnesses away from `publish\`
-- `npx genexus-mcp clients` / `doctor` as “truth” for a checkout-registered
-  launcher — can report false stale / `client_config_sync` against the npm
-  package Gateway
-
-Keep the npx matrix rows for operators who **do not** run from a local
-`publish\` checkout (npm-only installs).
-
-**Fork changelog:** record fork-local changes in `FORK_CHANGELOG.md`, never in
-`CHANGELOG.md`. `CHANGELOG.md` stays a faithful mirror of upstream — adding a
-fork-local entry there re-creates the recurring merge conflict this policy
-exists to remove. This overrides the general "entry under `CHANGELOG.md` →
-`## Unreleased`" rule for the fork-local change class (the set this block owns);
-upstream-authored code is still reported, not patched. Caveat: the upstream-owned
-`scripts/integration-preflight.ps1` gate still asks for a `CHANGELOG.md` touch
-when a change lands under a production path (`src/`, `cli/`, `scripts/`,
-`install.ps1`); that gate runs only for pull requests, and this fork pushes
-directly to `main`, so it does not fire in the normal flow — do not resolve it by
-moving the entry back.
-
-### Operational safety and side effects
-
-- **Installer vs. build**: `install.ps1` mutates `config.json` and client configs; treat it as an installer, not a neutral build. `build.ps1` is the neutral compiler.
-- **Client registration**: `clients add` / `init --write-clients` makes atomic backups and preserves unrelated servers and both OpenCode config formats (`mcp.<name>` and `mcp.servers.<name>`). OpenCode Desktop shares `opencode.jsonc` with OpenCode CLI and is registered automatically.
-- **Session reloading is a separate gate**: A healthy CLI, green build, or rewritten client config does NOT mean the current agent session has reloaded MCP. AI clients cache tool schemas at connection start; a full client restart is mandatory before new tools/schemas take effect.
-- **Process management**: Prefer the scoped process termination in `build.ps1` (terminating only processes mapped to the current checkout path). Do not use broad `Stop-Process -Name GxMcp.Gateway,GxMcp.Worker` across the machine when other checkouts or instances may be active, unless hitting locked output errors covered by the Scoped Permission.
+This fork adds operator rules on top of upstream: harnesses on
+`publish\GxMcp.Gateway.exe` (server key `genexus18mcp`), `.\install.ps1` as the
+default refresh path, the `Engine.Backend=sdk` override, the peer-review and
+pre-push routines, the report-don't-patch rule and the fork changelog rule.
+Read [`FORK_POLICY.md`](FORK_POLICY.md) before installing, updating or
+re-registering MCP, running a pre-push review, or changing this policy.
 
 ## Task-specific references
 

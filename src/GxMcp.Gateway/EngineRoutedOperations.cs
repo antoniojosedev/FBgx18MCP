@@ -358,17 +358,12 @@ namespace GxMcp.Gateway
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// The engine's writer mutates its in-process store only: against a live
-        /// Knowledge Base database the stored object keeps its old version, so an
-        /// engine-served edit would report a save that does not exist. Edits
-        /// therefore stay outside the engine space (fail-closed: `Fallback=error`
-        /// refuses, `Fallback=sdk` uses the SDK) until a live write path exists
-        /// and is verified end to end. `gx-engine kb-write` itself refuses live
-        /// writes for the same reason.
+        /// Explicit deferral policy for genexus_edit: holds writes outside the Gateway
+        /// to safeguard IDE pattern synchronization and cross-reference integrity.
         /// </summary>
         private JObject? DispatchEngineEdit(EngineRouteContext ctx) =>
             EngineOutsideResult(ctx,
-                "engine UDM writes are not persisted to live Knowledge Base storage yet (`kb-write` updates only its in-process store); the SDK path must serve `genexus_edit`");
+                "engine UDM writes are not persisted through Gateway genexus_edit yet to safeguard IDE pattern synchronization; the SDK path must serve `genexus_edit`");
 
         // ------------------------------------------------------------------
         // genexus_lifecycle build/rebuild -> rebuild-all

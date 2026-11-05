@@ -7,12 +7,15 @@
 
 ### Added
 
+- **Plan 133 & 134 gx-engine architectural parity milestones:** Content-addressed SHA-256 build cache with automatic LRU and stale `.tmp-*` directory pruning (`BuildCache::prune_if_needed`); autonomous UDM metadata and deterministic version token resolution directly from SQL Server tables (`ModelEntityVersion`, `UtcTicks`, `ParentIdentity`); C# ADO.NET For Each cursor loop generation with declared variable type resolution and `ParDef` parameter inference (`@Param`, `GXType`, length, decimals); WebPanel `Enter` event lifecycle generation (`E13_Enter()`) and distinct `E11`–`E15` event method prefixes; Business Component companion class emission (`[Transaction]BC.cs` / `<name>_bc`) with type-safe rule conditions, defaults, and CRUD/transaction API (`Load`, `Save`, `Insert`, `Update`, `Delete`, `Success`, `Fail`, `GetMessages`); transactional live UDM persistence (`UdmWriter`) with raw composition loading (`load_raw_object`), atomic `SERIALIZABLE` T-SQL batching (`plan_create_object_sql`, `plan_save_existing_object_sql`, `plan_delete_object_sql`), and fail-closed safety guards; native UDM XML part decoding (`PatternInstance`, `WebForm`, `Variables`, `Structure`); native single-part edit contract (`EngineEditContract.cs`) with strict argument validation; streaming zero-allocation row parsing (`live_rows.rs`); zero-allocation ASCII case-insensitive wildcard pattern matching in KB object queries (`matches_name_pattern`); topological dependency ordering with external reference partitioning in `Catalog`; panic-free frontend AST fuzzing robustness (`tests/frontend_fuzz_robustness.rs`).
+
 ### Changed
 
 ### Fixed
 
 ### Internal
 
+- `AGENTS.md` drops from 30.9 KB to 21.5 KB so Antigravity `agy` no longer truncates it at 24,000 bytes: the KB selection contracts, test KB table, runtime iteration and install/update decision matrix moved verbatim to `docs/agent-operations.md`, with the rules and pointers kept in `AGENTS.md`; `scripts/tests/docs.test.js` fails if `AGENTS.md` grows past the limit again.
 - `release.ps1` runs the complete local preflight before any remote state: the candidate branch and its PR are created only after the preflight passes. A failed run undoes only what it created (the local release commit, its local tag and the candidate branch/PR), and a rerun replaces its own stale candidate branch instead of failing on a non-fast-forward push.
 - `release.ps1` ends every run with one `RELEASE SUMMARY:` line (version, tag, release, assets, npm, exit code and, on failure, the failed step).
 - `release.ps1 -DryRun` rehearses the whole flow with git and gh stubbed; `scripts/tests/test-release-dryrun.ps1` runs it in the CI release script suite and fails if a write call is reached.

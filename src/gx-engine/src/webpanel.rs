@@ -183,6 +183,7 @@ impl ScreenVariable {
 pub enum EventKind {
     Start,
     Refresh,
+    Enter,
     Load {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         grid: Option<String>,
@@ -226,6 +227,10 @@ impl WebPanelEvent {
         matches!(self.event_kind(), EventKind::Refresh)
     }
 
+    pub fn is_enter(&self) -> bool {
+        matches!(self.event_kind(), EventKind::Enter)
+    }
+
     pub fn is_load(&self) -> bool {
         matches!(self.event_kind(), EventKind::Load { .. })
     }
@@ -241,6 +246,8 @@ impl WebPanelEvent {
             EventKind::Start
         } else if lower == "refresh" {
             EventKind::Refresh
+        } else if lower == "enter" {
+            EventKind::Enter
         } else if lower == "load" {
             EventKind::Load { grid: None }
         } else if let Some((grid, ev)) = clean.split_once('.') {
@@ -460,43 +467,37 @@ impl WebPanel {
         self.validate_controls(&self.controls, &mut control_names)?;
 
         let mut event_names = HashSet::new();
-        let mut start_count = 0;
-        let mut refresh_count = 0;
+        let (mut start_count, mut refresh_count, mut enter_count) = (0usize, 0usize, 0usize);
 
         for ev in &self.events {
-            let key = ev.name.to_ascii_lowercase();
-            if !event_names.insert(key) {
+            if !event_names.insert(ev.name.to_ascii_lowercase()) {
                 return Err(format!("Duplicate event definition '{}'", ev.name));
             }
-
             match ev.event_kind() {
-                EventKind::Start => {
-                    start_count += 1;
-                    if start_count > 1 {
-                        return Err("Multiple Start events defined in WebPanel".to_string());
+                EventKind::Start => start_count += 1,
+                EventKind::Refresh => refresh_count += 1,
+                EventKind::Enter => enter_count += 1,
+                EventKind::Load { grid: Some(ref g) } => match self.find_control(g) {
+                    Some(c) if c.kind == ControlKind::Grid => {}
+                    Some(_) => {
+                        return Err(format!("Load event target '{g}' is not a Grid control"));
                     }
-                }
-                EventKind::Refresh => {
-                    refresh_count += 1;
-                    if refresh_count > 1 {
-                        return Err("Multiple Refresh events defined in WebPanel".to_string());
+                    None => {
+                        return Err(format!(
+                            "Load event target Grid '{g}' does not exist in WebPanel layout"
+                        ));
                     }
-                }
-                EventKind::Load { grid: Some(ref g) } => {
-                    let grid_ctrl = self.find_control(g);
-                    match grid_ctrl {
-                        Some(c) if c.kind == ControlKind::Grid => {}
-                        Some(_) => {
-                            return Err(format!("Load event target '{g}' is not a Grid control"));
-                        }
-                        None => {
-                            return Err(format!(
-                                "Load event target Grid '{g}' does not exist in WebPanel layout"
-                            ));
-                        }
-                    }
-                }
+                },
                 _ => {}
+            }
+            for (label, count) in [
+                ("Start", start_count),
+                ("Refresh", refresh_count),
+                ("Enter", enter_count),
+            ] {
+                if count > 1 {
+                    return Err(format!("Multiple {label} events defined in WebPanel"));
+                }
             }
         }
 
