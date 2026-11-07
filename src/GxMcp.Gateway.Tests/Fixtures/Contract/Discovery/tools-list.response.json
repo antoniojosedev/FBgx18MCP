@@ -3004,6 +3004,7 @@
               "build_all",
               "cancel",
               "specify",
+              "specify_only",
               "rebuild",
               "reorg",
               "reorg_preview",
@@ -3050,7 +3051,7 @@
           },
           "dryRun": {
             "default": false,
-            "description": "build/build_all/rebuild/index: returns…",
+            "description": "build/build_all/rebuild/index/specify_o…",
             "type": "boolean"
           },
           "environment": {
@@ -3060,6 +3061,10 @@
           "estimated_seconds": {
             "description": "Build: <20 sync, >=20 async (default…",
             "type": "integer"
+          },
+          "expectedVersion": {
+            "description": "specify_only: refuse if the object's…",
+            "type": "string"
           },
           "fastIncremental": {
             "description": "build: experimental fast incremental…",
@@ -3176,6 +3181,10 @@
             "description": "Object/task ID/op:<id>. compile_check…",
             "type": "string"
           },
+          "targetGuid": {
+            "description": "specify_only: GUID of the object to…",
+            "type": "string"
+          },
           "until": {
             "description": "Status wait stop condition: change…",
             "enum": [
@@ -3197,7 +3206,7 @@
             "type": "integer"
           },
           "wait_until_done": {
-            "description": "Build/build_all/rebuild: block in one…",
+            "description": "Build/build_all/rebuild/specify_only:…",
             "type": "boolean"
           }
         },
@@ -3637,11 +3646,11 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Properties API. get can reconcile a timed-out property write by a fresh typed read. set supports dryRun, expectedVersion, post-save verification and rollback; move is transactional and… Full guidance: genexus://kb/tool-help/genexus_properties",
+      "description": "Properties API. get supports fresh reads and timeout reconciliation; set supports dryRun, expectedVersion, verification and rollback; move is transactional. Full guidance: genexus://kb/tool-help/genexus_properties",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "Object-property operation to read or…",
+            "description": "Read, set or move object properties.",
             "enum": [
               "get",
               "set",
@@ -3729,6 +3738,10 @@
           },
           "reconcileTimedOutWrite": {
             "description": "get: fresh typed read; clear timeout…",
+            "type": "boolean"
+          },
+          "refresh": {
+            "description": "get: fresh read.",
             "type": "boolean"
           },
           "rollbackOnFailure": {
@@ -4278,7 +4291,7 @@
             "type": "integer"
           },
           "timeoutMs": {
-            "description": "Wall-clock budget (default 30000).…",
+            "description": "Wall-clock budget (default 30000),…",
             "type": "integer"
           },
           "typeFilter": {
@@ -4366,7 +4379,9 @@
               "update_group",
               "move_attribute",
               "remove_attribute",
-              "check_subtypes"
+              "check_subtypes",
+              "get_item_property",
+              "set_item_property"
             ],
             "type": "string"
           },
@@ -4394,6 +4409,13 @@
           "expectedVersion": {
             "description": "Alias of baseVersion for update_visual;…",
             "type": "string"
+          },
+          "itemPath": {
+            "description": "get_item_property/set_item_property:…",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "kb": {
             "description": "KB alias.",
@@ -4427,6 +4449,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "property": {
+            "description": "get_item_property/set_item_property:…",
+            "type": "string"
+          },
           "rollbackOnFailure": {
             "default": true,
             "description": "update_visual, move_attribute and…",
@@ -4441,6 +4467,10 @@
             "enum": [
               "specify"
             ],
+            "type": "string"
+          },
+          "value": {
+            "description": "set_item_property: new value.…",
             "type": "string"
           }
         },

@@ -122,6 +122,107 @@ public sealed class LiveMutationIntegrityTests : IClassFixture<LiveGatewayHarnes
     }
 
     [LiveKbFact]
+    public async Task SdtStructureDslWriteKeepsCharacterMembersAndAddsNewOnes()
+    {
+        await Call("genexus_whoami", new JObject());
+        string name = "McpSdtChar" + Guid.NewGuid().ToString("N").Substring(0, 10);
+        bool created = false;
+        try
+        {
+            await Call("genexus_create", new JObject { ["action"] = "object", ["name"] = name, ["type"] = "SDT", ["firstItem"] = "plaprtimp", ["firstItemType"] = "Character(5)" });
+            created = true;
+            await Call("genexus_edit", new JObject
+            {
+                ["name"] = name,
+                ["part"] = "Structure",
+                ["mode"] = "full",
+                ["content"] = "plaprtimp : CHARACTER(5)\nconsig : CHARACTER(1)\nvaltot : NUMERIC(8,2)",
+            });
+            string persisted = (await Read(name, "Structure")).ToString();
+            Assert.Contains("plaprtimp : CHARACTER(5)", persisted);
+            Assert.Contains("consig : CHARACTER(1)", persisted);
+            Assert.Contains("valtot : NUMERIC(8,2)", persisted);
+        }
+        finally
+        {
+            if (created) await Call("genexus_delete_object", new JObject { ["name"] = name, ["type"] = "SDT", ["confirm"] = true });
+        }
+    }
+
+    [LiveKbFact]
+    public async Task CreatePopupPersistsItsInputControl()
+    {
+        await Call("genexus_whoami", new JObject());
+        string name = "McpPopup" + Guid.NewGuid().ToString("N").Substring(0, 10);
+        try
+        {
+            // issue #876: on a GeneXus 18 KB without WorkWithPlus the popup used to write the
+            // flat layout body, the SDK refused it, and the call still answered PopupCreated.
+            JObject popup = await Call("genexus_create_popup", new JObject
+            {
+                ["name"] = name,
+                ["spec"] = new JObject
+                {
+                    ["title"] = "Popup",
+                    ["inputs"] = new JArray(new JObject { ["type"] = "text", ["varName"] = "Valor", ["label"] = "Valor" }),
+                },
+            });
+            string form = (await Read(name, "WebForm"))["source"]!.ToString();
+            // The stored form binds the input either by name (&Valor) or by variable id (var:N).
+            bool boundByName = form.Contains("&Valor") || form.Contains("&amp;Valor");
+            bool boundById = System.Text.RegularExpressions.Regex.IsMatch(form, "<data[^>]*attribute=\"var:\\d+\"[^>]*labelCaption=\"Valor\"");
+            Assert.True(boundByName || boundById, "WebForm has no Valor control: " + form + " popup=" + popup);
+        }
+        finally
+        {
+            try { await harness.CallToolAsync("genexus_delete_object", new JObject { ["name"] = name, ["type"] = "WebPanel", ["confirm"] = true }, timeoutMs: 120_000); } catch { }
+        }
+    }
+
+    [LiveKbFact]
+    public async Task ModifyRetypesNumericVariableBoundToWebFormControl()
+    {
+        await Call("genexus_whoami", new JObject());
+        string name = "McpBoundRetype" + Guid.NewGuid().ToString("N").Substring(0, 10);
+        bool created = false;
+        try
+        {
+            // issue #864: the variable sits between two others and is bound to a WebForm
+            // <data> control, the shape the reporter's WorkWithPlus copy had.
+            await Call("genexus_create", new JObject { ["action"] = "object", ["name"] = name, ["type"] = "WebPanel" });
+            created = true;
+            await Call("genexus_variable", new JObject { ["action"] = "add", ["name"] = name, ["varName"] = "Primeiro", ["typeName"] = "Character(10)" });
+            await Call("genexus_variable", new JObject { ["action"] = "add", ["name"] = name, ["varName"] = "Valor", ["typeName"] = "Numeric(10.2)" });
+            await Call("genexus_variable", new JObject { ["action"] = "add", ["name"] = name, ["varName"] = "Ultimo", ["typeName"] = "Numeric(15.4)" });
+            string emptyForm = (await Read(name, "WebForm"))["source"]!.ToString();
+            var mainTable = System.Text.RegularExpressions.Regex.Match(emptyForm, "<table [^>]*controlName=\"MainTable\"[^>]*?/>");
+            Assert.True(mainTable.Success, "Unexpected empty WebForm: " + emptyForm);
+            string boundForm = emptyForm.Replace(mainTable.Value, mainTable.Value.Substring(0, mainTable.Value.Length - 2)
+                + "><row id=\"" + Guid.NewGuid() + "\"><cell id=\"" + Guid.NewGuid() + "\">"
+                + "<data attribute=\"&amp;Valor\" labelCaption=\"Valor\" /></cell></row></table>");
+            await Call("genexus_edit", new JObject { ["name"] = name, ["part"] = "WebForm", ["mode"] = "full", ["content"] = boundForm });
+            string form = (await Read(name, "WebForm"))["source"]!.ToString();
+            Assert.True(form.Contains("<data"), "WebForm binding was not persisted: " + form);
+
+            await Call("genexus_variable", new JObject
+            {
+                ["action"] = "modify", ["name"] = name, ["varName"] = "Valor",
+                ["typeName"] = "NUMERIC", ["length"] = 12, ["decimals"] = 2,
+            });
+
+            string variables = (await Read(name, "Variables"))["source"]!.ToString();
+            Assert.Matches(new System.Text.RegularExpressions.Regex(@"Valor\s*:\s*Numeric\(12[.,]2\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase), variables);
+            Assert.Contains("Primeiro", variables);
+            Assert.Contains("Ultimo", variables);
+            Assert.Contains("<data", (await Read(name, "WebForm"))["source"]!.ToString());
+        }
+        finally
+        {
+            if (created) await Call("genexus_delete_object", new JObject { ["name"] = name, ["type"] = "WebPanel", ["confirm"] = true });
+        }
+    }
+
+    [LiveKbFact]
     public async Task MultipartPreviewAndVariablesDeltaPreservePersistedState()
     {
         JObject identity = await Call("genexus_whoami", new JObject());

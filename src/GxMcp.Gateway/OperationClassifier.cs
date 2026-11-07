@@ -105,7 +105,7 @@ namespace GxMcp.Gateway
                     mutating: new[] { "crystallize" }),
                 ["genexus_lifecycle"] = Contract(
                     readOnly: new[] { "reorg_preview", "status", "result", "snapshots-list", "inspect" },
-                    mutating: new[] { "build", "build_all", "cancel", "specify", "validate", "validate-kb", "rebuild", "reorg", "sync", "index", "snapshots-restore", "reconcile" }),
+                    mutating: new[] { "build", "build_all", "cancel", "specify", "specify_only", "validate", "validate-kb", "rebuild", "reorg", "sync", "index", "snapshots-restore", "reconcile" }),
                 ["genexus_refactor"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "RenameAttribute", "RenameVariable", "RenameObject", "ExtractProcedure", "ExtractSubroutine", "WWPSetCondition" }),
@@ -116,8 +116,8 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "get" },
                     mutating: new[] { "set", "move" }),
                 ["genexus_structure"] = Contract(
-                    readOnly: new[] { "get_visual", "get_indexes", "get_logic", "check_subtypes" },
-                    mutating: new[] { "update_visual", "create_index", "drop_index", "set_attribute", "set_level", "set_domain", "update_group", "move_attribute", "remove_attribute" }),
+                    readOnly: new[] { "get_visual", "get_indexes", "get_logic", "check_subtypes", "get_item_property" },
+                    mutating: new[] { "update_visual", "create_index", "drop_index", "set_attribute", "set_level", "set_domain", "update_group", "move_attribute", "remove_attribute", "set_item_property" }),
                 ["genexus_authoring"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "add_external_method", "add_external_property", "add_menu_option", "add_condition" }),
@@ -224,11 +224,13 @@ namespace GxMcp.Gateway
             "genexus_lifecycle:build_all",
             "genexus_lifecycle:rebuild",
             "genexus_lifecycle:index",
+            "genexus_lifecycle:specify_only",
             "genexus_structure:update_visual",
             "genexus_structure:create_index",
             "genexus_structure:drop_index",
             "genexus_structure:move_attribute",
             "genexus_structure:remove_attribute",
+            "genexus_structure:set_item_property",
             "genexus_api:routes_clone",
             "genexus_api:routes_update",
             "genexus_refactor:RenameAttribute",

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using GxMcp.Common.SharedHost;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -15,6 +16,8 @@ namespace GxMcp.Gateway
         {
             _kbResolver = new KbResolver(config);
             _workerPool = new WorkerPool(config);
+            var pool = _workerPool;
+            pool.SessionCountForKey = key => CountSessionsForPoolKey(pool, key);
             _workerPool.WorkerSideActivity = alias =>
                 JobRegistry.HasLiveJobOnWorker(alias)
                 || _pendingRequests.Values.Any(p => string.Equals(p.WorkerAlias, alias, StringComparison.OrdinalIgnoreCase));
@@ -43,8 +46,15 @@ namespace GxMcp.Gateway
                             aborted++;
                             continue;
                         }
-                        var exitError = BuildWorkerExitError(kb.Alias, stopReason,
-                            delivered: pending.Worker == null || !pending.Worker.IsCommandUndelivered(id));
+                        bool delivered = pending.Worker == null || !pending.Worker.IsCommandUndelivered(id);
+                        // RFC #854: a request bound to a shared Worker gets SHARED_WORKER_RESTARTED
+                        // (not-delivered, or delivered-unanswered with retryable from its
+                        // Operation_Class). Isolated Workers keep the Issue #692 error; an
+                        // undelivered command is re-sent in both modes.
+                        var exitError = pending.Worker?.IsSharedWorker == true
+                            ? BuildWorkerExitError(kb.Alias, stopReason, delivered, sharedWorker: true,
+                                pending.WorkerMethod, pending.WorkerAction, config.EffectiveSharedHost.QueueWaitMs)
+                            : BuildWorkerExitError(kb.Alias, stopReason, delivered);
                         _operationTracker.MarkFailedByRequest(id, exitError["message"]!.ToString());
                         var errorJson = new JObject
                         {
@@ -68,6 +78,7 @@ namespace GxMcp.Gateway
                     stopReason == WorkerStopReason.GatewayShutdown ||
                     stopReason == WorkerStopReason.BusyReject ||
                     stopReason == WorkerStopReason.ExplicitClose ||
+                    stopReason == WorkerStopReason.CapacityEviction ||
                     stopReason == WorkerStopReason.PlannedReload ||
                     stopReason == WorkerStopReason.SdkCompatibilityRejected)
                 {
@@ -185,6 +196,7 @@ namespace GxMcp.Gateway
             "GxMcp.Worker.dll",
             "events-u16-wwp16.2-audit.json",
             "events-u11-wwp16.1-audit.json",
+            "events-u10-audit.json",
         };
 
         /// <summary>
@@ -761,6 +773,46 @@ namespace GxMcp.Gateway
             };
         }
 
+        /// <summary>
+        /// RFC #854, Requirements 8.4, 12.3 and 12.4: the exit error for a pending request,
+        /// for either sharing mode. An isolated Worker gets the Issue #692 error above,
+        /// unchanged. A shared Worker gets <c>SHARED_WORKER_RESTARTED</c> from the catalog:
+        /// <c>not-delivered</c> (always retryable, still re-sent by the dispatcher) when no
+        /// byte reached the pipe, else <c>delivered-unanswered</c> with <c>retryable</c> from
+        /// the command's Operation_Class (unknown commands are Write). <c>data.stopReason</c>
+        /// names the local stop reason in both shared cases.
+        /// </summary>
+        internal static JObject BuildWorkerExitError(string kbAlias, WorkerStopReason stopReason, bool delivered,
+            bool sharedWorker, string? method, string? action, int queueWaitMs)
+        {
+            if (!sharedWorker) return BuildWorkerExitError(kbAlias, stopReason, delivered);
+
+            JObject error;
+            if (delivered)
+            {
+                error = WorkerProcess.BuildSharedHostDisconnectError(kbAlias, method, action, queueWaitMs);
+            }
+            else
+            {
+                error = new JObject
+                {
+                    ["code"] = -32603,
+                    ["message"] = $"Shared Worker for KB '{kbAlias}' crashed/exited ({stopReason}) before the command was delivered; it was not executed.",
+                    ["data"] = ConcurrencyErrorCatalog.Build(
+                        ConcurrencyErrorCatalog.SharedWorkerRestarted,
+                        null,
+                        new ConcurrencyErrorFields
+                        {
+                            DispatchState = ConcurrencyDispatchState.NotDelivered,
+                            OperationClass = WorkerCommandCatalog.Classify(method, action),
+                            QueueWaitMs = queueWaitMs
+                        })
+                };
+            }
+            ((JObject)error["data"]!)["stopReason"] = stopReason.ToString();
+            return error;
+        }
+
         internal static bool ShouldRedispatchUndeliveredCommand(JObject workerResponse, int redispatches)
         {
             return redispatches < MaxUndeliveredRedispatches
@@ -875,6 +927,8 @@ namespace GxMcp.Gateway
                     CreatedAtUtc = DateTime.UtcNow,
                     WorkerAlias = worker.Kb?.NormalizedAlias,
                     Worker = worker,
+                    WorkerMethod = workerRequest["method"]?.ToString(),
+                    WorkerAction = workerRequest["action"]?.ToString(),
                     McpRequestId = mcpRequestId,
                     McpRequestIdToken = mcpRequestIdToken?.DeepClone(),
                     McpSessionId = mcpSessionId ?? "stdio",
@@ -941,6 +995,8 @@ namespace GxMcp.Gateway
                     {
                         workerErrorObjNoTimeout["correlationId"] = correlationId;
                     }
+                    // RFC #854 Requirement 12: shared mode only; an isolated Worker returns the same object.
+                    workerResponse = worker.NormalizeConcurrencyError(workerResponse, workerRequest);
                     var transformSwNoTimeout = System.Diagnostics.Stopwatch.StartNew();
                     var transformedNoTimeout = onSuccess(workerResponse);
                     transformSwNoTimeout.Stop();
@@ -979,9 +1035,18 @@ namespace GxMcp.Gateway
                 bool lifecycleStatusWait = string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
                     && string.Equals(toolArgs?["action"]?.ToString(), "status", StringComparison.OrdinalIgnoreCase)
                     && ((toolArgs?["wait"]?.ToObject<int?>() ?? toolArgs?["wait_seconds"]?.ToObject<int?>() ?? 0) > 0);
-                int effectiveTimeoutMs = timeoutMs;
+                // RFC #854: in shared-host mode the broker may queue the request for up to
+                // the effective queue wait before it starts. Isolated_Mode gets timeoutMs
+                // back unchanged. The Gateway treats every command as a possible
+                // SDK_Operation: the broker's lane choice (CommandLaneClassifier) lives in
+                // the Worker, which the Gateway cannot link, and it reads Worker-only write
+                // fence pins, so a Gateway copy could disagree. A bypass command extended by
+                // mistake only waits longer on a failure; a queued SDK_Operation that was
+                // not extended would time out while the broker still owes it an answer.
+                int pendingTimeoutMs = worker.ResolvePendingTimeoutMs(timeoutMs, isSdkOperation: true);
+                int effectiveTimeoutMs = pendingTimeoutMs;
                 if (noClientProgressToken && !string.IsNullOrWhiteSpace(operationId) && !lifecycleStatusWait)
-                    effectiveTimeoutMs = ResolveNoProgressTimeoutMs(timeoutMs);
+                    effectiveTimeoutMs = ResolveNoProgressTimeoutMs(pendingTimeoutMs);
                 bool workerCompleted = await McpRouter.AwaitWithHeartbeat(
                     pending.CompletionSource.Task, effectiveTimeoutMs, progressToken, heartbeat, toolName,
                     cancellationToken: cancellationToken);
@@ -1009,6 +1074,8 @@ namespace GxMcp.Gateway
                     {
                         workerErrorObj["correlationId"] = correlationId;
                     }
+                    // RFC #854 Requirement 12: shared mode only; an isolated Worker returns the same object.
+                    workerResponse = worker.NormalizeConcurrencyError(workerResponse, workerRequest);
                     var transformSw = System.Diagnostics.Stopwatch.StartNew();
                     var transformed = onSuccess(workerResponse);
                     transformSw.Stop();
@@ -1431,6 +1498,7 @@ namespace GxMcp.Gateway
                 "validate" => "Validate accepted;",
                 "validate-kb" => "KB validation accepted;",
                 "specify" => "Specify accepted;",
+                "specify_only" => "Specify-only accepted;",
                 "reorg" => "Reorganization accepted;",
                 "index" => "Index refresh accepted;",
                 "build_all" => "Build All accepted;",

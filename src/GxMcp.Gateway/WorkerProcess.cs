@@ -7,6 +7,7 @@ using System.Management;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using GxMcp.Common.SharedHost;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -24,7 +25,8 @@ namespace GxMcp.Gateway
         Wedged,          // BUG-03: an in-flight command exceeded WedgedCommandTimeoutMinutes with no response
         HeapRecycle,      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
                          // session can't drift into an OOM/fragmented state. Eager-respawns.
-        SdkCompatibilityRejected // Worker refused the configured SDK before opening the KB.
+        SdkCompatibilityRejected, // Worker refused the configured SDK before opening the KB.
+        CapacityEviction // shared mode: evicted for Server.MaxOpenKbs; the detach asks the host to stop if last.
     }
 
     /// <summary>
@@ -227,10 +229,32 @@ namespace GxMcp.Gateway
         public string? AttachmentId => IsSharedHostMode ? _sharedConnection?.AttachId : null;
         public long? WorkerGeneration => IsSharedHostMode ? _sharedConnection?.Generation : null;
         public bool IsSharedWorker => IsSharedHostMode;
+
+        /// <summary>
+        /// RFC #854: a shared-mode Worker or broker response with its Concurrency_Error_Table error normalized
+        /// (<see cref="ConcurrencyErrorNormalizer"/>). An isolated Worker returns <paramref name="response"/> itself.
+        /// </summary>
+        internal JObject NormalizeConcurrencyError(JObject response, JObject? request)
+            => IsSharedHostMode
+                ? ConcurrencyErrorNormalizer.Normalize(response, request, _config, () => DateTime.UtcNow)
+                : response;
+
+        /// <summary>
+        /// RFC #854 diagnostics: the host's status_ack through the "status" control frame of the attachment, never
+        /// through the command queue. Null when this is not a connected shared Worker or no answer arrives in time.
+        /// </summary>
+        internal Task<JObject?> RequestSharedStatusAsync(int timeoutMs, CancellationToken cancellationToken)
+        {
+            var connection = IsSharedHostMode ? _sharedConnection : null;
+            return connection == null
+                ? Task.FromResult<JObject?>(null)
+                : connection.RequestStatusAsync(timeoutMs, cancellationToken);
+        }
+
         public bool SharedConnectionIsConnected => IsSharedHostMode && _sharedConnection?.IsConnected == true;
         public string? SharedIdentityKey => IsSharedHostMode ? _sharedIdentity?.Key : null;
         public string? SharedPipeName => IsSharedHostMode && _sharedIdentity != null
-            ? SharedWorkerRegistry.PipeName(_sharedIdentity)
+            ? SharedWorkerRegistry.PipeNameV2(_sharedIdentity)
             : null;
         public string? SharedConnectionError => IsSharedHostMode ? _sharedConnection?.LastError : null;
         public string? SharedWorkerExecutable => IsSharedHostMode ? _sharedIdentity?.WorkerExecutable : null;
@@ -310,6 +334,32 @@ namespace GxMcp.Gateway
                 ConfiguredPath = configured,
                 TriedPaths = tried
             };
+        }
+
+        internal const string Evolution3WorkerDirectory = "worker-ev3";
+
+        /// <summary>
+        /// GeneXus X Evolution 3 ships SDK assemblies 10.1.0.0, which the GeneXus 16-18 Worker
+        /// cannot bind to, so Evolution 3 KBs run a Worker compiled against that SDK
+        /// (GxMcpSdkProfile=evolution3) published in the sibling worker-ev3 folder. Returns null
+        /// with a diagnostic when that Worker is missing, rather than starting one that cannot
+        /// load the SDK.
+        /// </summary>
+        internal static string? SelectSdkProfileWorker(string workerPath, string? major, out string? diagnostic)
+        {
+            diagnostic = null;
+            if (!string.Equals(major?.Trim(), "10.3", StringComparison.Ordinal))
+                return workerPath;
+
+            string workerDir = Path.GetDirectoryName(workerPath) ?? string.Empty;
+            string publishDir = Path.GetDirectoryName(workerDir) ?? workerDir;
+            string candidate = Path.Combine(publishDir, Evolution3WorkerDirectory, Path.GetFileName(workerPath));
+            if (File.Exists(candidate))
+                return candidate;
+
+            diagnostic = "GXMCP_EV3_WORKER_MISSING major=10.3 expected=" + candidate
+                + ". GeneXus X Evolution 3 needs the Worker built with -p:GxMcpSdkProfile=evolution3.";
+            return null;
         }
 
         public WorkerProcess(Configuration config, KbHandle kb)
@@ -1050,7 +1100,9 @@ namespace GxMcp.Gateway
                 _sharedConnection = connection;
                 _stateMachine.TransitionTo(WorkerLifecycleState.SdkInitializing);
                 WireSharedConnectionEvents(connection);
-                if (connection.AttachInfo?.SdkReady == true && _sdkReady.TrySetResult(true))
+                // The v2 Connect sequence returns only after the readiness wait, and readiness can be observed
+                // through the registry record rather than the attach acknowledgement.
+                if (connection.IsSdkReady && _sdkReady.TrySetResult(true))
                     _stateMachine.TransitionTo(WorkerLifecycleState.Ready);
                 _lastPid = connection.WorkerPid ?? 0;
                 SpawnedAtUtc = DateTime.UtcNow;
@@ -1145,6 +1197,14 @@ namespace GxMcp.Gateway
                     ObserveStartupDiagnostic(mismatch);
                     throw new InvalidOperationException(mismatch);
                 }
+
+                string? profileWorker = SelectSdkProfileWorker(workerPath, workerMajor, out string? profileDiagnostic);
+                if (profileWorker == null)
+                {
+                    ObserveStartupDiagnostic(profileDiagnostic!);
+                    throw new InvalidOperationException(profileDiagnostic);
+                }
+                workerPath = profileWorker;
 
                 string? legacyProvider = null;
                 if (string.Equals(workerDriver, "com-gxpublic", StringComparison.OrdinalIgnoreCase)
@@ -1481,6 +1541,58 @@ namespace GxMcp.Gateway
         /// </summary>
         internal bool IsCommandUndelivered(string id) => _undeliveredCommandIds.ContainsKey(id);
 
+        /// <summary>
+        /// RFC #854: the Gateway-side wait for a pending request. Isolated_Mode returns
+        /// <paramref name="baseTimeoutMs"/> unchanged. In Shared_Host_Mode the broker may
+        /// hold an SDK_Operation in its Request_Queue for up to the effective queue wait
+        /// before it starts it, and it guarantees a terminal outcome within that wait, so
+        /// the timeout of an SDK_Operation is extended by
+        /// <see cref="Configuration.EffectiveSharedHost"/>'s queue wait, saturating at
+        /// <see cref="int.MaxValue"/>. A non-SDK command and a base timeout of zero or
+        /// less (no timeout) are unchanged.
+        /// </summary>
+        internal int ResolvePendingTimeoutMs(int baseTimeoutMs, bool isSdkOperation)
+        {
+            if (!IsSharedHostMode || !isSdkOperation || baseTimeoutMs <= 0) return baseTimeoutMs;
+            long queueWaitMs = Math.Max(0, _config.EffectiveSharedHost?.QueueWaitMs ?? 0);
+            long extended = baseTimeoutMs + queueWaitMs;
+            return extended >= int.MaxValue ? int.MaxValue : (int)extended;
+        }
+
+        /// <summary>
+        /// RFC #854, Requirement 12 criterion 4: the JSON-RPC error for a request written to
+        /// the shared-host pipe and unanswered when the host disconnected. The Gateway cannot
+        /// know whether the broker had released the request to the child, so every request
+        /// written to the pipe counts as delivered. <c>data</c> is the catalog row for
+        /// <c>SHARED_WORKER_RESTARTED</c>, so <c>retryable</c> follows the command's
+        /// Operation_Class (unknown commands are Write, never retryable), plus
+        /// <c>reconcileRequired</c> for a command that may have changed the KB. The message
+        /// keeps the "crashed/exited" marker that the retry-safe read path recognises.
+        /// </summary>
+        internal static JObject BuildSharedHostDisconnectError(string kbAlias, string? method, string? action, int queueWaitMs)
+        {
+            JObject data = ConcurrencyErrorCatalog.Build(
+                ConcurrencyErrorCatalog.SharedWorkerRestarted,
+                null,
+                new ConcurrencyErrorFields
+                {
+                    DispatchState = ConcurrencyDispatchState.DeliveredUnanswered,
+                    OperationClass = WorkerCommandCatalog.Classify(method, action),
+                    QueueWaitMs = queueWaitMs
+                });
+            bool retryable = data.Value<bool?>("retryable") == true;
+            data["reconcileRequired"] = !retryable;
+            string message = retryable
+                ? $"Shared Worker host for KB '{kbAlias}' crashed/exited after the command was written to it and before it answered. The command is a read and may be retried."
+                : $"Shared Worker host for KB '{kbAlias}' crashed/exited after the command was written to it and before it answered; it may have executed. Read the target back before retrying.";
+            return new JObject
+            {
+                ["code"] = -32603,
+                ["message"] = message,
+                ["data"] = data
+            };
+        }
+
         /// <summary>Completes once this Worker's exit has been reported to subscribers.</summary>
         internal Task ExitNotifiedTask => _exitNotifiedSignal.Task;
 
@@ -1747,9 +1859,45 @@ namespace GxMcp.Gateway
                 Interlocked.Exchange(ref _inFlightCommands, 0);
                 _supervisionTracker.ClearInFlight();
             }
-            try { connection?.Dispose(); } catch { }
+            try { connection?.Dispose(stopIfLast: StopIfLastFor(reason)); } catch { }
             Volatile.Write(ref _exitConfirmed, 1);
             FireWorkerExitedOnce(reason);
+        }
+
+        /// <summary>
+        /// Whether a shared-mode stop for <paramref name="reason"/> asks the host to stop its Worker when this
+        /// was the last Attachment. Only a Server.MaxOpenKbs eviction does: every other stop leaves the host to
+        /// the other Gateways and to idle reaping.
+        /// </summary>
+        internal static bool StopIfLastFor(WorkerStopReason reason) => reason == WorkerStopReason.CapacityEviction;
+
+        /// <summary>
+        /// The Physical_KB_Identity key <see cref="StartShared"/> attaches to for <paramref name="kb"/>, built from
+        /// the same Worker path, installation, driver, major and profile config path that Start resolves. Empty
+        /// when the Worker executable cannot be resolved or the identity cannot be built; Start then reports the
+        /// failure itself.
+        /// </summary>
+        internal static string ComputeSharedIdentityKey(Configuration config, KbHandle kb)
+        {
+            if (config == null || kb == null) return string.Empty;
+            try
+            {
+                WorkerExecutableResolution res = ResolveWorkerExecutable(config, AppDomain.CurrentDomain.BaseDirectory);
+                if (res.ResolvedPath == null) return string.Empty;
+                string? installationPath = string.IsNullOrWhiteSpace(kb.InstallationPath)
+                    ? config.GeneXus?.InstallationPath
+                    : kb.InstallationPath;
+                var sdkProbe = WorkerSdkCompatibilityProbe.Check(installationPath);
+                string driver = string.IsNullOrWhiteSpace(kb.Driver) ? (sdkProbe.Driver ?? "native-sdk") : kb.Driver!;
+                string major = string.IsNullOrWhiteSpace(kb.Major) ? (sdkProbe.Major ?? string.Empty) : kb.Major!;
+                return SharedWorkerIdentity.Create(res.ResolvedPath, kb.Path, installationPath ?? string.Empty,
+                    driver, major, Configuration.CurrentConfigPath).Key;
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"[WorkerPool] shared identity key unavailable for '{kb.Alias}': {ex.Message}");
+                return string.Empty;
+            }
         }
 
         private void MarkActivity()

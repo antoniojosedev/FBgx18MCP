@@ -10,6 +10,10 @@ namespace GxMcp.Gateway
 {
     partial class Program
     {
+        // Room for the serialized envelope after trimming rows, under the 80000-character ceiling and
+        // leaving space for the fields NormalizeToolPayloadForAxi adds (meta, help, nextOffset).
+        private const int ResultsTrimBudget = 78000;
+
         private static JToken TruncateResponseIfNeeded(JToken? result, string toolName)
         {
             if (result == null) return JValue.CreateNull();
@@ -87,11 +91,26 @@ namespace GxMcp.Gateway
                     string currentRaw = obj.ToString(Formatting.None);
                     if (currentRaw.Length > 80000)
                     {
-                        // Drastic pruning: keep only first 5
-                        while (searchResults.Count > 5) searchResults.RemoveAt(searchResults.Count - 1);
+                        // Keep the longest prefix of rows that fits the budget (never a fixed handful),
+                        // and make the page contract match what is left so the caller can continue.
+                        int fixedLen = currentRaw.Length;
+                        foreach (var row in searchResults) fixedLen -= row.ToString(Formatting.None).Length + 1;
+                        int room = ResultsTrimBudget - Math.Max(0, fixedLen);
+                        int kept = 0, used = 0;
+                        foreach (var row in searchResults)
+                        {
+                            int rowLen = row.ToString(Formatting.None).Length + 1;
+                            if (kept > 0 && used + rowLen > room) break;
+                            used += rowLen;
+                            kept++;
+                        }
+                        while (searchResults.Count > kept) searchResults.RemoveAt(searchResults.Count - 1);
                         obj["isTruncated"] = true;
-                        obj["returnedCount"] = 5;
+                        obj["returnedCount"] = kept;
                         obj["originalCount"] = originalCount;
+                        obj["returned"] = kept;
+                        obj["hasMore"] = true;
+                        obj.Remove("nextOffset");
                         return obj;
                     }
                 }
@@ -126,7 +145,9 @@ namespace GxMcp.Gateway
 
                         // Cut on a line boundary at/under the budget so we never split a line.
                         int cut = val.LastIndexOf('\n', Math.Min(readFieldBudget, val.Length) - 1);
-                        if (cut <= 0) cut = Math.Min(readFieldBudget, val.Length); // no newline: hard prefix
+                        // Line offsets cannot resume inside a line. Preserve an oversized
+                        // first line rather than discard content that cannot be paged back.
+                        if (cut <= 0) continue;
                         string kept = val.Substring(0, cut);
                         int keptLines = kept.Length == 0 ? 0 : kept.Split('\n').Length;
                         int baseOffset = obj["offset"]?.ToObject<int?>() ?? 0;
@@ -661,8 +682,24 @@ namespace GxMcp.Gateway
         }
 
         internal static bool IsRefreshRead(string toolName, JObject? args)
-            => string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)
+            => (string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(toolName, "genexus_properties", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(args?["action"]?.ToString(), "get", StringComparison.OrdinalIgnoreCase)))
                 && args?["refresh"]?.Type == JTokenType.Boolean && args["refresh"]!.Value<bool>();
+
+        /// <summary>
+        /// <c>genexus_structure</c> <c>get_item_property</c> and the <c>set_item_property</c> preview. Both hand out the
+        /// <c>versionToken</c> a write has to present and the value a change is judged against, so a copy cached for 30
+        /// minutes would keep serving the token and the "before" of an SDT edited meanwhile outside this Gateway. They are
+        /// cheap Worker reads through a fresh SDK instance: never looked up in and never stored into the cache.
+        /// </summary>
+        internal static bool IsLiveSdtMemberProperty(string toolName, JObject? args)
+        {
+            if (!string.Equals(toolName, "genexus_structure", StringComparison.OrdinalIgnoreCase)) return false;
+            string? action = args?["action"]?.ToString();
+            return string.Equals(action, "get_item_property", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "set_item_property", StringComparison.OrdinalIgnoreCase);
+        }
 
         internal static bool InvalidateRefreshReadScope(SemanticCacheStore cache, string kbScope, string toolName, JObject? args)
         {
@@ -734,7 +771,8 @@ namespace GxMcp.Gateway
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
                 || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args)
-                || IsConditionalRead(toolName, args) || IsRefreshRead(toolName, args))
+                || IsConditionalRead(toolName, args) || IsRefreshRead(toolName, args)
+                || IsLiveSdtMemberProperty(toolName, args))
                 return null;
             return $"{kbScope}|{toolName}:{args?.ToString(Newtonsoft.Json.Formatting.None)}";
         }
@@ -765,7 +803,8 @@ namespace GxMcp.Gateway
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
                 || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args)
-                || IsConditionalRead(toolName, args) || IsRefreshRead(toolName, args))
+                || IsConditionalRead(toolName, args) || IsRefreshRead(toolName, args)
+                || IsLiveSdtMemberProperty(toolName, args))
                 return null;
 
             var canonicalArgs = CanonicalizeJson(args ?? new JObject());

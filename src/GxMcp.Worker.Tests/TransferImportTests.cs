@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -9,6 +10,95 @@ namespace GxMcp.Worker.Tests
 {
     public class TransferImportTests
     {
+        private static readonly Guid ProcedureType = new Guid("84a12160-f59b-4ad7-a683-ea4481ac23e9");
+        private static readonly Guid PanelType = new Guid("11111111-1111-1111-1111-111111111111");
+        private const string WebFormPart = "d24a58ad-57ba-41b7-9e6e-eaca3543c778";
+
+        private static string RawPackage(string xml)
+        {
+            string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".xpz");
+            using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+            using (var writer = new StreamWriter(archive.CreateEntry("export.xml").Open()))
+                writer.Write(xml);
+            return path;
+        }
+
+        private static Tuple<string, bool> ResolveRawType(Guid type)
+        {
+            if (type == ProcedureType) return Tuple.Create("Procedure", false);
+            if (type == PanelType) return Tuple.Create("WebPanel", true);
+            return null;
+        }
+
+        private static readonly string Form = $"<Part type='{WebFormPart}'><Source><![CDATA[<GxMultiForm />]]></Source></Part>";
+
+        // Each shape comes from a real package: GAM_Web-Administration.xpz (a Folder and a WebPanel
+        // share a name), Carmine.xpz (theme classes share a name, not a guid), GAM_Lib_Delete.xpz
+        // (actions only) and Finance.xpz (a WebForm part with Properties only).
+        public static TheoryData<string, string, int> AcceptedPackages => new TheoryData<string, string, int>
+        {
+            { "two procedures", Objects($"<Object name='A' type='{ProcedureType}'/><Object name='B' type='{ProcedureType}'/>"), 0 },
+            { "unknown type without WebForm", Objects($"<Object name='A' type='{Guid.NewGuid()}'/>"), 0 },
+            { "same name, different types", Objects($"<Object name='Dashboard' type='{ProcedureType}'/><Object name='Dashboard' type='{PanelType}'>{Form}</Object>"), 1 },
+            { "same name, different guids", Objects($"<Object guid='{Guid.NewGuid()}' name='Text' type='{ProcedureType}'/><Object guid='{Guid.NewGuid()}' name='Text' type='{ProcedureType}'/>"), 0 },
+            { "actions only", "<ExportFile><KMW /><Source /><Actions><Action type='delete' /></Actions></ExportFile>", 0 },
+            { "WebForm without source", Objects($"<Object name='Panel' type='{PanelType}'/><Object name='Quote' type='{PanelType}'><Part type='{WebFormPart}'><Properties /></Part></Object>"), 0 },
+        };
+
+        public static TheoryData<string, string> RejectedPackages
+        {
+            get
+            {
+                var guid = Guid.NewGuid();
+                return new TheoryData<string, string>
+                {
+                    { "WebForm source that is not a form", Objects($"<Object name='A' type='{ProcedureType}'/><Object name='Panel' type='{PanelType}'><Part type='{WebFormPart}'><Source>not a form</Source></Part></Object>") },
+                    { "WebForm of an unknown type", Objects($"<Object name='A' type='{Guid.NewGuid()}'>{Form}</Object>") },
+                    { "same name twice under one type", Objects($"<Object name='A' type='{ProcedureType}'/><Object name='A' type='{ProcedureType}'/>") },
+                    { "same guid twice", Objects($"<Object guid='{guid}' name='A' type='{ProcedureType}'/><Object guid='{guid}' name='B' type='{ProcedureType}'/>") },
+                    { "two WebForms for one name", Objects($"<Object guid='{Guid.NewGuid()}' name='Panel' type='{PanelType}'>{Form}</Object><Object guid='{Guid.NewGuid()}' name='Panel' type='{PanelType}'>{Form}</Object>") },
+                };
+            }
+        }
+
+        private static string Objects(string objects) => "<ExportFile><Objects>" + objects + "</Objects></ExportFile>";
+
+        private static TransferService.ImportFidelityPlan Capture(string xml)
+        {
+            string path = RawPackage(xml);
+            try { return TransferService.CaptureImportFidelity(path, ResolveRawType, (name, type) => null); }
+            finally { File.Delete(path); }
+        }
+
+        [Theory]
+        [MemberData(nameof(AcceptedPackages))]
+        public void CaptureImportFidelity_AcceptsRealPackageShapes(string shape, string xml, int webForms)
+        {
+            Assert.True(Capture(xml).Items.Count == webForms, shape);
+        }
+
+        [Theory]
+        [MemberData(nameof(RejectedPackages))]
+        public void CaptureImportFidelity_RejectsAmbiguousPackages(string shape, string xml)
+        {
+            Assert.True(Assert.Throws<InvalidDataException>(() => Capture(xml)) != null, shape);
+        }
+
+        [Fact]
+        public void CaptureImportFidelity_PreservesRawBaselineAndExistingSnapshot()
+        {
+            var path = RawPackage(Objects($"<Object name='Panel' type='{PanelType}'><Part type='{WebFormPart}'><Source><![CDATA[<GxMultiForm><BODY /></GxMultiForm>]]></Source></Part></Object>"));
+            try
+            {
+                var plan = TransferService.CaptureImportFidelity(path, ResolveRawType, (name, type) => Tuple.Create("before"));
+                var item = Assert.Single(plan.Items);
+                Assert.Equal("<GxMultiForm><BODY /></GxMultiForm>", item.ExpectedXml);
+                Assert.True(item.ExistingBefore);
+                Assert.Equal("before", item.BeforeXml);
+            }
+            finally { File.Delete(path); }
+        }
+
         private sealed class FakeExportItem
         {
             public string ObjectName { get; set; }
@@ -16,6 +106,46 @@ namespace GxMcp.Worker.Tests
             public string Guid { get; set; }
             public string BaseOperation { get; set; }
             public string Status { get; set; }
+            public int DescriptorReads { get; private set; }
+            public int ObjectReads { get; private set; }
+            public object TypeDescriptor { get { DescriptorReads++; throw new InvalidOperationException(); } }
+            public object Object { get { ObjectReads++; throw new InvalidOperationException(); } }
+        }
+
+        [Fact]
+        public void DescribeExportItem_DoesNotEvaluateMutatingSdkGetters()
+        {
+            var item = new FakeExportItem { ObjectName = "Sample" };
+            var result = TransferService.DescribeExportItem(item);
+            Assert.Equal("Sample", result["name"]?.ToString());
+            Assert.Equal(0, item.ObjectReads);
+            Assert.Equal(0, item.DescriptorReads);
+        }
+
+        [Fact]
+        public void ImportFidelityFailure_ReportsNoImport()
+        {
+            var diagnostics = new JObject { ["sdkDiagnostics"] = new JArray() };
+            var result = JObject.Parse(TransferService.BuildImportFidelityFailure("unreadable", diagnostics));
+
+            Assert.Equal("error", result["status"]?.ToString());
+            Assert.Equal("TransferImportVerificationUnavailable", result["error"]?["code"]?.ToString());
+            Assert.False(result["imported"].Value<bool>());
+            Assert.Equal("unchanged", result["persistedState"]?.ToString());
+            Assert.Null(result["error"]["reconciliationRequired"]);
+            Assert.Contains("before retrying", result["error"]["hint"].ToString());
+            Assert.Contains("ImportFile was not called", result["error"]["message"].ToString());
+        }
+
+        [Fact]
+        public void ImportPreflight_NeverPreparesSdkObjectsBeforeImportFile()
+        {
+            // PrepareImport constructs target objects, so a preflight failure after it could leave
+            // empty stubs in the KB while reporting that nothing was imported.
+            string source = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "TransferService.cs");
+            Assert.DoesNotContain("PrepareImport", source);
+            Assert.Contains("fidelityPlan = CaptureImportFidelity(file);", source);
+            Assert.Contains("return BuildImportFidelityFailure(ex.Message, ImportDiagnostics(diagnostics, imported: false));", source);
         }
 
         [Fact]

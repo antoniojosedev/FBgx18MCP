@@ -86,7 +86,9 @@ namespace GxMcp.Worker.Services
             try
             {
                 var now = DateTime.UtcNow;
+#if !GXMCP_SDK_EV3
                 try { obj.LastUpdate = now; } catch { }
+#endif
                 try { obj.SaveModelEntityDate(301, 0, now); metadataStampPersisted = true; } catch { }
                 try { obj.SaveModelEntityDate(300, 0, now); metadataStampPersisted = true; } catch { }
                 try { obj.SaveVersionIndependentDate(310, 0, now); metadataStampPersisted = true; } catch { }
@@ -443,6 +445,10 @@ namespace GxMcp.Worker.Services
             if (colon < 0) return line;
             string name = line.Substring(0, colon).Trim();
             string rest = line.Substring(colon + 1).Trim();
+            // The renderer's detail comment (" // \"Description\" [Nullable]") is not part of
+            // the declaration; a Domain-typed line has no "(len)" that would cut it off below.
+            int comment = rest.IndexOf("//", StringComparison.Ordinal);
+            if (comment >= 0) rest = rest.Substring(0, comment).Trim();
             int paren = rest.IndexOf('(');
             if (paren >= 0) rest = rest.Substring(0, paren).Trim();
             return name + " : " + rest;
@@ -512,6 +518,7 @@ namespace GxMcp.Worker.Services
         internal static void StampPerTargetWrite(string target)
         {
             if (string.IsNullOrWhiteSpace(target)) return;
+            PropertyService.InvalidatePropertiesAfterWrite();
             _lastWriteAtUtc[target] = DateTime.UtcNow;
         }
 
@@ -1448,6 +1455,12 @@ namespace GxMcp.Worker.Services
             string code = envelope["code"]?.ToString();
             if (string.Equals(code, "AlreadyHeld", StringComparison.OrdinalIgnoreCase) && force)
                 return null;
+            // Shared child only: the AlreadyHeld refusal carries its code under error.code, so a
+            // forced write over a foreign lock proceeds without taking or touching that lock.
+            // Isolated_Mode keeps the check above unchanged.
+            if (force && GxMcp.Worker.Helpers.WritePipeline.IsSharedChild()
+                && string.Equals((envelope["error"] as JObject)?["code"]?.ToString(), "AlreadyHeld", StringComparison.OrdinalIgnoreCase))
+                return null;
             if (!string.Equals(code, "LockAcquired", StringComparison.OrdinalIgnoreCase))
             {
                 error = acquired;
@@ -2124,6 +2137,7 @@ namespace GxMcp.Worker.Services
 
                 // 1. SET CONTENT
                 bool contentSet = false;
+                IReadOnlyList<VariableInjector.InjectedVariable> autoCreatedVariables = null;
                 if (part is global::Artech.Genexus.Common.Parts.VariablesPart varPart)
                 {
                     VariableInjector.SetVariablesFromText(varPart, decodedCode);
@@ -2138,7 +2152,7 @@ namespace GxMcp.Worker.Services
                     {
                         try {
                             var index = _objectService.GetKbService().GetIndexCache().GetIndex();
-                            VariableInjector.InjectVariables(obj, decodedCode, index);
+                            autoCreatedVariables = VariableInjector.InjectVariables(obj, decodedCode, index);
                         } catch (Exception ex) {
                             Logger.Warn("[DEBUG-SAVE] Auto-inject variables failed: " + ex.Message);
                         }
@@ -2220,6 +2234,7 @@ namespace GxMcp.Worker.Services
                                     };
                                     string fpMsgs = GetSdkMessagesSafe(part);
                                     if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
+                                    WritePolicy.AddAutoCreatedVariables(fpResult, autoCreatedVariables);
                                     return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
                                 }
                             }
@@ -2237,6 +2252,7 @@ namespace GxMcp.Worker.Services
                                 };
                                 string fpMsgs = GetSdkMessagesSafe(part);
                                 if (!string.IsNullOrWhiteSpace(fpMsgs)) fpResult["sdkMessages"] = fpMsgs;
+                                WritePolicy.AddAutoCreatedVariables(fpResult, autoCreatedVariables);
                                 return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: fpResult);
                             }
                         }
@@ -2444,6 +2460,7 @@ namespace GxMcp.Worker.Services
                                     ["objectSaved"] = true,
                                     ["metadataStampPersisted"] = metadataStampPersisted
                                 };
+                                WritePolicy.AddAutoCreatedVariables(warnPayload, autoCreatedVariables);
                                 return Models.McpResponse.Ok(
                                     target: target,
                                     code: "WriteApplied",
@@ -2477,6 +2494,7 @@ namespace GxMcp.Worker.Services
                     }
                     if (writeWarnings.Count > 0)
                         writeResult["warnings"] = writeWarnings;
+                    WritePolicy.AddAutoCreatedVariables(writeResult, autoCreatedVariables);
                     return Models.McpResponse.Ok(
                         target: target,
                         code: "WriteApplied",

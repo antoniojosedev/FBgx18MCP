@@ -1,6 +1,8 @@
 param(
     [string]$OutputRoot = "",
-    [string]$GxPath = ""
+    [string]$GxPath = "",
+    # Required for an output directory outside artifacts and the runner's temporary roots.
+    [string]$AllowedOutputRoot = ""
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -42,7 +44,11 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     }
 }
 
-Remove-Item -LiteralPath $OutputRoot -Recurse -Force -ErrorAction SilentlyContinue
+. (Join-Path $repoRoot 'scripts/coverage/output-path.ps1')
+$OutputRoot = Resolve-CoverageOutputDirectory -OutputRoot $OutputRoot -RepoRoot $repoRoot -AllowedOutputRoot $AllowedOutputRoot
+if (Test-Path -LiteralPath $OutputRoot) {
+    Remove-Item -LiteralPath $OutputRoot -Recurse -Force -ErrorAction Stop
+}
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 
 # Ensure gxwire binary is available in publish for gateway integration tests
@@ -115,11 +121,37 @@ function Get-BaseOutputPath {
 
 $resolvedGxPath = Resolve-GxSdkPath
 
-Invoke-CoverageTest `
-    -ProjectPath (Join-Path $repoRoot "src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj") `
-    -Label "gateway" `
-    -BaseOutputPath (Get-BaseOutputPath -Label "gateway") `
-    -SettingsPath (Join-Path $PSScriptRoot "gateway.runsettings")
+# The shared-host process smoke tests start this SDK-free test host. Build it so they
+# run here instead of returning early, and point them at exactly this build.
+$testHostProject = Join-Path $repoRoot "src\GxMcp.SharedHost.TestHost\GxMcp.SharedHost.TestHost.csproj"
+& dotnet build $testHostProject -c Debug -v minimal --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "GxMcp.SharedHost.TestHost build failed."
+}
+$previousTestHostExe = $env:GXMCP_SHAREDHOST_TESTHOST_EXE
+$env:GXMCP_SHAREDHOST_TESTHOST_EXE = Join-Path $repoRoot "src\GxMcp.SharedHost.TestHost\bin\Debug\GxMcp.SharedHost.TestHost.exe"
+
+# On a fresh runner the first start of an executable reads it from a cold disk, which has cost
+# the process smoke tests 9-15s against their 10s per-test budget. Pay that once here, timed.
+foreach ($warmUp in @(
+        @{ Name = "node"; File = "node"; Arguments = @("-e", "0") },
+        @{ Name = "ping"; File = "ping.exe"; Arguments = @("-n", "1", "127.0.0.1") },
+        # --fake-script without a value exits at once (code 2) instead of serving stdin.
+        @{ Name = "shared-host test host"; File = $env:GXMCP_SHAREDHOST_TESTHOST_EXE; Arguments = @("--fake-script") })) {
+    if (-not (Get-Command $warmUp.File -ErrorAction SilentlyContinue)) { continue }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    & $warmUp.File @($warmUp.Arguments) *> $null
+    Write-Host ("Process warm-up, {0}: {1} ms (exit {2})" -f $warmUp.Name, $watch.ElapsedMilliseconds, $LASTEXITCODE)
+}
+try {
+    Invoke-CoverageTest `
+        -ProjectPath (Join-Path $repoRoot "src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj") `
+        -Label "gateway" `
+        -BaseOutputPath (Get-BaseOutputPath -Label "gateway") `
+        -SettingsPath (Join-Path $PSScriptRoot "gateway.runsettings")
+} finally {
+    $env:GXMCP_SHAREDHOST_TESTHOST_EXE = $previousTestHostExe
+}
 
 $previousGxPath = $env:GX_PATH
 if ($resolvedGxPath) {

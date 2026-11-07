@@ -632,7 +632,7 @@ namespace GxMcp.Gateway
                 else if (refName == "genexus_history")
                     values = new[] { "list", "get_source", "save", "restore" };
                 else if (refName == "genexus_structure")
-                    values = new[] { "get_visual", "update_visual", "get_indexes", "get_logic", "move_attribute" };
+                    values = new[] { "get_visual", "update_visual", "get_indexes", "get_logic", "move_attribute", "get_item_property", "set_item_property" };
                 else if (refName == "genexus_refactor")
                     values = new[] { "RenameAttribute", "RenameVariable", "RenameObject", "ExtractProcedure" };
                 else if (refName == "prompts/get")
@@ -1975,8 +1975,11 @@ namespace GxMcp.Gateway
                 // Patch persistence receipt: these fields must survive terse error
                 // projection so WriteNotPersisted still tells the caller what the SDK
                 // saved, what the forced re-read proved, and whether rollback landed.
-                "saved", "verified", "persisted", "persistedVerified", "requestedHash",
+                "saved", "verified", "persisted", "persistedState", "persistedVerified", "requestedHash",
                 "retryable", "reconciliationRequired", "verifiedByReadback", "implicitLifecycleOperations",
+                // Cancellation stops the client's wait, not the SDK write. The cache needs this
+                // explicit marker to preserve its durable fence; the caller needs the operation to inspect.
+                "mutationOutcomeUnknown", "operationId", "commitState", "rereadConfirmed",
                 "persistedHash", "normalizedRequestedHash", "normalizedPersistedHash",
                 "persistedMatchCount", "oldContentPresent", "verification", "rollback",
                 "rolledBack", "versionToken", "persistedVerifyError", "mismatchKind", "replacementPresent",
@@ -2035,6 +2038,12 @@ namespace GxMcp.Gateway
                 // Optimistic-concurrency retry contract: a refused token is only useful if the
                 // caller can see the token that is current.
                 "currentVersion", "expectedVersion",
+                // genexus_structure get_item_property / set_item_property: the version a write started from, why the saved
+                // member did not match the request, the values an enumeration accepts and the spellings close to a mistyped
+                // property. Without them a refusal only says "InvalidPropertyValue" or "SdtItemPropertyNotPersisted".
+                "beforeVersion", "mismatchDetail", "allowedValues", "suggestions",
+                // What the KB holds after a rollback that could not be confirmed, against what it held before the request.
+                "storedChanges", "storedChangesTotal", "otherPartsChanged",
                 // genexus_wwp add_layout: the stage a failure stopped at and the verification checks it failed.
                 // Small on purpose; the full verification receipts stay in verbose_errors.
                 "nativeOperation", "failureStage", "failedChecks",
@@ -2066,6 +2075,21 @@ namespace GxMcp.Gateway
             {
                 var value = ResolveErrorField(error, k);
                 if (value != null) trimmed[k] = value;
+            }
+            if (ConcurrencyErrorNormalizer.IsTableCode(code?.ToString())
+                && ResolveErrorField(error, "dispatchState") != null)
+            {
+                // RFC #854 (Requirement 12.2, 12.6): a shared-mode Concurrency_Error_Table error, such as the broker's
+                // Busy_Envelope or a normalized Worker write conflict. Its hint names the next action, so the wait, the
+                // delivery state, the lock holder and expiry, the KB identity and the queue state must survive the terse
+                // shape. Isolated_Mode errors carry no dispatchState and keep their existing terse shape.
+                foreach (string key in new[] { "retryAfterMs", "dispatchState", "lockHolder", "lockExpiresAt",
+                    "kbIdentityKey", "kbPath",
+                    "runningOperation", "runningElapsedMs", "queuePosition", "queueDepth", "sessionQueueCap" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
+                }
             }
             if (code?.ToString().StartsWith("Module", StringComparison.Ordinal) == true)
             {

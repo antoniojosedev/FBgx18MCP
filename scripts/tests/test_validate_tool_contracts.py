@@ -27,7 +27,9 @@ class ValidateToolContractsTests(unittest.TestCase):
         # The published action count is a deliberate contract gate. Update it
         # together with the schema when a new public action is added.
         # the typed genexus_wwp add_layout adds one public action
-        self.assertEqual(289, counts["actions"])
+        # genexus_lifecycle specify_only adds one more
+        # genexus_structure get_item_property and set_item_property add two more
+        self.assertEqual(292, counts["actions"])
         capabilities = MODULE.validate_capabilities_inventory(document)
         self.assertEqual(counts["actions"], capabilities["actions"])
 

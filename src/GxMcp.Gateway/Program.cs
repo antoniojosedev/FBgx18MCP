@@ -200,6 +200,9 @@ namespace GxMcp.Gateway
             public string? WorkerAlias { get; init; }
             /// <summary>Worker instance the command was offered to; tells an exit whether the command was delivered.</summary>
             public WorkerProcess? Worker { get; init; }
+            /// <summary>Worker command method and action (RFC #854): select the Operation_Class of a shared-host disconnect error.</summary>
+            public string? WorkerMethod { get; init; }
+            public string? WorkerAction { get; init; }
             /// <summary>MCP client request id (tools/call `id`) that spawned this worker request, when known.
             /// notifications/cancelled carries THIS id, not the gateway-generated key of _pendingRequests,
             /// so the cancel handler needs the bridge to find what to abort.</summary>
@@ -695,6 +698,16 @@ namespace GxMcp.Gateway
                 && server?.HttpPort > 0;
         }
 
+        internal static JObject BuildSharedWorkerLaunchErrorResponse(JToken id, SharedWorkerLaunchException ex)
+        {
+            return new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = id.DeepClone(),
+                ["error"] = new JObject { ["code"] = -32000, ["message"] = ex.Message, ["data"] = ex.Error.DeepClone() }
+            };
+        }
+
         public static async Task Main(string[] args)
         {
             // Short-circuit self-test before any I/O setup. The CLI installer calls this
@@ -1023,60 +1036,8 @@ namespace GxMcp.Gateway
                     string capturedLine = line;
                     _ = Task.Run(async () =>
                     {
-                        JToken? capturedId = null;
-                        try
-                        {
-                            JObject request;
-                            try
-                            {
-                                request = GxMcp.Common.JsonIngress.ParseObject(capturedLine);
-                            }
-                            catch (Exception parseEx)
-                            {
-                                Log("MCP parse error: " + parseEx.Message);
-                                var parseErr = new JObject
-                                {
-                                    ["jsonrpc"] = "2.0",
-                                    ["id"] = JValue.CreateNull(),
-                                    ["error"] = new JObject { ["code"] = -32700, ["message"] = "Parse error" }
-                                };
-                                await TryWriteStdout(parseErr);
-                                return;
-                            }
-                            capturedId = request["id"];
-                            bool notification = IsJsonRpcNotification(request);
-                            var response = await ProcessMcpRequest(request);
-                            if (response != null && !notification)
-                            {
-                                await TryWriteStdout(response);
-                            }
-                        }
-                        catch (WorkerPoolFullException poolEx)
-                        {
-                            Log("MCP WorkerPoolFull: " + poolEx.Message);
-                            var errResp = new JObject
-                            {
-                                ["jsonrpc"] = "2.0",
-                                ["id"] = capturedId?.DeepClone() ?? JValue.CreateNull(),
-                                ["error"] = new JObject { ["code"] = -32000, ["message"] = poolEx.Message }
-                            };
-                            if (capturedId != null && capturedId.Type != JTokenType.Null)
-                                await TryWriteStdout(errResp);
-                        }
-                        catch (Exception ex)
-                        {
-                            Log("MCP Error: " + ex.Message);
-                            if (capturedId != null && capturedId.Type != JTokenType.Null)
-                            {
-                                var errResp = new JObject
-                                {
-                                    ["jsonrpc"] = "2.0",
-                                    ["id"] = capturedId.DeepClone(),
-                                    ["error"] = new JObject { ["code"] = -32603, ["message"] = "Internal error" }
-                                };
-                                await TryWriteStdout(errResp);
-                            }
-                        }
+                        JObject? response = await ProcessStdioLine(capturedLine);
+                        if (response != null) await TryWriteStdout(response);
                     });
                 }
             }
@@ -1084,6 +1045,47 @@ namespace GxMcp.Gateway
             {
                 Log("[Gateway] MCP stdio disabled. Serving HTTP only.");
                 await Task.Delay(-1);
+            }
+        }
+
+        internal static async Task<JObject?> ProcessStdioLine(string line)
+        {
+            JToken? id = null;
+            try
+            {
+                JObject request;
+                try { request = GxMcp.Common.JsonIngress.ParseObject(line); }
+                catch (Exception ex)
+                {
+                    Log("MCP parse error: " + ex.Message);
+                    return new JObject { ["jsonrpc"] = "2.0", ["id"] = JValue.CreateNull(), ["error"] = new JObject { ["code"] = -32700, ["message"] = "Parse error" } };
+                }
+                id = request["id"];
+                bool notification = IsJsonRpcNotification(request);
+                JObject? response = await ProcessMcpRequest(request);
+                return notification ? null : response;
+            }
+            catch (WorkerPoolFullException ex)
+            {
+                Log("MCP WorkerPoolFull: " + ex.Message);
+                if (id == null || id.Type == JTokenType.Null) return null;
+                var error = new JObject { ["code"] = -32000, ["message"] = ex.Message };
+                if (ex.Error != null) error["data"] = BuildKbPoolFullPayload(ex);
+                return new JObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = error };
+            }
+            catch (SharedWorkerLaunchException ex)
+            {
+                Log("MCP shared Worker refusal: " + ex.Message);
+                return id == null || id.Type == JTokenType.Null ? null : BuildSharedWorkerLaunchErrorResponse(id, ex);
+            }
+            catch (Exception ex)
+            {
+                Log("MCP Error: " + ex.Message);
+                return id == null || id.Type == JTokenType.Null ? null : new JObject
+                {
+                    ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(),
+                    ["error"] = new JObject { ["code"] = -32603, ["message"] = "Internal error" }
+                };
             }
         }
 
